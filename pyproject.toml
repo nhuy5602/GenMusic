@@ -1,0 +1,16 @@
+[project]
+name = "genmusic-vn"
+version = "0.1.0"
+description = "Vietnamese text-to-music prompt, harmony, lyric, and Kaggle generation pipeline."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+kaggle = ["kaggle"]
+musicgen = ["audiocraft"]
+stable-audio-open = ["diffusers", "transformers", "accelerate", "soundfile", "torch"]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["genmusic_vn*"]

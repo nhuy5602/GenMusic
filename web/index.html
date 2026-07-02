@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GenMusic VN</title>
+    <link rel="stylesheet" href="/web/app.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="workspace" aria-label="GenMusic VN workspace">
+        <form id="generate-form" class="input-panel">
+          <div class="brand-row">
+            <div>
+              <h1>GenMusic VN</h1>
+              <p>Text tiếng Việt → cảm xúc → hợp âm → prompt → nhạc nền</p>
+            </div>
+            <div class="status-pill" id="status-pill">Sẵn sàng</div>
+          </div>
+
+          <label for="text">Văn bản</label>
+          <textarea id="text" name="text" rows="12">Một chiều mưa, tôi nhớ về những con phố cũ. Có lời hứa chưa kịp nói, có ánh đèn vẫn chờ trong tim.</textarea>
+
+          <div class="control-grid">
+            <label>
+              Thời lượng
+              <input id="duration" type="range" min="6" max="60" value="24" />
+              <span id="duration-value">24s</span>
+            </label>
+            <label>
+              Phong cách
+              <input id="genre" type="text" placeholder="Vietnamese lo-fi, cinematic pop..." />
+            </label>
+          </div>
+
+          <fieldset class="segmented">
+            <legend>Backend</legend>
+            <label><input type="radio" name="backend" value="guide" checked /> Guide</label>
+            <label><input type="radio" name="backend" value="kaggle-auto" /> Kaggle Auto</label>
+            <label><input type="radio" name="backend" value="musicgen" /> MusicGen</label>
+            <label><input type="radio" name="backend" value="stable-audio" /> Stable Audio</label>
+          </fieldset>
+
+          <button class="primary-button" type="submit">Tạo bản nhạc</button>
+        </form>
+
+        <section class="result-panel" aria-live="polite">
+          <div class="visualizer">
+            <canvas id="wave-canvas" width="960" height="180"></canvas>
+          </div>
+
+          <div id="audio-slot" class="audio-slot"></div>
+
+          <div class="result-grid">
+            <article>
+              <h2>Cảm xúc</h2>
+              <dl id="emotion"></dl>
+            </article>
+            <article>
+              <h2>Hợp âm</h2>
+              <div id="chords" class="chords"></div>
+            </article>
+          </div>
+
+          <article>
+            <h2>Lyrics</h2>
+            <pre id="lyrics"></pre>
+          </article>
+
+          <article>
+            <h2>Prompt</h2>
+            <pre id="prompt"></pre>
+          </article>
+
+          <article>
+            <h2>Kaggle</h2>
+            <pre id="kaggle-job"></pre>
+          </article>
+
+          <div id="downloads" class="downloads"></div>
+        </section>
+      </section>
+    </main>
+    <script src="/web/app.js"></script>
+  </body>
+</html>
