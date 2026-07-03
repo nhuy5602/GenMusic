@@ -2,10 +2,6 @@ const form = document.querySelector("#generate-form");
 const duration = document.querySelector("#duration");
 const durationValue = document.querySelector("#duration-value");
 const statusPill = document.querySelector("#status-pill");
-const emotion = document.querySelector("#emotion");
-const chords = document.querySelector("#chords");
-const lyrics = document.querySelector("#lyrics");
-const promptBox = document.querySelector("#prompt");
 const kaggleJobBox = document.querySelector("#kaggle-job");
 const downloads = document.querySelector("#downloads");
 const audioSlot = document.querySelector("#audio-slot");
@@ -18,17 +14,15 @@ duration.addEventListener("input", () => {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
-  statusPill.textContent = "Dang tao";
+  statusPill.textContent = "Submitting";
   downloads.innerHTML = "";
-  audioSlot.innerHTML = "";
+  audioSlot.textContent = "Waiting for Kaggle MusicGen output...";
   kaggleJobBox.textContent = "";
 
   const data = {
     text: document.querySelector("#text").value,
     duration_seconds: Number(duration.value),
     genre: document.querySelector("#genre").value,
-    backend: document.querySelector("input[name='backend']:checked").value,
-    kaggle_backend: "musicgen",
     model: "facebook/musicgen-small",
   };
 
@@ -38,74 +32,40 @@ form.addEventListener("submit", async (event) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
     });
-    const result = await response.json();
-    if (!response.ok || result.error) {
-      throw new Error(result.error || "Khong tao duoc output");
+    const job = await response.json();
+    if (!response.ok || job.error) {
+      throw new Error(job.error || "Could not submit job");
     }
-    renderResult(result);
-    statusPill.textContent = result.kaggle_job ? "Kaggle" : "Hoan tat";
-    if (result.kaggle_job) pollKaggle(result.run_id);
+    renderJob(job);
+    statusPill.textContent = job.status === "needs_setup" ? "Needs API" : "Kaggle";
+    if (!["needs_setup", "failed", "complete"].includes(job.status)) {
+      pollKaggle(job.run_id);
+    }
   } catch (error) {
-    statusPill.textContent = "Loi";
-    promptBox.textContent = error.message;
+    statusPill.textContent = "Error";
+    kaggleJobBox.textContent = error.message;
   }
 });
 
-function renderResult(result) {
-  emotion.innerHTML = [
-    ["Mood", result.emotion.label_vi],
-    ["Valence", result.emotion.valence],
-    ["Energy", result.emotion.energy],
-    ["Confidence", result.emotion.confidence],
-    ["Keywords", result.emotion.keywords.join(", ")],
-  ]
-    .map(([key, value]) => `<dt>${key}</dt><dd>${value}</dd>`)
-    .join("");
-
-  chords.innerHTML = result.harmony.chord_progression
-    .map((chord) => `<div class="chord">${chord}</div>`)
-    .join("");
-
-  lyrics.textContent = [
-    result.lyrics.title,
-    "",
-    "[Verse]",
-    ...result.lyrics.verse,
-    "",
-    "[Chorus]",
-    ...result.lyrics.chorus,
-    "",
-    "[Bridge]",
-    ...result.lyrics.bridge,
-  ].join("\n");
-
-  promptBox.textContent = result.prompt;
-  renderKaggleJob(result.kaggle_job);
-  renderDownloads(result.files);
-  renderAudio(result.files);
-  drawWave(result);
-}
-
-function renderKaggleJob(job) {
-  if (!job) {
-    kaggleJobBox.textContent = "Chon Kaggle Auto de submit GPU job va sync output ve local.";
-    return;
-  }
-
+function renderJob(job) {
   const lines = [
     `Status: ${job.status}`,
+    `Model: ${job.model}`,
     `Dataset: ${job.dataset_ref}`,
     `Kernel: ${job.kernel_ref}`,
     "",
     ...(job.messages || []),
   ];
-  if (job.downloaded_files?.length) {
-    lines.push("", "Downloaded:", ...job.downloaded_files);
+  if (job.mp3_path) {
+    lines.push("", `MP3: ${job.mp3_path}`);
   }
   if (job.commands?.length && job.status === "needs_setup") {
     lines.push("", "Run after Kaggle API setup:", ...job.commands);
   }
   kaggleJobBox.textContent = lines.join("\n");
+  renderAudio(job);
+  renderDownloads(job);
+  drawWave(job.status);
 }
 
 async function pollKaggle(runId) {
@@ -115,13 +75,13 @@ async function pollKaggle(runId) {
       const response = await fetch(`/api/kaggle/status?run_id=${encodeURIComponent(runId)}`);
       const job = await response.json();
       if (!response.ok || job.error) return;
-      renderKaggleJob(job);
+      renderJob(job);
       if (job.status === "complete") {
-        statusPill.textContent = "Hoan tat";
+        statusPill.textContent = "Done";
         return;
       }
       if (job.status === "failed" || job.status === "needs_setup") {
-        statusPill.textContent = job.status === "needs_setup" ? "Can API" : "Loi";
+        statusPill.textContent = job.status === "needs_setup" ? "Needs API" : "Error";
         return;
       }
     } catch (_error) {
@@ -130,58 +90,41 @@ async function pollKaggle(runId) {
   }
 }
 
-function renderDownloads(files) {
-  downloads.innerHTML = files
-    .filter((file) => file.url)
-    .map((file) => `<a href="${file.url}" download>${file.kind}</a>`)
-    .join("");
-}
-
-function renderAudio(files) {
-  const audio = files.find((file) => file.kind === "audio" && file.url);
-  if (!audio) {
-    audioSlot.textContent = "Audio se xuat hien o day khi backend tao xong.";
+function renderAudio(job) {
+  if (!job.mp3_url) {
+    audioSlot.textContent = "MP3 will appear here after the Kaggle job finishes.";
     return;
   }
-  audioSlot.innerHTML = `<audio controls src="${audio.url}"></audio>`;
+  audioSlot.innerHTML = `<audio controls src="${job.mp3_url}"></audio>`;
 }
 
-function drawWave(result) {
+function renderDownloads(job) {
+  if (!job.mp3_url) {
+    downloads.innerHTML = "";
+    return;
+  }
+  downloads.innerHTML = `<a href="${job.mp3_url}" download>Download MP3</a>`;
+}
+
+function drawWave(status = "idle") {
   const width = canvas.width;
   const height = canvas.height;
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "#f7fbfa";
   ctx.fillRect(0, 0, width, height);
 
-  const bars = result.harmony.chord_progression.length * 4;
+  const bars = 24;
   const barWidth = width / bars;
-  const energy = Math.max(0.1, Number(result.emotion.energy || 0.4));
-
+  const active = status !== "idle" && status !== "needs_setup";
   for (let i = 0; i < bars; i += 1) {
-    const amp = (Math.sin(i * 1.7) * 0.5 + 0.5) * energy;
+    const amp = active ? Math.sin(i * 1.1) * 0.24 + 0.5 : 0.18;
     const x = i * barWidth;
-    const y = height * (0.5 - amp * 0.34);
-    const h = height * amp * 0.68;
+    const y = height * (0.5 - amp * 0.36);
+    const h = height * amp * 0.72;
     ctx.fillStyle = i % 4 === 0 ? "#c7562c" : "#0f766e";
     ctx.fillRect(x + 3, y, Math.max(4, barWidth - 6), h);
   }
-
-  ctx.strokeStyle = "#202124";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  result.melody.forEach((note, index) => {
-    const x = (note.start / result.duration_seconds) * width;
-    const y = height - ((note.midi - 48) / 36) * height;
-    if (index === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
 }
 
-drawWave({
-  duration_seconds: 24,
-  emotion: { energy: 0.45 },
-  harmony: { chord_progression: ["Am", "F", "C", "G"] },
-  melody: [],
-});
+drawWave();
 

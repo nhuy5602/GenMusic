@@ -8,8 +8,6 @@ from pathlib import Path
 from .emotion import analyze_emotion
 from .generators.base import GeneratorInput, MusicGenerator
 from .generators.guide_track import GuideTrackGenerator
-from .generators.musicgen import MusicGenGenerator
-from .generators.stable_audio import StableAudioCliGenerator
 from .lyric_writer import rewrite_lyrics
 from .music_theory import build_harmony, build_melody_events
 from .prompt_builder import build_music_prompt
@@ -26,10 +24,6 @@ def make_run_id(text: str) -> str:
 def get_generator(backend: str) -> MusicGenerator:
     if backend == "guide":
         return GuideTrackGenerator()
-    if backend == "musicgen":
-        return MusicGenGenerator()
-    if backend in {"stable-audio", "stable_audio"}:
-        return StableAudioCliGenerator()
     raise ValueError(f"Unsupported backend: {backend}")
 
 
@@ -122,4 +116,3 @@ def _prompt_pack(result: MusicResult) -> dict:
         "emotion": to_plain_data(result.emotion),
         "melody": to_plain_data(result.melody),
     }
-

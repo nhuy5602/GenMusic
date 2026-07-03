@@ -8,9 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .kaggle_auto import KaggleJobConfig, refresh_kaggle_job, run_or_stage_kaggle_job
-from .pipeline import create_music_project
-from .schemas import to_plain_data
+from .kaggle_auto import KaggleJobConfig, refresh_kaggle_job, submit_text_to_music_job
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -19,7 +17,7 @@ OUTPUT_ROOT = PROJECT_ROOT / "outputs"
 
 
 class GenMusicHandler(BaseHTTPRequestHandler):
-    server_version = "GenMusicVN/0.1"
+    server_version = "GenMusicVN/0.2"
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -38,7 +36,7 @@ class GenMusicHandler(BaseHTTPRequestHandler):
             self._send_file(requested)
             return
         if path == "/api/health":
-            self._send_json({"status": "ok"})
+            self._send_json({"status": "ok", "backend": "kaggle-musicgen"})
             return
         if path == "/api/kaggle/status":
             query = parse_qs(parsed.query)
@@ -63,37 +61,18 @@ class GenMusicHandler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("content-length", "0"))
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
-            requested_backend = payload.get("backend", "guide")
-            local_backend = "guide" if requested_backend == "kaggle-auto" else requested_backend
-            result = create_music_project(
+            job = submit_text_to_music_job(
                 text=payload.get("text", ""),
                 output_root=OUTPUT_ROOT,
-                backend=local_backend,
                 duration_seconds=int(payload.get("duration_seconds", 30)),
                 genre=payload.get("genre") or None,
-                render_audio=True,
+                config=KaggleJobConfig(
+                    model=payload.get("model") or "facebook/musicgen-small",
+                    submit=True,
+                    wait=False,
+                ),
             )
-            data = to_plain_data(result)
-            if requested_backend == "kaggle-auto":
-                data["backend"] = "kaggle-auto"
-                data["kaggle_job"] = run_or_stage_kaggle_job(
-                    result,
-                    OUTPUT_ROOT,
-                    KaggleJobConfig(
-                        kaggle_backend=payload.get("kaggle_backend", "musicgen"),
-                        model=payload.get("model") or "facebook/musicgen-small",
-                        submit=True,
-                        wait=False,
-                    ),
-                )
-            for file_item in data["files"]:
-                file_path = Path(file_item["path"]).resolve()
-                try:
-                    relative = file_path.relative_to(OUTPUT_ROOT.resolve())
-                    file_item["url"] = "/outputs/" + relative.as_posix()
-                except ValueError:
-                    file_item["url"] = ""
-            self._send_json(data)
+            self._send_json(job)
         except Exception as exc:  # pragma: no cover - server boundary
             self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
@@ -130,7 +109,7 @@ def _is_relative_to(path: Path, root: Path) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run the GenMusic VN local web UI.")
+    parser = argparse.ArgumentParser(description="Run the GenMusic VN local MP3 client.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args(argv)
@@ -149,3 +128,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

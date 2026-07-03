@@ -13,35 +13,27 @@
           <div class="brand-row">
             <div>
               <h1>GenMusic VN</h1>
-              <p>Text tiếng Việt → cảm xúc → hợp âm → prompt → nhạc nền</p>
+              <p>Local text client - Kaggle MusicGen - MP3 output</p>
             </div>
-            <div class="status-pill" id="status-pill">Sẵn sàng</div>
+            <div class="status-pill" id="status-pill">Ready</div>
           </div>
 
-          <label for="text">Văn bản</label>
+          <label for="text">Vietnamese text</label>
           <textarea id="text" name="text" rows="12">Một chiều mưa, tôi nhớ về những con phố cũ. Có lời hứa chưa kịp nói, có ánh đèn vẫn chờ trong tim.</textarea>
 
           <div class="control-grid">
             <label>
-              Thời lượng
+              Duration
               <input id="duration" type="range" min="6" max="60" value="24" />
               <span id="duration-value">24s</span>
             </label>
             <label>
-              Phong cách
+              Style
               <input id="genre" type="text" placeholder="Vietnamese lo-fi, cinematic pop..." />
             </label>
           </div>
 
-          <fieldset class="segmented">
-            <legend>Backend</legend>
-            <label><input type="radio" name="backend" value="guide" checked /> Guide</label>
-            <label><input type="radio" name="backend" value="kaggle-auto" /> Kaggle Auto</label>
-            <label><input type="radio" name="backend" value="musicgen" /> MusicGen</label>
-            <label><input type="radio" name="backend" value="stable-audio" /> Stable Audio</label>
-          </fieldset>
-
-          <button class="primary-button" type="submit">Tạo bản nhạc</button>
+          <button class="primary-button" type="submit">Generate MP3</button>
         </form>
 
         <section class="result-panel" aria-live="polite">
@@ -49,31 +41,10 @@
             <canvas id="wave-canvas" width="960" height="180"></canvas>
           </div>
 
-          <div id="audio-slot" class="audio-slot"></div>
-
-          <div class="result-grid">
-            <article>
-              <h2>Cảm xúc</h2>
-              <dl id="emotion"></dl>
-            </article>
-            <article>
-              <h2>Hợp âm</h2>
-              <div id="chords" class="chords"></div>
-            </article>
-          </div>
+          <div id="audio-slot" class="audio-slot">MP3 will appear here after the Kaggle job finishes.</div>
 
           <article>
-            <h2>Lyrics</h2>
-            <pre id="lyrics"></pre>
-          </article>
-
-          <article>
-            <h2>Prompt</h2>
-            <pre id="prompt"></pre>
-          </article>
-
-          <article>
-            <h2>Kaggle</h2>
+            <h2>Kaggle Job</h2>
             <pre id="kaggle-job"></pre>
           </article>
 
@@ -84,3 +55,4 @@
     <script src="/web/app.js"></script>
   </body>
 </html>
+
