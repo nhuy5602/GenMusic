@@ -111,9 +111,14 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("genmusic_vn/stylebank.py", names)
             self.assertIn("genmusic_vn/vocal_planner.py", names)
             self.assertTrue((Path(job["kernel_dir"]) / "kernel-metadata.json").exists())
+            self.assertEqual(job["tts_model"], "facebook/mms-tts-vie")
             kernel_script = (Path(job["kernel_dir"]) / "run_genmusic_vn.py").read_text(encoding="utf-8")
             self.assertIn("lyrics.txt", kernel_script)
             self.assertIn("vocal_plan", kernel_script)
+            self.assertIn("facebook/mms-tts-vie", kernel_script)
+            self.assertIn("render_mms_tts_vocal", kernel_script)
+            self.assertIn("mix_vocal_with_backing", kernel_script)
+            self.assertIn("_backing.mp3", kernel_script)
 
     def test_slugify_keeps_kaggle_safe_slug(self) -> None:
         self.assertEqual(slugify("GenMusic Việt Nam Demo!!!", 50), "genmusic-viet-nam-demo")

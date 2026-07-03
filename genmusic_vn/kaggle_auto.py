@@ -111,6 +111,7 @@ def stage_text_to_music_job(
         "duration_seconds": duration_seconds,
         "genre": genre or "Vietnamese cinematic pop text-to-song",
         "model": config.model,
+        "tts_model": "facebook/mms-tts-vie",
         "backend": "musicgen",
         "created_at": _now(),
     }
@@ -182,6 +183,11 @@ def stage_text_to_music_job(
         "lyrics_text": "",
         "lyrics": {},
         "vocal_plan": {},
+        "backing_path": "",
+        "backing_url": "",
+        "vocal_path": "",
+        "vocal_url": "",
+        "tts_model": "facebook/mms-tts-vie",
         "commands": commands,
         "messages": ["Kaggle MusicGen job files prepared."],
         "last_error": "",
@@ -476,6 +482,17 @@ def ensure(import_name: str, *pip_specs: str) -> None:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", *pip_specs])
 
 
+def ensure_transformers_version(min_version: str = "4.33.0") -> None:
+    ensure("packaging", "packaging")
+    ensure("transformers", f"transformers>={{min_version}}")
+
+    import transformers
+    from packaging.version import parse
+
+    if parse(transformers.__version__) < parse(min_version):
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", f"transformers>={{min_version}}"])
+
+
 def find_input_file(name: str, *, required: bool = True) -> Path | None:
     direct = DATASET_DIR / name
     if direct.exists():
@@ -530,8 +547,8 @@ def convert_wav_to_mp3(wav_path: Path, mp3_path: Path) -> Path:
     return mp3_path
 
 
-def render_musicgen_mp3(request: dict, prompt: str, negative_prompt: str) -> Path:
-    ensure("transformers", "transformers")
+def render_musicgen_backing_mp3(request: dict, prompt: str, negative_prompt: str) -> Path:
+    ensure_transformers_version("4.33.0")
     ensure("accelerate", "accelerate")
     ensure("scipy", "scipy")
     ensure("numpy", "numpy")
@@ -553,7 +570,13 @@ def render_musicgen_mp3(request: dict, prompt: str, negative_prompt: str) -> Pat
     model = MusicgenForConditionalGeneration.from_pretrained(model_name, torch_dtype=dtype).to(device)
     model.eval()
 
-    inputs = processor(text=[prompt], padding=True, return_tensors="pt")
+    backing_prompt = (
+        prompt
+        + "; instrumental backing track only; leave space for a separate Vietnamese vocal track; "
+        "no lead singing, no spoken words, no garbled vocals"
+    )
+
+    inputs = processor(text=[backing_prompt], padding=True, return_tensors="pt")
     inputs = {{key: value.to(device) for key, value in inputs.items()}}
     frame_rate = getattr(model.config.audio_encoder, "frame_rate", 50)
     sampling_rate = getattr(model.config.audio_encoder, "sampling_rate", 32000)
@@ -576,7 +599,7 @@ def render_musicgen_mp3(request: dict, prompt: str, negative_prompt: str) -> Pat
 
     wav_path = OUTPUT_DIR / f"{{request.get('run_id', 'genmusic_vn')}}_musicgen.wav"
     wavfile.write(str(wav_path), rate=sampling_rate, data=audio_np)
-    mp3_path = OUTPUT_DIR / f"{{request.get('run_id', 'genmusic_vn')}}.mp3"
+    mp3_path = OUTPUT_DIR / f"{{request.get('run_id', 'genmusic_vn')}}_backing.mp3"
     return convert_wav_to_mp3(wav_path, mp3_path)
 
 
@@ -598,6 +621,148 @@ def postprocess_audio(audio_np, sampling_rate: int):
     audio_np = np.tanh(audio_np * drive) / np.tanh(drive)
     peak = max(1e-6, float(np.max(np.abs(audio_np))))
     return (audio_np / peak * 0.78).astype("float32")
+
+
+def lyric_lines_for_tts(result) -> list[str]:
+    lines: list[str] = []
+    for line in result.lyrics.full_song:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("[Title]"):
+            title = stripped.removeprefix("[Title]").strip()
+            if title:
+                lines.append(title)
+            continue
+        if stripped.startswith("["):
+            continue
+        lines.append(stripped)
+    if not lines:
+        lines = result.lyrics.verse + result.lyrics.chorus + result.lyrics.bridge
+    return [line for line in lines if line.strip()]
+
+
+def render_mms_tts_vocal(request: dict, result) -> Path:
+    ensure_transformers_version("4.33.0")
+    ensure("accelerate", "accelerate")
+    ensure("scipy", "scipy")
+    ensure("numpy", "numpy")
+
+    import numpy as np
+    import torch
+    from scipy.io import wavfile
+    from transformers import AutoModelForTextToWaveform, AutoTokenizer
+
+    model_name = request.get("tts_model") or "facebook/mms-tts-vie"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForTextToWaveform.from_pretrained(model_name).to(device)
+    model.eval()
+    sampling_rate = int(getattr(model.config, "sampling_rate", 16000))
+
+    pieces = []
+    silence = np.zeros(int(sampling_rate * 0.28), dtype="float32")
+    for line in lyric_lines_for_tts(result)[:18]:
+        clean_line = clean_tts_line(line)
+        if not clean_line:
+            continue
+        inputs = tokenizer(clean_line, return_tensors="pt")
+        inputs = {{key: value.to(device) for key, value in inputs.items()}}
+        with torch.inference_mode():
+            waveform = model(**inputs).waveform
+        audio = waveform[0].detach().cpu().float().numpy()
+        audio = postprocess_vocal_audio(audio)
+        pieces.append(audio)
+        pieces.append(silence)
+
+    if not pieces:
+        pieces = [np.zeros(int(sampling_rate * 1.0), dtype="float32")]
+
+    vocal_np = np.concatenate(pieces).astype("float32")
+    raw_path = OUTPUT_DIR / f"{{request.get('run_id', 'genmusic_vn')}}_vocal_mms_raw.wav"
+    wavfile.write(str(raw_path), rate=sampling_rate, data=vocal_np)
+
+    profiled_path = OUTPUT_DIR / f"{{request.get('run_id', 'genmusic_vn')}}_vocal_mms.wav"
+    apply_vocal_profile(raw_path, profiled_path, result.vocal, sampling_rate)
+    return profiled_path
+
+
+def clean_tts_line(line: str) -> str:
+    return " ".join(line.replace("|", " ").replace("/", " ").split()).strip(" ,.;:-")
+
+
+def postprocess_vocal_audio(audio_np):
+    import numpy as np
+
+    audio_np = audio_np.astype("float32")
+    if audio_np.size == 0:
+        return audio_np
+    audio_np = audio_np - float(np.mean(audio_np))
+    peak = max(1e-6, float(np.max(np.abs(audio_np))))
+    audio_np = audio_np / peak * 0.72
+    fade = min(240, max(1, audio_np.size // 10))
+    if fade > 1:
+        ramp = np.linspace(0.0, 1.0, fade, dtype="float32")
+        audio_np[:fade] *= ramp
+        audio_np[-fade:] *= ramp[::-1]
+    return audio_np.astype("float32")
+
+
+def apply_vocal_profile(raw_path: Path, output_path: Path, vocal, sampling_rate: int) -> Path:
+    gender = getattr(vocal, "gender", "")
+    if gender == "male":
+        pitch_filter = f"asetrate={{sampling_rate}}*0.90,aresample={{sampling_rate}},atempo=1.111"
+    elif gender == "female":
+        pitch_filter = f"asetrate={{sampling_rate}}*1.03,aresample={{sampling_rate}},atempo=0.971"
+    else:
+        pitch_filter = f"aresample={{sampling_rate}}"
+    filter_chain = (
+        f"{{pitch_filter}},highpass=f=90,lowpass=f=8500,"
+        "acompressor=threshold=-18dB:ratio=2.2:attack=10:release=160,volume=1.05"
+    )
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", str(raw_path), "-af", filter_chain, str(output_path)],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return output_path
+
+
+def mix_vocal_with_backing(request: dict, backing_mp3_path: Path, vocal_wav_path: Path) -> Path:
+    final_mp3_path = OUTPUT_DIR / f"{{request.get('run_id', 'genmusic_vn')}}.mp3"
+    filter_complex = (
+        "[0:a]volume=0.52,afade=t=in:st=0:d=0.20[bg];"
+        "[1:a]adelay=850|850,volume=1.10,highpass=f=90,lowpass=f=8500,"
+        "acompressor=threshold=-18dB:ratio=2.5:attack=12:release=180[vox];"
+        "[bg][vox]amix=inputs=2:duration=longest:dropout_transition=2,"
+        "alimiter=limit=0.88[out]"
+    )
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(backing_mp3_path),
+            "-i",
+            str(vocal_wav_path),
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            "[out]",
+            "-codec:a",
+            "libmp3lame",
+            "-qscale:a",
+            "0",
+            str(final_mp3_path),
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return final_mp3_path
 
 
 def render_guide_fallback_mp3(request: dict, result) -> Path:
@@ -642,14 +807,26 @@ def main() -> None:
         render_audio=False,
     )
     musicgen_error = ""
+    tts_error = ""
+    backing_mp3_path = None
+    vocal_path = None
     try:
-        mp3_path = render_musicgen_mp3(request, result.prompt, result.negative_prompt)
+        backing_mp3_path = render_musicgen_backing_mp3(request, result.prompt, result.negative_prompt)
         generation_backend = "musicgen"
     except Exception as exc:
         musicgen_error = "".join(traceback.format_exception(exc))[-4000:]
         (OUTPUT_DIR / "musicgen_error.txt").write_text(musicgen_error, encoding="utf-8")
-        mp3_path = render_guide_fallback_mp3(request, result)
+        backing_mp3_path = render_guide_fallback_mp3(request, result)
         generation_backend = "guide_fallback"
+
+    try:
+        vocal_path = render_mms_tts_vocal(request, result)
+        mp3_path = mix_vocal_with_backing(request, backing_mp3_path, vocal_path)
+        generation_backend = generation_backend + "+mms_tts_vocal_mix"
+    except Exception as exc:
+        tts_error = "".join(traceback.format_exception(exc))[-4000:]
+        (OUTPUT_DIR / "tts_error.txt").write_text(tts_error, encoding="utf-8")
+        mp3_path = backing_mp3_path
 
     report = to_plain_data(result)
     lyrics_text = "\\n".join(result.lyrics.full_song)
@@ -662,8 +839,12 @@ def main() -> None:
         "run_id": request.get("run_id"),
         "backend": generation_backend,
         "model": request.get("model"),
+        "tts_model": request.get("tts_model") or "facebook/mms-tts-vie",
         "mp3_path": str(mp3_path),
+        "backing_path": str(backing_mp3_path),
+        "vocal_path": str(vocal_path) if vocal_path else "",
         "musicgen_error": musicgen_error,
+        "tts_error": tts_error,
         "prompt": result.prompt,
         "negative_prompt": result.negative_prompt,
         "lyrics_text": lyrics_text,
@@ -771,8 +952,16 @@ def _download_kernel_output(state: dict[str, Any], cli: list[str], *, expect_mp3
     files = [path for path in sorted(download_dir.rglob("*")) if path.is_file()]
     mp3_files = [path for path in files if path.suffix.lower() == ".mp3"]
     lyrics_files = [path for path in files if path.name == "lyrics.txt"]
+    backing_files = [path for path in mp3_files if path.name.endswith("_backing.mp3")]
+    vocal_files = [path for path in files if path.name.endswith("_vocal_mms.wav")]
     state["downloaded_files"] = [str(path) for path in files]
     _apply_kaggle_result_metadata(state, files)
+    if backing_files:
+        state["backing_path"] = str(backing_files[0])
+        state["backing_url"] = _output_url(state, backing_files[0])
+    if vocal_files:
+        state["vocal_path"] = str(vocal_files[0])
+        state["vocal_url"] = _output_url(state, vocal_files[0])
     if lyrics_files:
         lyrics_path = lyrics_files[0]
         state["lyrics_path"] = str(lyrics_path)
@@ -794,10 +983,13 @@ def _download_kernel_output(state: dict[str, Any], cli: list[str], *, expect_mp3
             "Kaggle output download failed.",
             "Kaggle output downloaded, but no MP3 file was found.",
         )
-        mp3_path = mp3_files[0]
+        preferred = [path for path in mp3_files if path.name == f"{state['run_id']}.mp3"]
+        mp3_path = preferred[0] if preferred else mp3_files[0]
         state["mp3_path"] = str(mp3_path)
         state["mp3_url"] = _output_url(state, mp3_path)
-        if state.get("generation_backend") == "guide_fallback":
+        if "mms_tts_vocal_mix" in state.get("generation_backend", ""):
+            _append_message_once(state, "MusicGen backing and MMS Vietnamese TTS vocal were mixed into the final MP3.")
+        elif state.get("generation_backend") == "guide_fallback":
             _append_message_once(state, "MusicGen failed on Kaggle; fallback MP3 downloaded.")
         else:
             _append_message_once(state, "Kaggle output MP3 downloaded to local machine.")
@@ -825,9 +1017,23 @@ def _apply_kaggle_result_metadata(state: dict[str, Any], files: list[Path]) -> N
         backend = data.get("backend")
         if isinstance(backend, str):
             state["generation_backend"] = backend
+        tts_model = data.get("tts_model")
+        if isinstance(tts_model, str):
+            state["tts_model"] = tts_model
+        backing_path = data.get("backing_path")
+        if isinstance(backing_path, str):
+            state["kaggle_backing_path"] = backing_path
+        vocal_path = data.get("vocal_path")
+        if isinstance(vocal_path, str):
+            state["kaggle_vocal_path"] = vocal_path
         musicgen_error = data.get("musicgen_error")
         if isinstance(musicgen_error, str) and musicgen_error.strip():
             state["last_error"] = musicgen_error.strip()[-1000:]
+        tts_error = data.get("tts_error")
+        if isinstance(tts_error, str) and tts_error.strip():
+            state["tts_error"] = tts_error.strip()[-1000:]
+            if not state.get("last_error"):
+                state["last_error"] = state["tts_error"]
         lyrics_text = data.get("lyrics_text")
         if isinstance(lyrics_text, str):
             state["lyrics_text"] = lyrics_text

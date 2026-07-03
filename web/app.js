@@ -71,6 +71,7 @@ function renderJob(job) {
   const lines = [
     `Status: ${job.status}`,
     `Model: ${job.model}`,
+    `TTS: ${job.tts_model || "facebook/mms-tts-vie"}`,
     `Dataset: ${job.dataset_ref}`,
     `Kernel: ${job.kernel_ref}`,
     "",
@@ -140,6 +141,12 @@ function renderDownloads(job) {
   }
   if (job.lyrics_url) {
     links.push(`<a href="${job.lyrics_url}" download>Download Lyrics</a>`);
+  }
+  if (job.vocal_url) {
+    links.push(`<a href="${job.vocal_url}" download>Download Vocal WAV</a>`);
+  }
+  if (job.backing_url) {
+    links.push(`<a href="${job.backing_url}" download>Download Backing MP3</a>`);
   }
   if (!links.length) {
     downloads.innerHTML = "";
