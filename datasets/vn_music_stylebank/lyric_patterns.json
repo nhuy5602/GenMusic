@@ -1,0 +1,46 @@
+{
+  "version": "1.0",
+  "patterns": {
+    "joy": {
+      "imagery": ["nang som", "tieng cuoi", "con duong moi", "gio trong"],
+      "chorus": ["ta nang niu tieng cuoi trong nang", "de ngay moi hat vang tren moi"],
+      "bridge": ["de {motif} bat len trong anh mat", "ta giu lai mot mua that xanh"]
+    },
+    "sadness": {
+      "imagery": ["mua dem", "pho vang", "loi chua noi", "anh den muon"],
+      "chorus": ["giu lai chut mua trong tim", "de noi nho thoi roi that khe"],
+      "bridge": ["neu {motif} con lam tim nghieng xuong", "ta xin hat cho long nhe hon"]
+    },
+    "anger": {
+      "imagery": ["lua do", "nhip trong", "buoc chan gat", "gio manh"],
+      "chorus": ["ta buoc qua lua do trong long", "khong cui dau truoc nhung vet thuong"],
+      "bridge": ["de {motif} bat len nhu nhip trong", "ta di qua gioi han cua minh"]
+    },
+    "fear": {
+      "imagery": ["bong toi", "hoi tho lanh", "can phong xa", "duong vang"],
+      "chorus": ["xin thap len mot dom sang nho", "dan ta qua khoang toi menh mang"],
+      "bridge": ["khi {motif} con nam trong im lang", "ta nghe mot anh sang goi ten"]
+    },
+    "calm": {
+      "imagery": ["gio nhe", "hien nha", "mat song", "nang muon"],
+      "chorus": ["ngoi yen nghe gio ru qua them", "de binh yen cham nhe vao tim"],
+      "bridge": ["khi {motif} nam yen trong hoi tho", "ta de ngay troi cham thoi"]
+    },
+    "romantic": {
+      "imagery": ["ban tay", "anh den", "mua hen", "trai tim"],
+      "chorus": ["goi ten nhau giua mua rat khe", "de yeu thuong o lai that lau"],
+      "bridge": ["neu {motif} con vang noi cuoi pho", "ta xin giu mot loi diu dang"]
+    },
+    "hope": {
+      "imagery": ["ngay mai", "anh sang", "chan troi", "duong xa"],
+      "chorus": ["ngay mai len tu trong mat sang", "ta di tiep qua nhung ngap ngung"],
+      "bridge": ["de {motif} mo ra mot vung sang", "ta buoc tiep bang niem tin"]
+    },
+    "nostalgic": {
+      "imagery": ["mau nang cu", "san truong", "con pho xua", "tam anh mo"],
+      "chorus": ["ngay xua nghieng trong mau nang cu", "ta tro ve bang mot cau ca"],
+      "bridge": ["neu {motif} con vang trong ky uc", "ta xin nghe lai mot lan thoi"]
+    }
+  }
+}
+

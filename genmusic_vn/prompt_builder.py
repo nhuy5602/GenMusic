@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .schemas import EmotionProfile, HarmonyPlan, LyricDraft
+from .stylebank import get_emotion_music, match_genre_template, stylebank_prompt_context
 
 
 MOOD_EN = {
@@ -28,12 +29,21 @@ def build_music_prompt(
     traits = ", ".join(harmony.music_traits)
     mood = MOOD_EN.get(emotion.label, "warm, expressive")
     lyric_hint = " / ".join(lyrics.chorus[:2])
+    emotion_style = get_emotion_music(emotion.label)
+    genre_style = match_genre_template(genre, emotion.label)
+    genre_text = genre or genre_style.get("prompt_prefix") or genre_text
+    stylebank_context = stylebank_prompt_context(
+        emotion.label,
+        list(emotion_style.get("vietnamese_instruments", [])),
+        genre,
+    )
 
     prompt = (
         f"{genre_text}; {mood}; {traits}; {harmony.bpm} BPM; "
         f"{harmony.time_signature}; key {harmony.key} {harmony.scale}; "
         f"chord progression {chords}; instruments: {instruments}; "
         f"arrangement: {arrangement}; clear melodic motif following Vietnamese speech-tone contours; "
+        f"Vietnamese stylebank cues: {stylebank_context}; "
         f"background music for Vietnamese lyrics titled '{lyrics.title}', hook idea: '{lyric_hint}'; "
         "no lead vocal, no copyrighted melody, clean mix, loopable ending"
     )
@@ -42,4 +52,3 @@ def build_music_prompt(
         "abrupt ending, copyrighted song imitation, low quality"
     )
     return prompt, negative
-

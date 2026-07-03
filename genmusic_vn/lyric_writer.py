@@ -1,34 +1,31 @@
 from __future__ import annotations
 
 from .schemas import EmotionProfile, HarmonyPlan, LyricDraft
+from .stylebank import get_lyric_pattern
 from .text_utils import compact_line, extract_keywords, split_sentences, tokenize_words
 
 
-CHORUS_TEMPLATES = {
-    "joy": ["ta nâng niu tiếng cười trong nắng", "để ngày mới hát vang trên môi"],
-    "sadness": ["giữ lại chút mưa trong tim", "để nỗi nhớ thôi rơi thật khẽ"],
-    "anger": ["ta bước qua lửa đỏ trong lòng", "không cúi đầu trước những vết thương"],
-    "fear": ["xin thắp lên một đốm sáng nhỏ", "dẫn ta qua khoảng tối mênh mang"],
-    "calm": ["ngồi yên nghe gió ru qua thềm", "để bình yên chạm nhẹ vào tim"],
-    "romantic": ["gọi tên nhau giữa mùa rất khẽ", "để yêu thương ở lại thật lâu"],
-    "hope": ["ngày mai lên từ trong mắt sáng", "ta đi tiếp qua những ngập ngừng"],
-    "nostalgic": ["ngày xưa nghiêng trong màu nắng cũ", "ta trở về bằng một câu ca"],
+DEFAULT_CHORUS = {
+    "joy": ["ta nang niu tieng cuoi trong nang", "de ngay moi hat vang tren moi"],
+    "sadness": ["giu lai chut mua trong tim", "de noi nho thoi roi that khe"],
+    "anger": ["ta buoc qua lua do trong long", "khong cui dau truoc nhung vet thuong"],
+    "fear": ["xin thap len mot dom sang nho", "dan ta qua khoang toi menh mang"],
+    "calm": ["ngoi yen nghe gio ru qua them", "de binh yen cham nhe vao tim"],
+    "romantic": ["goi ten nhau giua mua rat khe", "de yeu thuong o lai that lau"],
+    "hope": ["ngay mai len tu trong mat sang", "ta di tiep qua nhung ngap ngung"],
+    "nostalgic": ["ngay xua nghieng trong mau nang cu", "ta tro ve bang mot cau ca"],
 }
 
 
 def _title_from_keywords(keywords: list[str], fallback: str) -> str:
     if keywords:
-        title_words = keywords[:4]
-        return " ".join(title_words).capitalize()
+        return " ".join(keywords[:4]).capitalize()
     first = compact_line(fallback, 4)
-    return first.capitalize() if first else "Khúc hát chưa đặt tên"
+    return first.capitalize() if first else "Khuc hat chua dat ten"
 
 
 def _polish_line(line: str) -> str:
-    line = line.strip(" ,.;:-").lower()
-    if not line:
-        return ""
-    return line
+    return line.strip(" ,.;:-").lower()
 
 
 def _make_verse_lines(text: str) -> list[str]:
@@ -45,21 +42,25 @@ def _make_verse_lines(text: str) -> list[str]:
     while len(lines) < 4:
         if keywords:
             seed = " ".join(keywords[: min(4, len(keywords))])
-            lines.append(_polish_line(f"{seed} còn vang trong ta"))
+            lines.append(_polish_line(f"{seed} con vang trong ta"))
             keywords = keywords[1:]
         else:
-            lines.append("một câu ca đi qua đêm dài")
+            lines.append("mot cau ca di qua dem dai")
     return lines[:4]
 
 
 def _make_bridge(text: str, emotion: EmotionProfile, harmony: HarmonyPlan) -> list[str]:
     keywords = extract_keywords(text, 6)
     center = keywords[0] if keywords else emotion.label_vi
+    pattern = get_lyric_pattern(emotion.label)
+    bridge_template = pattern.get("bridge", [])
+    if len(bridge_template) >= 2:
+        return [line.format(motif=center) for line in bridge_template[:2]]
     if emotion.valence < -0.25:
-        return [f"nếu {center} còn làm tim nghiêng xuống", "ta xin hát cho lòng nhẹ hơn"]
+        return [f"neu {center} con lam tim nghieng xuong", "ta xin hat cho long nhe hon"]
     if emotion.energy > 0.7:
-        return [f"để {center} bật lên như nhịp trống", "ta đi qua giới hạn của mình"]
-    return [f"khi {center} nằm yên trong hơi thở", f"{harmony.key} {harmony.scale} dìu ta chậm thôi"]
+        return [f"de {center} bat len nhu nhip trong", "ta di qua gioi han cua minh"]
+    return [f"khi {center} nam yen trong hoi tho", f"{harmony.key} {harmony.scale} diu ta cham thoi"]
 
 
 def rewrite_lyrics(text: str, emotion: EmotionProfile, harmony: HarmonyPlan) -> LyricDraft:
@@ -68,12 +69,13 @@ def rewrite_lyrics(text: str, emotion: EmotionProfile, harmony: HarmonyPlan) -> 
     verse = _make_verse_lines(text)
 
     motif = keywords[0] if keywords else emotion.label_vi
-    template = CHORUS_TEMPLATES.get(emotion.label, CHORUS_TEMPLATES["calm"])
+    pattern = get_lyric_pattern(emotion.label)
+    template = pattern.get("chorus") or DEFAULT_CHORUS.get(emotion.label, DEFAULT_CHORUS["calm"])
     chorus = [
         _polish_line(template[0]),
-        _polish_line(f"{motif} ơi, ở lại thêm một lần"),
+        _polish_line(f"{motif} oi, o lai them mot lan"),
         _polish_line(template[1]),
-        _polish_line("cho câu hát tìm thấy đường về"),
+        _polish_line("cho cau hat tim thay duong ve"),
     ]
     bridge = _make_bridge(text, emotion, harmony)
     hook_words = tokenize_words(chorus[1])[:6]

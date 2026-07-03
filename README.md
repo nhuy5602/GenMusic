@@ -11,6 +11,7 @@ Local web/CLI
 
 Kaggle GPU
   Vietnamese emotion analysis
+  Vietnamese music stylebank lookup
   lyric rewriting
   key / scale / chord / melody planning
   MusicGen inference
@@ -18,6 +19,27 @@ Kaggle GPU
 ```
 
 Local does not run AI models and does not generate music. It only creates a Kaggle job from raw text, polls the job, downloads the generated `.mp3`, and serves the file.
+
+## Vietnamese Music Stylebank Dataset
+
+The project includes a structured knowledge dataset:
+
+```text
+datasets/vn_music_stylebank/
+  emotion_to_music.json
+  vietnamese_instruments.json
+  genre_templates.json
+  chord_presets.json
+  lyric_patterns.json
+```
+
+This dataset is uploaded to Kaggle inside `genmusic_vn_source.zip`. The Kaggle kernel uses it before MusicGen inference to choose:
+
+- mood-specific BPM, key, scale and chord progression
+- Vietnamese instrument colors such as dan tranh, dan bau, sao truc and trong com
+- genre prompt templates
+- lyric imagery and chorus/bridge patterns
+- MusicGen prompt keywords for Vietnamese emotional context
 
 ## Why MusicGen Only
 
@@ -123,6 +145,8 @@ genmusic_vn/
   lyric_writer.py     # Vietnamese lyric rewrite, executed on Kaggle
   prompt_builder.py   # MusicGen prompt builder, executed on Kaggle
   pipeline.py         # Kaggle-side orchestration
+datasets/
+  vn_music_stylebank/ # structured Vietnamese music knowledge dataset
 web/
   index.html
   app.css

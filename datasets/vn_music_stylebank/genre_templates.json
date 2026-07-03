@@ -1,0 +1,36 @@
+{
+  "version": "1.0",
+  "genres": {
+    "vpop_ballad": {
+      "prompt_prefix": "Vietnamese V-pop ballad background instrumental",
+      "rhythm": "slow 4/4, gentle backbeat, emotional piano foundation",
+      "mix": "warm vocal-space mix without lead vocal",
+      "recommended_emotions": ["sadness", "romantic", "nostalgic"]
+    },
+    "cinematic_pop": {
+      "prompt_prefix": "Vietnamese cinematic pop background instrumental",
+      "rhythm": "steady cinematic pulse with modern pop clarity",
+      "mix": "wide, clean, soundtrack-like, loopable",
+      "recommended_emotions": ["hope", "calm", "nostalgic", "joy"]
+    },
+    "lofi_memory": {
+      "prompt_prefix": "Vietnamese lo-fi nostalgic instrumental",
+      "rhythm": "soft dusty beat, relaxed swing, gentle repetition",
+      "mix": "warm tape noise, rounded transients, intimate space",
+      "recommended_emotions": ["nostalgic", "sadness", "calm"]
+    },
+    "ambient_folk": {
+      "prompt_prefix": "Vietnamese ambient folk background music",
+      "rhythm": "minimal pulse, floating folk ornamentation",
+      "mix": "airy, natural, spacious, meditative",
+      "recommended_emotions": ["calm", "fear", "sadness"]
+    },
+    "upbeat_pop": {
+      "prompt_prefix": "bright Vietnamese upbeat pop instrumental",
+      "rhythm": "clear pop groove, light drums, optimistic guitar strums",
+      "mix": "clean, bright, friendly, energetic but not harsh",
+      "recommended_emotions": ["joy", "hope"]
+    }
+  }
+}
+

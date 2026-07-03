@@ -459,9 +459,11 @@ main()
 
 def _write_source_zip(path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
-    include_roots = [root / "genmusic_vn"]
+    include_roots = [root / "genmusic_vn", root / "datasets" / "vn_music_stylebank"]
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for include_root in include_roots:
+            if not include_root.exists():
+                continue
             for file_path in include_root.rglob("*"):
                 if not file_path.is_file():
                     continue
@@ -549,4 +551,3 @@ def _history_item(label: str, result: dict[str, Any]) -> dict[str, Any]:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-

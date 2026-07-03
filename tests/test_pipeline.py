@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from genmusic_vn.emotion import analyze_emotion
 from genmusic_vn.kaggle_auto import KaggleJobConfig, slugify, submit_text_to_music_job
 from genmusic_vn.music_theory import chord_notes
 from genmusic_vn.pipeline import create_music_project
+from genmusic_vn.stylebank import get_emotion_music, load_stylebank
 
 
 class PipelineTests(unittest.TestCase):
@@ -46,13 +48,24 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(job["status"], "staged")
             self.assertEqual(job["backend"], "musicgen")
             self.assertTrue((Path(job["dataset_dir"]) / "request.json").exists())
-            self.assertTrue((Path(job["dataset_dir"]) / "genmusic_vn_source.zip").exists())
+            source_zip = Path(job["dataset_dir"]) / "genmusic_vn_source.zip"
+            self.assertTrue(source_zip.exists())
+            with zipfile.ZipFile(source_zip) as archive:
+                names = set(archive.namelist())
+            self.assertIn("datasets/vn_music_stylebank/emotion_to_music.json", names)
+            self.assertIn("genmusic_vn/stylebank.py", names)
             self.assertTrue((Path(job["kernel_dir"]) / "kernel-metadata.json").exists())
 
     def test_slugify_keeps_kaggle_safe_slug(self) -> None:
         self.assertEqual(slugify("GenMusic Việt Nam Demo!!!", 50), "genmusic-viet-nam-demo")
 
+    def test_stylebank_loads_emotion_music_dataset(self) -> None:
+        bank = load_stylebank()
+        self.assertIn("emotion_to_music", bank)
+        sadness = get_emotion_music("sadness")
+        self.assertEqual(sadness["scale"], "minor")
+        self.assertIn("sao_truc", sadness["vietnamese_instruments"])
+
 
 if __name__ == "__main__":
     unittest.main()
-

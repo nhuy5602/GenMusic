@@ -4,6 +4,7 @@ import math
 import re
 
 from .schemas import EmotionProfile, HarmonyPlan, NoteEvent
+from .stylebank import get_emotion_music
 from .text_utils import tokenize_words
 
 
@@ -175,7 +176,7 @@ def scale_notes(key: str, scale: str, octave: int = 4) -> list[str]:
 
 
 def build_harmony(emotion: EmotionProfile, duration_seconds: int = 30) -> HarmonyPlan:
-    preset = EMOTION_HARMONY.get(emotion.label, EMOTION_HARMONY["calm"])
+    preset = _stylebank_preset(emotion.label) or EMOTION_HARMONY.get(emotion.label, EMOTION_HARMONY["calm"])
     bpm = preset["bpm"]
     if duration_seconds >= 45:
         bpm = max(64, bpm - 4)
@@ -199,6 +200,31 @@ def build_harmony(emotion: EmotionProfile, duration_seconds: int = 30) -> Harmon
         arrangement=list(preset["arrangement"]),
         music_traits=list(preset["traits"]),
     )
+
+
+def _stylebank_preset(label: str) -> dict | None:
+    style = get_emotion_music(label)
+    if not style:
+        return None
+
+    progressions = style.get("chord_progressions") or []
+    progression = []
+    if progressions:
+        progression = list(progressions[0].get("chords", []))
+    if not progression:
+        return None
+
+    bpm_info = style.get("bpm", {})
+    return {
+        "key": style.get("default_key", "D"),
+        "scale": style.get("scale", "major"),
+        "bpm": int(bpm_info.get("default", 84)),
+        "progression": progression,
+        "register": style.get("melody_register", "mid"),
+        "instruments": list(style.get("instruments", [])),
+        "arrangement": list(style.get("arrangement", [])),
+        "traits": list(style.get("traits", [])) + list(style.get("prompt_keywords", [])[:2]),
+    }
 
 
 def detect_vietnamese_tone(word: str) -> str:
