@@ -334,6 +334,12 @@ pre {
   color: #2b2d31;
 }
 
+#lyrics-output {
+  max-height: 280px;
+  overflow: auto;
+  line-height: 1.55;
+}
+
 .downloads {
   display: flex;
   flex-wrap: wrap;

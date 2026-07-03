@@ -137,9 +137,30 @@ def _build_full_song(
     return song_form, full_song
 
 
+def _build_short_song(title: str, verse: list[str], chorus: list[str], outro: list[str]) -> tuple[list[str], list[str]]:
+    short_verse = verse[:2]
+    short_chorus = chorus[:2]
+    song_form = ["Verse", "Chorus", "Outro"]
+    full_song = [
+        f"[Title] {title}",
+        "",
+        "[Verse]",
+        *short_verse,
+        "",
+        "[Chorus]",
+        *short_chorus,
+        "",
+        "[Outro]",
+        outro[-1] if outro else short_chorus[-1],
+    ]
+    return song_form, full_song
+
+
 def rewrite_lyrics(text: str, emotion: EmotionProfile, harmony: HarmonyPlan) -> LyricDraft:
     keywords = extract_keywords(text, 10)
     title = _title_from_keywords(keywords, text)
+    sentence_count = len(split_sentences(text))
+    word_count = len(tokenize_words(text))
     verse1 = _make_verse_lines(text, offset=0)
     verse2 = _make_verse_lines(text, offset=4)
     pre_chorus = _make_pre_chorus(text, emotion)
@@ -148,7 +169,10 @@ def rewrite_lyrics(text: str, emotion: EmotionProfile, harmony: HarmonyPlan) -> 
     outro = _make_outro(chorus, emotion)
     hook_words = tokenize_words(chorus[1])[:6]
     hook = " ".join(hook_words) if hook_words else chorus[1]
-    song_form, full_song = _build_full_song(title, verse1, pre_chorus, chorus, verse2, bridge, outro)
+    if sentence_count <= 2 and word_count <= 40:
+        song_form, full_song = _build_short_song(title, verse1, chorus, outro)
+    else:
+        song_form, full_song = _build_full_song(title, verse1, pre_chorus, chorus, verse2, bridge, outro)
 
     return LyricDraft(
         title=title,
@@ -159,4 +183,3 @@ def rewrite_lyrics(text: str, emotion: EmotionProfile, harmony: HarmonyPlan) -> 
         song_form=song_form,
         full_song=full_song,
     )
-

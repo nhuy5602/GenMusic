@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from genmusic_vn.schemas import EmotionProfile, GeneratedFile, HarmonyPlan, LyricDraft, NoteEvent
+from genmusic_vn.schemas import EmotionProfile, GeneratedFile, HarmonyPlan, LyricDraft, NoteEvent, VocalPlan
 
 
 class GeneratorUnavailable(RuntimeError):
@@ -19,6 +19,7 @@ class GeneratorInput:
     emotion: EmotionProfile
     harmony: HarmonyPlan
     lyrics: LyricDraft
+    vocal: VocalPlan
     melody: list[NoteEvent]
     duration_seconds: int
 
@@ -28,4 +29,3 @@ class MusicGenerator:
 
     def generate(self, data: GeneratorInput, output_dir: Path) -> list[GeneratedFile]:
         raise NotImplementedError
-

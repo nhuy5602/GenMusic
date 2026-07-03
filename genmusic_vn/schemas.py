@@ -52,6 +52,18 @@ class LyricDraft:
 
 
 @dataclass(frozen=True)
+class VocalPlan:
+    gender: str
+    register: str
+    pitch_center: str
+    range_low: str
+    range_high: str
+    delivery: str
+    intensity: str
+    rationale: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class TextPlan:
     mode: str
     sentence_count: int
@@ -80,6 +92,7 @@ class MusicResult:
     harmony: HarmonyPlan
     melody: list[NoteEvent]
     lyrics: LyricDraft
+    vocal: VocalPlan
     text_plan: TextPlan
     prompt: str
     negative_prompt: str

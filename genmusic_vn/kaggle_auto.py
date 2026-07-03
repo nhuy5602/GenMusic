@@ -109,7 +109,7 @@ def stage_text_to_music_job(
         "run_id": run_id,
         "text": normalized,
         "duration_seconds": duration_seconds,
-        "genre": genre or "Vietnamese cinematic background music",
+        "genre": genre or "Vietnamese cinematic pop text-to-song",
         "model": config.model,
         "backend": "musicgen",
         "created_at": _now(),
@@ -177,6 +177,11 @@ def stage_text_to_music_job(
         "state_path": str(job_dir / "job_state.json"),
         "mp3_path": "",
         "mp3_url": "",
+        "lyrics_path": "",
+        "lyrics_url": "",
+        "lyrics_text": "",
+        "lyrics": {},
+        "vocal_plan": {},
         "commands": commands,
         "messages": ["Kaggle MusicGen job files prepared."],
         "last_error": "",
@@ -586,6 +591,7 @@ def render_guide_fallback_mp3(request: dict, result) -> Path:
         emotion=result.emotion,
         harmony=result.harmony,
         lyrics=result.lyrics,
+        vocal=result.vocal,
         melody=result.melody,
         duration_seconds=int(request.get("duration_seconds", 30)),
     )
@@ -625,6 +631,12 @@ def main() -> None:
         generation_backend = "guide_fallback"
 
     report = to_plain_data(result)
+    lyrics_text = "\\n".join(result.lyrics.full_song)
+    (OUTPUT_DIR / "lyrics.txt").write_text(lyrics_text, encoding="utf-8")
+    (OUTPUT_DIR / "lyrics.json").write_text(
+        json.dumps(report.get("lyrics", {{}}), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     final = {{
         "run_id": request.get("run_id"),
         "backend": generation_backend,
@@ -633,6 +645,9 @@ def main() -> None:
         "musicgen_error": musicgen_error,
         "prompt": result.prompt,
         "negative_prompt": result.negative_prompt,
+        "lyrics_text": lyrics_text,
+        "lyrics": report.get("lyrics"),
+        "vocal_plan": report.get("vocal"),
         "analysis": report,
     }}
     (OUTPUT_DIR / "kaggle_result.json").write_text(json.dumps(final, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -734,8 +749,18 @@ def _download_kernel_output(state: dict[str, Any], cli: list[str], *, expect_mp3
     output_error = _summarize_cli_error(output) if output["returncode"] != 0 else ""
     files = [path for path in sorted(download_dir.rglob("*")) if path.is_file()]
     mp3_files = [path for path in files if path.suffix.lower() == ".mp3"]
+    lyrics_files = [path for path in files if path.name == "lyrics.txt"]
     state["downloaded_files"] = [str(path) for path in files]
     _apply_kaggle_result_metadata(state, files)
+    if lyrics_files:
+        lyrics_path = lyrics_files[0]
+        state["lyrics_path"] = str(lyrics_path)
+        state["lyrics_url"] = _output_url(state, lyrics_path)
+        if not state.get("lyrics_text"):
+            try:
+                state["lyrics_text"] = lyrics_path.read_text(encoding="utf-8")
+            except OSError:
+                pass
     if output_error and not files:
         state["last_error"] = output_error
         _append_message_once(state, "Kaggle output download failed.")
@@ -750,11 +775,7 @@ def _download_kernel_output(state: dict[str, Any], cli: list[str], *, expect_mp3
         )
         mp3_path = mp3_files[0]
         state["mp3_path"] = str(mp3_path)
-        try:
-            relative = mp3_path.relative_to(Path(state["run_dir"]))
-            state["mp3_url"] = "/outputs/" + f"{state['run_id']}/{relative.as_posix()}"
-        except ValueError:
-            state["mp3_url"] = ""
+        state["mp3_url"] = _output_url(state, mp3_path)
         if state.get("generation_backend") == "guide_fallback":
             _append_message_once(state, "MusicGen failed on Kaggle; fallback MP3 downloaded.")
         else:
@@ -786,7 +807,24 @@ def _apply_kaggle_result_metadata(state: dict[str, Any], files: list[Path]) -> N
         musicgen_error = data.get("musicgen_error")
         if isinstance(musicgen_error, str) and musicgen_error.strip():
             state["last_error"] = musicgen_error.strip()[-1000:]
+        lyrics_text = data.get("lyrics_text")
+        if isinstance(lyrics_text, str):
+            state["lyrics_text"] = lyrics_text
+        lyrics = data.get("lyrics")
+        if isinstance(lyrics, dict):
+            state["lyrics"] = lyrics
+        vocal_plan = data.get("vocal_plan")
+        if isinstance(vocal_plan, dict):
+            state["vocal_plan"] = vocal_plan
         return
+
+
+def _output_url(state: dict[str, Any], path: Path) -> str:
+    try:
+        relative = path.relative_to(Path(state["run_dir"]))
+    except ValueError:
+        return ""
+    return "/outputs/" + f"{state['run_id']}/{relative.as_posix()}"
 
 
 def _summarize_downloaded_logs(files: list[Path]) -> str:

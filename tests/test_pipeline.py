@@ -69,6 +69,25 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("Final Chorus", result.lyrics.song_form)
             self.assertTrue(any("[Verse 2]" in line for line in result.lyrics.full_song))
             self.assertIn("song form:", result.prompt)
+            self.assertIn("lead vocal:", result.prompt)
+            self.assertNotIn("without lead vocal", result.prompt)
+            self.assertIn(result.vocal.gender, {"female", "male", "duet"})
+            self.assertIn("vocal", json.loads((Path(temp) / result.run_id / "prompt_pack.json").read_text(encoding="utf-8")))
+
+    def test_short_text_is_rewritten_as_short_song_with_vocal_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            result = create_music_project(
+                "Mot chieu mua toi nho pho cu. Anh den van cho trong tim.",
+                output_root=temp,
+                duration_seconds=8,
+                render_audio=False,
+            )
+            self.assertEqual(result.lyrics.song_form, ["Verse", "Chorus", "Outro"])
+            self.assertFalse(any("[Verse 2]" in line for line in result.lyrics.full_song))
+            self.assertIn("lead vocal:", result.prompt)
+            self.assertNotIn("no lead vocal", result.prompt)
+            self.assertTrue(result.vocal.pitch_center)
+            self.assertIn(result.vocal.gender, {"female", "male", "duet"})
 
     def test_kaggle_job_stages_raw_text_request_and_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -88,7 +107,11 @@ class PipelineTests(unittest.TestCase):
                 names = set(archive.namelist())
             self.assertIn("datasets/vn_music_stylebank/emotion_to_music.json", names)
             self.assertIn("genmusic_vn/stylebank.py", names)
+            self.assertIn("genmusic_vn/vocal_planner.py", names)
             self.assertTrue((Path(job["kernel_dir"]) / "kernel-metadata.json").exists())
+            kernel_script = (Path(job["kernel_dir"]) / "run_genmusic_vn.py").read_text(encoding="utf-8")
+            self.assertIn("lyrics.txt", kernel_script)
+            self.assertIn("vocal_plan", kernel_script)
 
     def test_slugify_keeps_kaggle_safe_slug(self) -> None:
         self.assertEqual(slugify("GenMusic Việt Nam Demo!!!", 50), "genmusic-viet-nam-demo")

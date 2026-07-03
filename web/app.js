@@ -7,6 +7,7 @@ const buttonText = generateButton.querySelector(".button-text");
 const kaggleJobBox = document.querySelector("#kaggle-job");
 const downloads = document.querySelector("#downloads");
 const audioSlot = document.querySelector("#audio-slot");
+const lyricsOutput = document.querySelector("#lyrics-output");
 const canvas = document.querySelector("#wave-canvas");
 const ctx = canvas.getContext("2d");
 let isGenerating = false;
@@ -24,6 +25,7 @@ form.addEventListener("submit", async (event) => {
   statusPill.textContent = "Submitting";
   downloads.innerHTML = "";
   audioSlot.textContent = "Waiting for Kaggle MusicGen output...";
+  lyricsOutput.textContent = "Preparing lyrics and vocal plan...";
   kaggleJobBox.textContent = "";
 
   const data = {
@@ -85,6 +87,7 @@ function renderJob(job) {
   }
   kaggleJobBox.textContent = lines.join("\n");
   renderAudio(job);
+  renderLyrics(job);
   renderDownloads(job);
   drawWave(job.status);
 }
@@ -131,11 +134,48 @@ function renderAudio(job) {
 }
 
 function renderDownloads(job) {
-  if (!job.mp3_url) {
+  const links = [];
+  if (job.mp3_url) {
+    links.push(`<a href="${job.mp3_url}" download>Download MP3</a>`);
+  }
+  if (job.lyrics_url) {
+    links.push(`<a href="${job.lyrics_url}" download>Download Lyrics</a>`);
+  }
+  if (!links.length) {
     downloads.innerHTML = "";
     return;
   }
-  downloads.innerHTML = `<a href="${job.mp3_url}" download>Download MP3</a>`;
+  downloads.innerHTML = links.join("");
+}
+
+function renderLyrics(job) {
+  const lines = [];
+  const vocal = job.vocal_plan || {};
+  if (Object.keys(vocal).length) {
+    lines.push(`Voice: ${formatVocalGender(vocal.gender)} ${vocal.register || ""}`.trim());
+    lines.push(`Pitch: ${vocal.pitch_center || "-"} | Range: ${vocal.range_low || "-"}-${vocal.range_high || "-"}`);
+    if (vocal.delivery) lines.push(`Delivery: ${vocal.delivery}`);
+    if (vocal.intensity) lines.push(`Intensity: ${vocal.intensity}`);
+    if (Array.isArray(vocal.rationale) && vocal.rationale.length) {
+      lines.push(`Reason: ${vocal.rationale.slice(0, 2).join(" ")}`);
+    }
+    lines.push("");
+  }
+
+  if (job.lyrics_text) {
+    lines.push(job.lyrics_text);
+  } else if (Array.isArray(job.lyrics?.full_song)) {
+    lines.push(job.lyrics.full_song.join("\n"));
+  }
+
+  lyricsOutput.textContent = lines.join("\n").trim() || "Lyrics and vocal plan will appear here after the Kaggle job finishes.";
+}
+
+function formatVocalGender(value) {
+  if (value === "female") return "Female";
+  if (value === "male") return "Male";
+  if (value === "duet") return "Duet";
+  return "Auto";
 }
 
 function drawWave(status = "idle") {
