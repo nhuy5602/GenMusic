@@ -6,9 +6,10 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from genmusic_vn.emotion import analyze_emotion
-from genmusic_vn.kaggle_auto import KaggleJobConfig, load_kaggle_api_tokens, slugify, submit_text_to_music_job
+from genmusic_vn.kaggle_auto import KaggleJobConfig, kaggle_cli_command, load_kaggle_api_tokens, slugify, submit_text_to_music_job
 from genmusic_vn.music_theory import chord_notes
 from genmusic_vn.pipeline import create_music_project
 from genmusic_vn.stylebank import get_emotion_music, load_stylebank
@@ -110,6 +111,23 @@ class PipelineTests(unittest.TestCase):
                 os.environ.pop("KAGGLE_KEY", None)
             else:
                 os.environ["KAGGLE_KEY"] = old_key
+
+    def test_kaggle_cli_command_finds_user_site_scripts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            user_site = root / "Python314" / "site-packages"
+            scripts_dir = user_site.parent / ("Scripts" if os.name == "nt" else "bin")
+            scripts_dir.mkdir(parents=True)
+            executable = scripts_dir / ("kaggle.exe" if os.name == "nt" else "kaggle")
+            executable.write_text("", encoding="utf-8")
+
+            with (
+                patch("genmusic_vn.kaggle_auto.shutil.which", return_value=None),
+                patch("genmusic_vn.kaggle_auto.site.USER_BASE", str(root)),
+                patch("genmusic_vn.kaggle_auto.site.USER_SITE", str(user_site)),
+                patch("genmusic_vn.kaggle_auto.sys.executable", str(root / "python.exe")),
+            ):
+                self.assertEqual(kaggle_cli_command(), [str(executable)])
 
 
 if __name__ == "__main__":

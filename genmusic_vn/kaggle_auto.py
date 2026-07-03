@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import site
 import subprocess
 import sys
 import time
@@ -314,7 +315,7 @@ def kaggle_readiness(username: str | None = None) -> dict[str, Any]:
         messages.append("Kaggle username missing. Set KAGGLE_USERNAME in .env or environment.")
 
     tokens = load_kaggle_api_tokens()
-    has_key = bool(tokens.get("KAGGLE_KEY")) or (Path.home() / ".kaggle" / "kaggle.json").exists()
+    has_key = bool(tokens.get("KAGGLE_KEY"))
     if not has_key:
         messages.append("Kaggle API key missing. Set KAGGLE_KEY in .env or environment.")
 
@@ -328,14 +329,6 @@ def resolve_kaggle_username(username: str | None = None) -> str | None:
     env_user = tokens.get("KAGGLE_USERNAME")
     if env_user:
         return env_user.strip()
-    token_path = Path.home() / ".kaggle" / "kaggle.json"
-    if token_path.exists():
-        try:
-            data = json.loads(token_path.read_text(encoding="utf-8"))
-            value = data.get("username")
-            return value.strip() if isinstance(value, str) and value.strip() else None
-        except json.JSONDecodeError:
-            return None
     return None
 
 
@@ -344,21 +337,32 @@ def kaggle_cli_command() -> list[str] | None:
     if executable:
         return [executable]
 
-    scripts_dir = Path(sys.executable).parent / "Scripts"
-    candidate = scripts_dir / ("kaggle.exe" if os.name == "nt" else "kaggle")
-    if candidate.exists():
-        return [str(candidate)]
+    script_name = "kaggle.exe" if os.name == "nt" else "kaggle"
+    script_dirs = [
+        Path(sys.executable).parent / "Scripts",
+        Path(site.USER_BASE) / ("Scripts" if os.name == "nt" else "bin"),
+        Path(site.USER_SITE).parent / ("Scripts" if os.name == "nt" else "bin"),
+    ]
+    seen: set[Path] = set()
+    for scripts_dir in script_dirs:
+        candidate = scripts_dir / script_name
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate.exists():
+            return [str(candidate)]
     return None
 
 
 def load_kaggle_api_tokens() -> dict[str, str]:
     tokens: dict[str, str] = {}
+    tokens.update(_read_kaggle_json(Path.home() / ".kaggle" / "kaggle.json"))
     tokens.update(_read_env_file(PROJECT_ROOT / ".env"))
     tokens.update(_read_env_file(PROJECT_ROOT / ".env.local"))
     for key in ("KAGGLE_USERNAME", "KAGGLE_KEY"):
         value = os.getenv(key) or tokens.get(key)
         if value:
-            tokens[key] = value.strip()
+            tokens[key] = _clean_env_value(value)
     return {key: value for key, value in tokens.items() if key in {"KAGGLE_USERNAME", "KAGGLE_KEY"} and value}
 
 
@@ -366,16 +370,47 @@ def _read_env_file(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
     values: dict[str, str] = {}
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
+    for raw_line in _read_text_flexible(path).splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
         key = key.strip()
-        value = value.strip().strip('"').strip("'")
+        value = _clean_env_value(value)
         if key:
             values[key] = value
     return values
+
+
+def _read_kaggle_json(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(_read_text_flexible(path))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    values: dict[str, str] = {}
+    username = data.get("username")
+    key = data.get("key")
+    if isinstance(username, str):
+        values["KAGGLE_USERNAME"] = _clean_env_value(username)
+    if isinstance(key, str):
+        values["KAGGLE_KEY"] = _clean_env_value(key)
+    return values
+
+
+def _read_text_flexible(path: Path) -> str:
+    data = path.read_bytes()
+    for encoding in ("utf-8-sig", "utf-16", "utf-8"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="ignore")
+
+
+def _clean_env_value(value: str) -> str:
+    return value.replace("\x00", "").strip().strip('"').strip("'").lstrip("\ufeff").strip()
 
 
 def make_run_id(text: str) -> str:
@@ -553,7 +588,17 @@ def _write_state(state: dict[str, Any]) -> None:
 def _run(command: list[str], *, timeout: int) -> dict[str, Any]:
     env = os.environ.copy()
     env.setdefault("PYTHONIOENCODING", "utf-8")
-    env.update(load_kaggle_api_tokens())
+    tokens = load_kaggle_api_tokens()
+    env.update(tokens)
+    if tokens.get("KAGGLE_USERNAME") and tokens.get("KAGGLE_KEY"):
+        runtime_home = PROJECT_ROOT / ".kaggle_runtime_home"
+        config_dir = runtime_home / ".kaggle"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        env["HOME"] = str(runtime_home)
+        env["USERPROFILE"] = str(runtime_home)
+        env["KAGGLE_CONFIG_DIR"] = str(config_dir)
+        env.pop("KAGGLE_API_TOKEN", None)
+        env.pop("KAGGLE_API_V1_TOKEN_PATH", None)
     proc = subprocess.run(
         command,
         capture_output=True,
