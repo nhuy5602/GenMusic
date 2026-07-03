@@ -19,7 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--genre", default=None, help="Optional style/genre hint.")
     generate.add_argument("--model", default="facebook/musicgen-small", help="MusicGen model on Kaggle.")
     generate.add_argument("--username", default=None, help="Kaggle username. Defaults to kaggle.json or KAGGLE_USERNAME.")
-    generate.add_argument("--machine-shape", default="NvidiaTeslaP100")
+    generate.add_argument("--machine-shape", default="NvidiaTeslaT4")
     generate.add_argument("--no-submit", action="store_true", help="Only stage Kaggle files locally.")
     generate.add_argument("--wait", action="store_true", help="Poll Kaggle until the kernel finishes, then download MP3.")
     generate.add_argument("--poll-seconds", type=int, default=60)
@@ -67,4 +67,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

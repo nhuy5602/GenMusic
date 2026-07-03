@@ -29,7 +29,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 class KaggleJobConfig:
     model: str = "facebook/musicgen-small"
     username: str | None = None
-    machine_shape: str = "NvidiaTeslaP100"
+    machine_shape: str = "NvidiaTeslaT4"
     submit: bool = True
     wait: bool = False
     poll_seconds: int = 60
@@ -120,7 +120,7 @@ def stage_text_to_music_job(
     (dataset_dir / "dataset-metadata.json").write_text(
         json.dumps(
             {
-                "title": f"GenMusic VN Request {run_id[-8:]}",
+                "title": dataset_slug,
                 "id": dataset_ref,
                 "licenses": [{"name": "other"}],
                 "subtitle": "Raw Vietnamese text request and pipeline source for Kaggle MusicGen generation.",
@@ -214,6 +214,10 @@ def submit_kaggle_job(
     state["messages"].append("Raw text request and source uploaded to Kaggle.")
     _write_state(state)
 
+    if not _wait_for_dataset_ready(state, cli):
+        _write_state(state)
+        return state
+
     pushed = _run(cli + ["kernels", "push", "-p", state["kernel_dir"]], timeout=600)
     state["history"].append(_history_item("kernels push", pushed))
     if pushed["returncode"] != 0:
@@ -243,6 +247,9 @@ def submit_kaggle_job(
 
 def refresh_kaggle_job(state_or_path: dict[str, Any] | str | Path) -> dict[str, Any]:
     state = _load_state(state_or_path)
+    if state.get("status") == "complete" and state.get("mp3_path") and Path(state["mp3_path"]).exists():
+        return state
+
     cli = kaggle_cli_command()
     if cli is None:
         state["status"] = "needs_setup"
@@ -264,9 +271,12 @@ def refresh_kaggle_job(state_or_path: dict[str, Any] | str | Path) -> dict[str, 
 
     if any(marker in text for marker in ["complete", "completed", "succeeded"]):
         state["status"] = "complete"
-        _download_kernel_output(state, cli)
+        _download_kernel_output(state, cli, expect_mp3=True)
     elif any(marker in text for marker in ["error", "failed", "cancelled", "canceled"]):
         state["status"] = "failed"
+        _download_kernel_output(state, cli, expect_mp3=False)
+        if not state.get("last_error"):
+            state["last_error"] = state.get("last_status_output", "")
     elif "running" in text:
         state["status"] = "running"
     else:
@@ -441,13 +451,13 @@ import json
 import shutil
 import subprocess
 import sys
+import traceback
 import zipfile
 from pathlib import Path
 
 
-DATASET_DIR = Path("/kaggle/input/{dataset_slug}")
-REQUEST_PATH = DATASET_DIR / "request.json"
-SOURCE_ZIP = DATASET_DIR / "genmusic_vn_source.zip"
+INPUT_ROOT = Path("/kaggle/input")
+DATASET_DIR = INPUT_ROOT / "{dataset_slug}"
 SOURCE_DIR = Path("/kaggle/working/genmusic_vn_source")
 PIPELINE_DIR = Path("/kaggle/working/pipeline_output")
 OUTPUT_DIR = Path("/kaggle/working/genmusic_vn")
@@ -461,29 +471,50 @@ def ensure(import_name: str, *pip_specs: str) -> None:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", *pip_specs])
 
 
+def find_input_file(name: str, *, required: bool = True) -> Path | None:
+    direct = DATASET_DIR / name
+    if direct.exists():
+        return direct
+    matches = sorted(INPUT_ROOT.rglob(name))
+    if matches:
+        return matches[0]
+    if not required:
+        return None
+    available = [str(path) for path in sorted(INPUT_ROOT.rglob("*")) if path.is_file()]
+    raise FileNotFoundError(
+        f"Could not find {{name}} under {{INPUT_ROOT}}. Available files: {{available[:50]}}"
+    )
+
+
+def find_extracted_source_root() -> Path:
+    candidates = sorted(
+        path.parent
+        for path in INPUT_ROOT.rglob("pyproject.toml")
+        if (path.parent / "genmusic_vn").is_dir()
+    )
+    if candidates:
+        return candidates[0]
+    available = [str(path) for path in sorted(INPUT_ROOT.rglob("*")) if path.is_file()]
+    raise FileNotFoundError(
+        f"Could not find extracted genmusic_vn source under {{INPUT_ROOT}}. Available files: {{available[:50]}}"
+    )
+
+
 def prepare_source() -> None:
     if SOURCE_DIR.exists():
         shutil.rmtree(SOURCE_DIR)
-    SOURCE_DIR.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(SOURCE_ZIP) as archive:
-        archive.extractall(SOURCE_DIR)
+    source_zip = find_input_file("genmusic_vn_source.zip", required=False)
+    if source_zip is not None:
+        SOURCE_DIR.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(source_zip) as archive:
+            archive.extractall(SOURCE_DIR)
+    else:
+        shutil.copytree(find_extracted_source_root(), SOURCE_DIR)
     sys.path.insert(0, str(SOURCE_DIR))
 
 
-def render_musicgen_mp3(request: dict, prompt: str, negative_prompt: str) -> Path:
-    ensure("audiocraft", "audiocraft")
-    from audiocraft.data.audio import audio_write
-    from audiocraft.models import MusicGen
-
-    model_name = request.get("model") or "facebook/musicgen-small"
-    duration = int(request.get("duration_seconds", 30))
-    model = MusicGen.get_pretrained(model_name)
-    model.set_generation_params(duration=duration)
-    wav = model.generate([prompt])
-    stem = OUTPUT_DIR / f"{{request.get('run_id', 'genmusic_vn')}}_musicgen"
-    audio_write(str(stem), wav[0].cpu(), model.sample_rate, strategy="loudness", loudness_compressor=True)
-    wav_path = stem.with_suffix(".wav")
-    mp3_path = OUTPUT_DIR / f"{{request.get('run_id', 'genmusic_vn')}}.mp3"
+def convert_wav_to_mp3(wav_path: Path, mp3_path: Path) -> Path:
+    mp3_path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         ["ffmpeg", "-y", "-i", str(wav_path), "-codec:a", "libmp3lame", "-qscale:a", "2", str(mp3_path)],
         check=True,
@@ -494,8 +525,82 @@ def render_musicgen_mp3(request: dict, prompt: str, negative_prompt: str) -> Pat
     return mp3_path
 
 
+def render_musicgen_mp3(request: dict, prompt: str, negative_prompt: str) -> Path:
+    ensure("transformers", "transformers")
+    ensure("accelerate", "accelerate")
+    ensure("scipy", "scipy")
+
+    import torch
+    from scipy.io import wavfile
+    from transformers import AutoProcessor, MusicgenForConditionalGeneration
+
+    model_name = request.get("model") or "facebook/musicgen-small"
+    duration = max(6, min(180, int(request.get("duration_seconds", 30))))
+    device = "cpu"
+    if torch.cuda.is_available():
+        major, _minor = torch.cuda.get_device_capability()
+        if major >= 7:
+            device = "cuda"
+    dtype = torch.float16 if device == "cuda" else torch.float32
+
+    processor = AutoProcessor.from_pretrained(model_name)
+    model = MusicgenForConditionalGeneration.from_pretrained(model_name, torch_dtype=dtype).to(device)
+    model.eval()
+
+    inputs = processor(text=[prompt], padding=True, return_tensors="pt")
+    inputs = {{key: value.to(device) for key, value in inputs.items()}}
+    frame_rate = getattr(model.config.audio_encoder, "frame_rate", 50)
+    sampling_rate = getattr(model.config.audio_encoder, "sampling_rate", 32000)
+    max_new_tokens = max(32, int(duration * frame_rate))
+
+    with torch.inference_mode():
+        audio_values = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=True,
+            guidance_scale=3.0,
+        )
+
+    audio = audio_values[0].detach().cpu().float()
+    if audio.ndim == 2:
+        audio = audio[0]
+    audio_np = audio.numpy()
+    peak = max(1e-6, float(abs(audio_np).max()))
+    audio_np = (audio_np / peak * 0.95).astype("float32")
+
+    wav_path = OUTPUT_DIR / f"{{request.get('run_id', 'genmusic_vn')}}_musicgen.wav"
+    wavfile.write(str(wav_path), rate=sampling_rate, data=audio_np)
+    mp3_path = OUTPUT_DIR / f"{{request.get('run_id', 'genmusic_vn')}}.mp3"
+    return convert_wav_to_mp3(wav_path, mp3_path)
+
+
+def render_guide_fallback_mp3(request: dict, result) -> Path:
+    from genmusic_vn.generators.base import GeneratorInput
+    from genmusic_vn.generators.guide_track import GuideTrackGenerator
+
+    generator_input = GeneratorInput(
+        run_id=result.run_id,
+        text=result.input_text,
+        prompt=result.prompt,
+        negative_prompt=result.negative_prompt,
+        emotion=result.emotion,
+        harmony=result.harmony,
+        lyrics=result.lyrics,
+        melody=result.melody,
+        duration_seconds=int(request.get("duration_seconds", 30)),
+    )
+    fallback_dir = OUTPUT_DIR / "fallback"
+    generated = GuideTrackGenerator().generate(generator_input, fallback_dir)
+    wav_path = next(Path(item.path) for item in generated if item.kind == "audio")
+    mp3_path = OUTPUT_DIR / f"{{request.get('run_id', 'genmusic_vn')}}_fallback.mp3"
+    return convert_wav_to_mp3(wav_path, mp3_path)
+
+
 def main() -> None:
-    request = json.loads(REQUEST_PATH.read_text(encoding="utf-8"))
+    request_path = find_input_file("request.json")
+    if request_path is None:
+        raise FileNotFoundError("request.json was not found in Kaggle input.")
+    request = json.loads(request_path.read_text(encoding="utf-8"))
     prepare_source()
 
     from genmusic_vn.pipeline import create_music_project
@@ -509,14 +614,23 @@ def main() -> None:
         genre=request.get("genre"),
         render_audio=False,
     )
-    mp3_path = render_musicgen_mp3(request, result.prompt, result.negative_prompt)
+    musicgen_error = ""
+    try:
+        mp3_path = render_musicgen_mp3(request, result.prompt, result.negative_prompt)
+        generation_backend = "musicgen"
+    except Exception as exc:
+        musicgen_error = "".join(traceback.format_exception(exc))[-4000:]
+        (OUTPUT_DIR / "musicgen_error.txt").write_text(musicgen_error, encoding="utf-8")
+        mp3_path = render_guide_fallback_mp3(request, result)
+        generation_backend = "guide_fallback"
 
     report = to_plain_data(result)
     final = {{
         "run_id": request.get("run_id"),
-        "backend": "musicgen",
+        "backend": generation_backend,
         "model": request.get("model"),
         "mp3_path": str(mp3_path),
+        "musicgen_error": musicgen_error,
         "prompt": result.prompt,
         "negative_prompt": result.negative_prompt,
         "analysis": report,
@@ -557,19 +671,83 @@ def _commands(dataset_dir: Path, kernel_dir: Path, download_dir: Path, kernel_re
     ]
 
 
-def _download_kernel_output(state: dict[str, Any], cli: list[str]) -> None:
+def _wait_for_dataset_ready(
+    state: dict[str, Any],
+    cli: list[str],
+    *,
+    timeout_seconds: int = 300,
+    poll_seconds: int = 5,
+) -> bool:
+    state["status"] = "dataset_processing"
+    _append_message_once(state, "Waiting for Kaggle dataset to become ready.")
+    _write_state(state)
+
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        result = _run(cli + ["datasets", "status", state["dataset_ref"], "--format", "json"], timeout=120)
+        state["history"].append(_history_item("datasets status", result))
+        if result["returncode"] != 0:
+            state["status"] = "failed"
+            state["last_error"] = _summarize_cli_error(result)
+            _append_message_once(state, "Could not read Kaggle dataset status.")
+            return False
+
+        status_text = _dataset_status_from_output(result["stdout"])
+        state["last_dataset_status"] = status_text
+        if status_text in {"ready", "complete", "completed"}:
+            state["status"] = "dataset_ready"
+            _append_message_once(state, "Kaggle dataset is ready.")
+            _write_state(state)
+            return True
+        if status_text in {"error", "failed", "cancelled", "canceled"}:
+            state["status"] = "failed"
+            state["last_error"] = result["stdout"] or "Kaggle dataset processing failed."
+            _append_message_once(state, "Kaggle dataset processing failed.")
+            return False
+
+        _write_state(state)
+        time.sleep(max(1, poll_seconds))
+
+    state["status"] = "timeout"
+    state["last_error"] = "Timed out while waiting for Kaggle dataset to become ready."
+    _append_message_once(state, state["last_error"])
+    return False
+
+
+def _dataset_status_from_output(output: str) -> str:
+    text = output.strip()
+    if not text:
+        return ""
+    try:
+        data = json.loads(text)
+        status = data.get("status")
+        return str(status).strip().lower() if status is not None else ""
+    except json.JSONDecodeError:
+        return text.lower()
+
+
+def _download_kernel_output(state: dict[str, Any], cli: list[str], *, expect_mp3: bool) -> None:
     download_dir = Path(state["download_dir"])
     download_dir.mkdir(parents=True, exist_ok=True)
     output = _run(cli + ["kernels", "output", state["kernel_ref"], "-p", str(download_dir)], timeout=1800)
     state["history"].append(_history_item("kernels output", output))
-    if output["returncode"] != 0:
-        state["last_error"] = _summarize_cli_error(output)
-        state["messages"].append("Kaggle job completed, but output download failed.")
-        return
+    output_error = _summarize_cli_error(output) if output["returncode"] != 0 else ""
     files = [path for path in sorted(download_dir.rglob("*")) if path.is_file()]
     mp3_files = [path for path in files if path.suffix.lower() == ".mp3"]
     state["downloaded_files"] = [str(path) for path in files]
+    _apply_kaggle_result_metadata(state, files)
+    if output_error and not files:
+        state["last_error"] = output_error
+        _append_message_once(state, "Kaggle output download failed.")
+        return
+    if not state.get("last_error") and not mp3_files:
+        state["last_error"] = _summarize_downloaded_logs(files)
     if mp3_files:
+        _remove_messages(
+            state,
+            "Kaggle output download failed.",
+            "Kaggle output downloaded, but no MP3 file was found.",
+        )
         mp3_path = mp3_files[0]
         state["mp3_path"] = str(mp3_path)
         try:
@@ -577,9 +755,81 @@ def _download_kernel_output(state: dict[str, Any], cli: list[str]) -> None:
             state["mp3_url"] = "/outputs/" + f"{state['run_id']}/{relative.as_posix()}"
         except ValueError:
             state["mp3_url"] = ""
-        state["messages"].append("Kaggle output MP3 downloaded to local machine.")
+        if state.get("generation_backend") == "guide_fallback":
+            _append_message_once(state, "MusicGen failed on Kaggle; fallback MP3 downloaded.")
+        else:
+            _append_message_once(state, "Kaggle output MP3 downloaded to local machine.")
+        if output_error:
+            state["download_warning"] = output_error
+    elif expect_mp3:
+        state["status"] = "failed"
+        if output_error and not state.get("last_error"):
+            state["last_error"] = output_error
+        _append_message_once(state, "Kaggle output downloaded, but no MP3 file was found.")
     else:
-        state["messages"].append("Kaggle output downloaded, but no MP3 file was found.")
+        if output_error and not state.get("last_error"):
+            state["last_error"] = output_error
+        _append_message_once(state, "Kaggle error log downloaded.")
+
+
+def _apply_kaggle_result_metadata(state: dict[str, Any], files: list[Path]) -> None:
+    for path in files:
+        if path.name != "kaggle_result.json":
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        backend = data.get("backend")
+        if isinstance(backend, str):
+            state["generation_backend"] = backend
+        musicgen_error = data.get("musicgen_error")
+        if isinstance(musicgen_error, str) and musicgen_error.strip():
+            state["last_error"] = musicgen_error.strip()[-1000:]
+        return
+
+
+def _summarize_downloaded_logs(files: list[Path]) -> str:
+    log_files = [path for path in files if path.suffix.lower() == ".log"]
+    if not log_files:
+        return ""
+    return _summarize_log_file(log_files[0])
+
+
+def _summarize_log_file(path: Path) -> str:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    lines: list[str] = []
+    try:
+        data = json.loads(text)
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    value = item.get("data")
+                    if isinstance(value, str):
+                        lines.extend(value.splitlines())
+    except json.JSONDecodeError:
+        lines = text.splitlines()
+    cleaned = [line.strip() for line in lines if line.strip()]
+    interesting = [
+        line
+        for line in cleaned
+        if any(marker in line.lower() for marker in ["error", "exception", "traceback", "filenotfound", "runtimeerror"])
+    ]
+    selected = interesting[-8:] if interesting else cleaned[-8:]
+    return " | ".join(selected)[-1000:]
+
+
+def _append_message_once(state: dict[str, Any], message: str) -> None:
+    if message not in state.setdefault("messages", []):
+        state["messages"].append(message)
+
+
+def _remove_messages(state: dict[str, Any], *messages: str) -> None:
+    blocked = set(messages)
+    state["messages"] = [message for message in state.get("messages", []) if message not in blocked]
 
 
 def _load_state(state_or_path: dict[str, Any] | str | Path) -> dict[str, Any]:
@@ -595,6 +845,7 @@ def _write_state(state: dict[str, Any]) -> None:
 def _run(command: list[str], *, timeout: int) -> dict[str, Any]:
     env = os.environ.copy()
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    env.setdefault("PYTHONUTF8", "1")
     tokens = load_kaggle_api_tokens()
     env.update(tokens)
     if tokens.get("KAGGLE_USERNAME") and tokens.get("KAGGLE_KEY"):
