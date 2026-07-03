@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from hashlib import sha1
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 
 class KaggleAutoError(RuntimeError):
@@ -136,7 +137,7 @@ def stage_text_to_music_job(
         json.dumps(
             {
                 "id": kernel_ref,
-                "title": f"GenMusic VN MusicGen {run_id[-8:]}",
+                "title": kernel_slug,
                 "code_file": "run_genmusic_vn.py",
                 "language": "python",
                 "kernel_type": "script",
@@ -178,6 +179,7 @@ def stage_text_to_music_job(
         "mp3_url": "",
         "commands": commands,
         "messages": ["Kaggle MusicGen job files prepared."],
+        "last_error": "",
         "history": [],
         "downloaded_files": [],
     }
@@ -203,6 +205,7 @@ def submit_kaggle_job(
     state["history"].append(_history_item("datasets create", dataset))
     if dataset["returncode"] != 0:
         state["status"] = "failed"
+        state["last_error"] = _summarize_cli_error(dataset)
         state["messages"].append("Dataset upload failed.")
         _write_state(state)
         return state
@@ -215,6 +218,7 @@ def submit_kaggle_job(
     state["history"].append(_history_item("kernels push", pushed))
     if pushed["returncode"] != 0:
         state["status"] = "failed"
+        state["last_error"] = _summarize_cli_error(pushed)
         state["messages"].append("Kernel submit failed.")
         _write_state(state)
         return state
@@ -253,6 +257,7 @@ def refresh_kaggle_job(state_or_path: dict[str, Any] | str | Path) -> dict[str, 
 
     if status["returncode"] != 0:
         state["status"] = "failed"
+        state["last_error"] = _summarize_cli_error(status)
         state["messages"].append("Could not read Kaggle kernel status.")
         _write_state(state)
         return state
@@ -415,8 +420,9 @@ def _clean_env_value(value: str) -> str:
 
 def make_run_id(text: str) -> str:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    nonce = uuid4().hex[:6]
     digest = sha1(text.encode("utf-8")).hexdigest()[:8]
-    return f"{timestamp}-{digest}"
+    return f"{timestamp}-{nonce}-{digest}"
 
 
 def slugify(value: str, max_length: int = 50) -> str:
@@ -557,6 +563,7 @@ def _download_kernel_output(state: dict[str, Any], cli: list[str]) -> None:
     output = _run(cli + ["kernels", "output", state["kernel_ref"], "-p", str(download_dir)], timeout=1800)
     state["history"].append(_history_item("kernels output", output))
     if output["returncode"] != 0:
+        state["last_error"] = _summarize_cli_error(output)
         state["messages"].append("Kaggle job completed, but output download failed.")
         return
     files = [path for path in sorted(download_dir.rglob("*")) if path.is_file()]
@@ -625,6 +632,12 @@ def _history_item(label: str, result: dict[str, Any]) -> dict[str, Any]:
         "stdout": result["stdout"][-4000:],
         "stderr": result["stderr"][-4000:],
     }
+
+
+def _summarize_cli_error(result: dict[str, Any]) -> str:
+    text = "\n".join(part for part in [result.get("stderr", ""), result.get("stdout", "")] if part)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return " | ".join(lines[-4:])[-1000:]
 
 
 def _now() -> str:

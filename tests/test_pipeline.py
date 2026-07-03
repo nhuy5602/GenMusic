@@ -9,7 +9,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from genmusic_vn.emotion import analyze_emotion
-from genmusic_vn.kaggle_auto import KaggleJobConfig, kaggle_cli_command, load_kaggle_api_tokens, slugify, submit_text_to_music_job
+from genmusic_vn.kaggle_auto import (
+    KaggleJobConfig,
+    kaggle_cli_command,
+    load_kaggle_api_tokens,
+    make_run_id,
+    slugify,
+    submit_text_to_music_job,
+)
 from genmusic_vn.music_theory import chord_notes
 from genmusic_vn.pipeline import create_music_project
 from genmusic_vn.stylebank import get_emotion_music, load_stylebank
@@ -85,6 +92,11 @@ class PipelineTests(unittest.TestCase):
 
     def test_slugify_keeps_kaggle_safe_slug(self) -> None:
         self.assertEqual(slugify("GenMusic Việt Nam Demo!!!", 50), "genmusic-viet-nam-demo")
+
+    def test_make_run_id_avoids_fast_duplicate_submissions(self) -> None:
+        first = make_run_id("same vietnamese text")
+        second = make_run_id("same vietnamese text")
+        self.assertNotEqual(first, second)
 
     def test_stylebank_loads_emotion_music_dataset(self) -> None:
         bank = load_stylebank()

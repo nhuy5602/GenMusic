@@ -175,6 +175,11 @@ input[type="range"] {
 }
 
 .primary-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
   min-height: 44px;
   border: 0;
   border-radius: 6px;
@@ -182,10 +187,68 @@ input[type="range"] {
   background: var(--accent);
   font-weight: 750;
   cursor: pointer;
+  overflow: hidden;
+  transition: background-color 160ms ease, opacity 160ms ease;
 }
 
-.primary-button:hover {
+.primary-button:hover:not(:disabled) {
   background: var(--accent-strong);
+}
+
+.primary-button:disabled {
+  cursor: wait;
+}
+
+.primary-button.is-loading {
+  background: var(--accent-strong);
+}
+
+.primary-button.is-loading::before {
+  position: absolute;
+  inset: 0;
+  content: "";
+  background: linear-gradient(
+    110deg,
+    transparent 0%,
+    transparent 34%,
+    rgba(255, 255, 255, 0.22) 48%,
+    transparent 62%,
+    transparent 100%
+  );
+  transform: translateX(-100%);
+  animation: button-skeleton 1.15s ease-in-out infinite;
+}
+
+.button-text,
+.button-loader {
+  position: relative;
+  z-index: 1;
+}
+
+.button-loader {
+  display: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #ffffff;
+  border-radius: 999px;
+  animation: button-spin 780ms linear infinite;
+}
+
+.primary-button.is-loading .button-loader {
+  display: inline-block;
+}
+
+@keyframes button-skeleton {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes button-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .status-pill {

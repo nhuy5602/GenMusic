@@ -33,7 +33,10 @@
             </label>
           </div>
 
-          <button class="primary-button" type="submit">Generate MP3</button>
+          <button id="generate-button" class="primary-button" type="submit" aria-busy="false">
+            <span class="button-text">Generate MP3</span>
+            <span class="button-loader" aria-hidden="true"></span>
+          </button>
         </form>
 
         <section class="result-panel" aria-live="polite">
@@ -55,4 +58,3 @@
     <script src="/web/app.js"></script>
   </body>
 </html>
-

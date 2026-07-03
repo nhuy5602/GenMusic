@@ -2,11 +2,15 @@ const form = document.querySelector("#generate-form");
 const duration = document.querySelector("#duration");
 const durationValue = document.querySelector("#duration-value");
 const statusPill = document.querySelector("#status-pill");
+const generateButton = document.querySelector("#generate-button");
+const buttonText = generateButton.querySelector(".button-text");
 const kaggleJobBox = document.querySelector("#kaggle-job");
 const downloads = document.querySelector("#downloads");
 const audioSlot = document.querySelector("#audio-slot");
 const canvas = document.querySelector("#wave-canvas");
 const ctx = canvas.getContext("2d");
+let isGenerating = false;
+let activePollId = 0;
 
 duration.addEventListener("input", () => {
   durationValue.textContent = `${duration.value}s`;
@@ -14,6 +18,9 @@ duration.addEventListener("input", () => {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (isGenerating) return;
+
+  setGenerating(true, "Submitting...");
   statusPill.textContent = "Submitting";
   downloads.innerHTML = "";
   audioSlot.textContent = "Waiting for Kaggle MusicGen output...";
@@ -40,12 +47,23 @@ form.addEventListener("submit", async (event) => {
     statusPill.textContent = job.status === "needs_setup" ? "Needs API" : "Kaggle";
     if (!["needs_setup", "failed", "complete"].includes(job.status)) {
       pollKaggle(job.run_id);
+    } else {
+      setGenerating(false);
     }
   } catch (error) {
     statusPill.textContent = "Error";
     kaggleJobBox.textContent = error.message;
+    setGenerating(false);
   }
 });
+
+function setGenerating(active, label = "Generate MP3") {
+  isGenerating = active;
+  generateButton.disabled = active;
+  generateButton.classList.toggle("is-loading", active);
+  generateButton.setAttribute("aria-busy", active ? "true" : "false");
+  buttonText.textContent = label;
+}
 
 function renderJob(job) {
   const lines = [
@@ -59,6 +77,9 @@ function renderJob(job) {
   if (job.mp3_path) {
     lines.push("", `MP3: ${job.mp3_path}`);
   }
+  if (job.last_error) {
+    lines.push("", `Error detail: ${job.last_error}`);
+  }
   if (job.commands?.length && job.status === "needs_setup") {
     lines.push("", "Run after Kaggle API setup:", ...job.commands);
   }
@@ -69,25 +90,36 @@ function renderJob(job) {
 }
 
 async function pollKaggle(runId) {
+  const pollId = activePollId + 1;
+  activePollId = pollId;
+  setGenerating(true, "Generating...");
   for (let i = 0; i < 120; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 15000));
+    if (pollId !== activePollId) return;
     try {
       const response = await fetch(`/api/kaggle/status?run_id=${encodeURIComponent(runId)}`);
       const job = await response.json();
-      if (!response.ok || job.error) return;
+      if (!response.ok || job.error) {
+        setGenerating(false);
+        return;
+      }
       renderJob(job);
       if (job.status === "complete") {
         statusPill.textContent = "Done";
+        setGenerating(false);
         return;
       }
       if (job.status === "failed" || job.status === "needs_setup") {
         statusPill.textContent = job.status === "needs_setup" ? "Needs API" : "Error";
+        setGenerating(false);
         return;
       }
     } catch (_error) {
+      setGenerating(false);
       return;
     }
   }
+  setGenerating(false);
 }
 
 function renderAudio(job) {
@@ -127,4 +159,3 @@ function drawWave(status = "idle") {
 }
 
 drawWave();
-

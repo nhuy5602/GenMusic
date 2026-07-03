@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -14,6 +15,7 @@ from .kaggle_auto import KaggleJobConfig, refresh_kaggle_job, submit_text_to_mus
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = PROJECT_ROOT / "web"
 OUTPUT_ROOT = PROJECT_ROOT / "outputs"
+SUBMISSION_LOCK = threading.Lock()
 
 
 class GenMusicHandler(BaseHTTPRequestHandler):
@@ -58,6 +60,13 @@ class GenMusicHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "Not found."}, HTTPStatus.NOT_FOUND)
             return
 
+        if not SUBMISSION_LOCK.acquire(blocking=False):
+            self._send_json(
+                {"error": "Another generation request is already being submitted. Please wait for it to finish."},
+                HTTPStatus.CONFLICT,
+            )
+            return
+
         try:
             length = int(self.headers.get("content-length", "0"))
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -75,6 +84,8 @@ class GenMusicHandler(BaseHTTPRequestHandler):
             self._send_json(job)
         except Exception as exc:  # pragma: no cover - server boundary
             self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        finally:
+            SUBMISSION_LOCK.release()
 
     def log_message(self, format: str, *args) -> None:
         print(f"{self.address_string()} - {format % args}")
@@ -128,4 +139,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
