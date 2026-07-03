@@ -72,6 +72,67 @@ VI_STOPWORDS = {
 }
 
 
+VI_STOPWORDS.update(
+    {
+        "ấy",
+        "bằng",
+        "bị",
+        "các",
+        "cái",
+        "cần",
+        "càng",
+        "chỉ",
+        "chưa",
+        "có",
+        "còn",
+        "của",
+        "cùng",
+        "cũng",
+        "đã",
+        "đang",
+        "để",
+        "đến",
+        "đi",
+        "đó",
+        "được",
+        "gì",
+        "hơn",
+        "không",
+        "là",
+        "lại",
+        "làm",
+        "lên",
+        "mà",
+        "mình",
+        "một",
+        "này",
+        "nên",
+        "nếu",
+        "người",
+        "như",
+        "những",
+        "nơi",
+        "nữa",
+        "ở",
+        "rằng",
+        "rất",
+        "rồi",
+        "sẽ",
+        "tại",
+        "thì",
+        "trên",
+        "tôi",
+        "từ",
+        "và",
+        "vẫn",
+        "vào",
+        "về",
+        "vì",
+        "với",
+    }
+)
+
+
 def normalize_text(text: str) -> str:
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"[ \t]+", " ", text)
@@ -111,4 +172,3 @@ def compact_line(text: str, max_words: int = 10) -> str:
     else:
         picked = words[:max_words]
     return " ".join(picked)
-

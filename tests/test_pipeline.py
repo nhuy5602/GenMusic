@@ -78,13 +78,20 @@ class PipelineTests(unittest.TestCase):
     def test_short_text_is_rewritten_as_short_song_with_vocal_plan(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             result = create_music_project(
-                "Mot chieu mua toi nho pho cu. Anh den van cho trong tim.",
+                "Một chiều mưa, tôi nhớ về những con phố cũ. Có lời hứa chưa kịp nói, có ánh đèn vẫn chờ trong tim.",
                 output_root=temp,
                 duration_seconds=8,
                 render_audio=False,
             )
+            lyrics_text = "\n".join(result.lyrics.full_song)
             self.assertEqual(result.lyrics.song_form, ["Verse", "Chorus", "Outro"])
             self.assertFalse(any("[Verse 2]" in line for line in result.lyrics.full_song))
+            self.assertIn("ngày xưa nghiêng trong màu nắng cũ", lyrics_text)
+            self.assertIn("chiều ơi, ở lại thêm một lần", lyrics_text)
+            self.assertIn("bình yên nằm lại trên đôi tay", lyrics_text)
+            self.assertNotIn("ngay xua", lyrics_text)
+            self.assertNotIn("o lai", lyrics_text)
+            self.assertNotIn("binh yen", lyrics_text)
             self.assertIn("vocal plan:", result.prompt)
             self.assertNotIn("no lead vocal", result.prompt)
             self.assertNotIn("lyric lines:", result.prompt)
@@ -134,6 +141,7 @@ class PipelineTests(unittest.TestCase):
         sadness = get_emotion_music("sadness")
         self.assertEqual(sadness["scale"], "minor")
         self.assertIn("sao_truc", sadness["vietnamese_instruments"])
+        self.assertIn("ngày xưa nghiêng", load_stylebank()["lyric_patterns"]["patterns"]["nostalgic"]["chorus"][0])
 
     def test_kaggle_api_tokens_can_be_read_from_environment(self) -> None:
         old_username = os.environ.get("KAGGLE_USERNAME")
