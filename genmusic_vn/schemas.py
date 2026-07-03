@@ -47,6 +47,19 @@ class LyricDraft:
     chorus: list[str]
     bridge: list[str]
     hook: str
+    song_form: list[str] = field(default_factory=list)
+    full_song: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class TextPlan:
+    mode: str
+    sentence_count: int
+    word_count: int
+    keywords: list[str]
+    representative_sentences: list[str]
+    condensed_text: str
+    sections: dict[str, list[str]]
 
 
 @dataclass(frozen=True)
@@ -67,6 +80,7 @@ class MusicResult:
     harmony: HarmonyPlan
     melody: list[NoteEvent]
     lyrics: LyricDraft
+    text_plan: TextPlan
     prompt: str
     negative_prompt: str
     files: list[GeneratedFile] = field(default_factory=list)
@@ -80,4 +94,3 @@ def to_plain_data(value: Any) -> Any:
     if isinstance(value, list):
         return [to_plain_data(item) for item in value]
     return value
-

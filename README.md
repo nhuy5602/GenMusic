@@ -6,13 +6,14 @@ Final architecture:
 
 ```text
 Local web/CLI
-  input: Vietnamese text
+  input: Vietnamese text, from 1-2 sentences to dozens of sentences
   output: MP3 file link
 
 Kaggle GPU
+  long-text planning and condensation
   Vietnamese emotion analysis
   Vietnamese music stylebank lookup
-  lyric rewriting
+  full song lyric rewriting
   key / scale / chord / melody planning
   MusicGen inference
   WAV -> MP3 conversion
@@ -40,6 +41,21 @@ This dataset is uploaded to Kaggle inside `genmusic_vn_source.zip`. The Kaggle k
 - genre prompt templates
 - lyric imagery and chorus/bridge patterns
 - MusicGen prompt keywords for Vietnamese emotional context
+
+## Long Text Handling
+
+The input can be a short prompt, 1-2 sentences, or a longer Vietnamese passage with dozens of sentences.
+
+For long text, the Kaggle-side pipeline creates a `TextPlan`:
+
+- counts sentences and words
+- extracts keywords and motifs
+- keeps representative sentences from the opening, development and ending
+- builds a condensed text for melody, lyric and prompt generation
+- rewrites the content into a complete song structure:
+  `Verse 1 -> Pre-Chorus -> Chorus -> Verse 2 -> Bridge -> Final Chorus -> Outro`
+
+The original text is still preserved in `request.json`; only the music-generation prompt is condensed.
 
 ## Why MusicGen Only
 
@@ -141,8 +157,9 @@ genmusic_vn/
   cli.py              # local CLI client
   kaggle_auto.py      # Kaggle dataset/kernel automation
   emotion.py          # Vietnamese emotion analysis, executed on Kaggle
+  text_planner.py     # long input planning and condensation, executed on Kaggle
   music_theory.py     # key, scale, chord, melody planning, executed on Kaggle
-  lyric_writer.py     # Vietnamese lyric rewrite, executed on Kaggle
+  lyric_writer.py     # complete song lyric rewrite, executed on Kaggle
   prompt_builder.py   # MusicGen prompt builder, executed on Kaggle
   pipeline.py         # Kaggle-side orchestration
 datasets/

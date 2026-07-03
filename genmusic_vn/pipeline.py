@@ -12,6 +12,7 @@ from .lyric_writer import rewrite_lyrics
 from .music_theory import build_harmony, build_melody_events
 from .prompt_builder import build_music_prompt
 from .schemas import GeneratedFile, MusicResult, to_plain_data
+from .text_planner import build_text_plan
 from .text_utils import normalize_text
 
 
@@ -44,10 +45,12 @@ def create_music_project(
     run_dir = Path(output_root) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    text_plan = build_text_plan(normalized)
+    generation_text = text_plan.condensed_text or normalized
     emotion = analyze_emotion(normalized)
     harmony = build_harmony(emotion, duration_seconds)
-    melody = build_melody_events(normalized, harmony, duration_seconds)
-    lyrics = rewrite_lyrics(normalized, emotion, harmony)
+    melody = build_melody_events(generation_text, harmony, duration_seconds)
+    lyrics = rewrite_lyrics(generation_text, emotion, harmony)
     prompt, negative_prompt = build_music_prompt(emotion, harmony, lyrics, genre=genre)
 
     generator_input = GeneratorInput(
@@ -75,6 +78,7 @@ def create_music_project(
         harmony=harmony,
         melody=melody,
         lyrics=lyrics,
+        text_plan=text_plan,
         prompt=prompt,
         negative_prompt=negative_prompt,
         files=files,
@@ -97,6 +101,7 @@ def create_music_project(
         harmony=result.harmony,
         melody=result.melody,
         lyrics=result.lyrics,
+        text_plan=result.text_plan,
         prompt=result.prompt,
         negative_prompt=result.negative_prompt,
         files=files,
@@ -115,4 +120,5 @@ def _prompt_pack(result: MusicResult) -> dict:
         "harmony": to_plain_data(result.harmony),
         "emotion": to_plain_data(result.emotion),
         "melody": to_plain_data(result.melody),
+        "text_plan": to_plain_data(result.text_plan),
     }

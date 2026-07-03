@@ -28,17 +28,22 @@ def _polish_line(line: str) -> str:
     return line.strip(" ,.;:-").lower()
 
 
-def _make_verse_lines(text: str) -> list[str]:
+def _line_from_sentence(sentence: str, max_words: int = 9) -> str:
+    return _polish_line(compact_line(sentence, max_words=max_words))
+
+
+def _make_verse_lines(text: str, offset: int = 0) -> list[str]:
     sentences = split_sentences(text)
     lines: list[str] = []
-    for sentence in sentences:
-        compacted = compact_line(sentence, max_words=9)
+    selected = sentences[offset : offset + 4]
+    for sentence in selected:
+        compacted = _line_from_sentence(sentence, max_words=9)
         if compacted:
-            lines.append(_polish_line(compacted))
+            lines.append(compacted)
         if len(lines) >= 4:
             break
 
-    keywords = extract_keywords(text, 8)
+    keywords = extract_keywords(text, 10)
     while len(lines) < 4:
         if keywords:
             seed = " ".join(keywords[: min(4, len(keywords))])
@@ -47,6 +52,16 @@ def _make_verse_lines(text: str) -> list[str]:
         else:
             lines.append("mot cau ca di qua dem dai")
     return lines[:4]
+
+
+def _make_pre_chorus(text: str, emotion: EmotionProfile) -> list[str]:
+    keywords = extract_keywords(text, 8)
+    motif = keywords[0] if keywords else emotion.label_vi
+    if emotion.valence < -0.2:
+        return [f"ta giu {motif} o giua lang im", "de trai tim tim lai loi ve"]
+    if emotion.energy > 0.65:
+        return [f"ta goi {motif} len bang nhip tho", "de buoc chan khong dung lai"]
+    return [f"ta nghe {motif} di qua that khe", "roi de long minh cham lai hon"]
 
 
 def _make_bridge(text: str, emotion: EmotionProfile, harmony: HarmonyPlan) -> list[str]:
@@ -63,23 +78,85 @@ def _make_bridge(text: str, emotion: EmotionProfile, harmony: HarmonyPlan) -> li
     return [f"khi {center} nam yen trong hoi tho", f"{harmony.key} {harmony.scale} diu ta cham thoi"]
 
 
-def rewrite_lyrics(text: str, emotion: EmotionProfile, harmony: HarmonyPlan) -> LyricDraft:
+def _make_chorus(text: str, emotion: EmotionProfile) -> list[str]:
     keywords = extract_keywords(text, 10)
-    title = _title_from_keywords(keywords, text)
-    verse = _make_verse_lines(text)
-
     motif = keywords[0] if keywords else emotion.label_vi
     pattern = get_lyric_pattern(emotion.label)
     template = pattern.get("chorus") or DEFAULT_CHORUS.get(emotion.label, DEFAULT_CHORUS["calm"])
-    chorus = [
+    return [
         _polish_line(template[0]),
         _polish_line(f"{motif} oi, o lai them mot lan"),
         _polish_line(template[1]),
         _polish_line("cho cau hat tim thay duong ve"),
     ]
+
+
+def _make_outro(chorus: list[str], emotion: EmotionProfile) -> list[str]:
+    if emotion.valence < -0.2:
+        return [chorus[-1], "roi dem cung hoa thanh binh minh"]
+    if emotion.label in {"hope", "joy"}:
+        return [chorus[-1], "ngay moi mo ra trong tieng ca"]
+    return [chorus[-1], "binh yen nam lai tren doi tay"]
+
+
+def _build_full_song(
+    title: str,
+    verse1: list[str],
+    pre_chorus: list[str],
+    chorus: list[str],
+    verse2: list[str],
+    bridge: list[str],
+    outro: list[str],
+) -> tuple[list[str], list[str]]:
+    song_form = ["Verse 1", "Pre-Chorus", "Chorus", "Verse 2", "Bridge", "Final Chorus", "Outro"]
+    full_song = [
+        f"[Title] {title}",
+        "",
+        "[Verse 1]",
+        *verse1,
+        "",
+        "[Pre-Chorus]",
+        *pre_chorus,
+        "",
+        "[Chorus]",
+        *chorus,
+        "",
+        "[Verse 2]",
+        *verse2,
+        "",
+        "[Bridge]",
+        *bridge,
+        "",
+        "[Final Chorus]",
+        *chorus[:2],
+        *chorus,
+        "",
+        "[Outro]",
+        *outro,
+    ]
+    return song_form, full_song
+
+
+def rewrite_lyrics(text: str, emotion: EmotionProfile, harmony: HarmonyPlan) -> LyricDraft:
+    keywords = extract_keywords(text, 10)
+    title = _title_from_keywords(keywords, text)
+    verse1 = _make_verse_lines(text, offset=0)
+    verse2 = _make_verse_lines(text, offset=4)
+    pre_chorus = _make_pre_chorus(text, emotion)
+    chorus = _make_chorus(text, emotion)
     bridge = _make_bridge(text, emotion, harmony)
+    outro = _make_outro(chorus, emotion)
     hook_words = tokenize_words(chorus[1])[:6]
     hook = " ".join(hook_words) if hook_words else chorus[1]
+    song_form, full_song = _build_full_song(title, verse1, pre_chorus, chorus, verse2, bridge, outro)
 
-    return LyricDraft(title=title, verse=verse, chorus=chorus, bridge=bridge, hook=hook)
+    return LyricDraft(
+        title=title,
+        verse=verse1,
+        chorus=chorus,
+        bridge=bridge,
+        hook=hook,
+        song_form=song_form,
+        full_song=full_song,
+    )
 

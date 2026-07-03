@@ -29,6 +29,7 @@ def build_music_prompt(
     traits = ", ".join(harmony.music_traits)
     mood = MOOD_EN.get(emotion.label, "warm, expressive")
     lyric_hint = " / ".join(lyrics.chorus[:2])
+    song_form = " -> ".join(lyrics.song_form) if lyrics.song_form else "verse -> chorus -> bridge"
     emotion_style = get_emotion_music(emotion.label)
     genre_style = match_genre_template(genre, emotion.label)
     genre_text = genre or genre_style.get("prompt_prefix") or genre_text
@@ -43,6 +44,7 @@ def build_music_prompt(
         f"{harmony.time_signature}; key {harmony.key} {harmony.scale}; "
         f"chord progression {chords}; instruments: {instruments}; "
         f"arrangement: {arrangement}; clear melodic motif following Vietnamese speech-tone contours; "
+        f"song form: {song_form}; "
         f"Vietnamese stylebank cues: {stylebank_context}; "
         f"background music for Vietnamese lyrics titled '{lyrics.title}', hook idea: '{lyric_hint}'; "
         "no lead vocal, no copyrighted melody, clean mix, loopable ending"

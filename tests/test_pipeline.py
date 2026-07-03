@@ -36,6 +36,31 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("prompt", pack)
             self.assertEqual(pack["duration_seconds"], 8)
 
+    def test_long_text_is_planned_and_rewritten_as_full_song(self) -> None:
+        long_text = " ".join(
+            [
+                f"Cau chuyen thu {index} noi ve con pho cu, mua dem va nhung loi hua con do."
+                for index in range(1, 26)
+            ]
+            + [
+                "Sau tat ca, nhan vat tim thay hy vong, anh sang va mot ngay moi dang mo ra."
+            ]
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            result = create_music_project(
+                long_text,
+                output_root=temp,
+                duration_seconds=12,
+                render_audio=False,
+            )
+            self.assertEqual(result.text_plan.mode, "long")
+            self.assertGreaterEqual(result.text_plan.sentence_count, 26)
+            self.assertLess(len(result.text_plan.representative_sentences), result.text_plan.sentence_count)
+            self.assertIn("hy vong", result.text_plan.condensed_text)
+            self.assertIn("Final Chorus", result.lyrics.song_form)
+            self.assertTrue(any("[Verse 2]" in line for line in result.lyrics.full_song))
+            self.assertIn("song form:", result.prompt)
+
     def test_kaggle_job_stages_raw_text_request_and_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             job = submit_text_to_music_job(
