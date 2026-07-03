@@ -521,7 +521,7 @@ def prepare_source() -> None:
 def convert_wav_to_mp3(wav_path: Path, mp3_path: Path) -> Path:
     mp3_path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["ffmpeg", "-y", "-i", str(wav_path), "-codec:a", "libmp3lame", "-qscale:a", "2", str(mp3_path)],
+        ["ffmpeg", "-y", "-i", str(wav_path), "-codec:a", "libmp3lame", "-qscale:a", "0", str(mp3_path)],
         check=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -534,6 +534,7 @@ def render_musicgen_mp3(request: dict, prompt: str, negative_prompt: str) -> Pat
     ensure("transformers", "transformers")
     ensure("accelerate", "accelerate")
     ensure("scipy", "scipy")
+    ensure("numpy", "numpy")
 
     import torch
     from scipy.io import wavfile
@@ -563,20 +564,40 @@ def render_musicgen_mp3(request: dict, prompt: str, negative_prompt: str) -> Pat
             **inputs,
             max_new_tokens=max_new_tokens,
             do_sample=True,
-            guidance_scale=3.0,
+            guidance_scale=2.2,
+            temperature=0.85,
+            top_k=250,
         )
 
     audio = audio_values[0].detach().cpu().float()
     if audio.ndim == 2:
         audio = audio[0]
-    audio_np = audio.numpy()
-    peak = max(1e-6, float(abs(audio_np).max()))
-    audio_np = (audio_np / peak * 0.95).astype("float32")
+    audio_np = postprocess_audio(audio.numpy(), sampling_rate)
 
     wav_path = OUTPUT_DIR / f"{{request.get('run_id', 'genmusic_vn')}}_musicgen.wav"
     wavfile.write(str(wav_path), rate=sampling_rate, data=audio_np)
     mp3_path = OUTPUT_DIR / f"{{request.get('run_id', 'genmusic_vn')}}.mp3"
     return convert_wav_to_mp3(wav_path, mp3_path)
+
+
+def postprocess_audio(audio_np, sampling_rate: int):
+    import numpy as np
+
+    audio_np = audio_np.astype("float32")
+    if audio_np.size == 0:
+        return audio_np
+    audio_np = audio_np - float(np.mean(audio_np))
+
+    fade = min(int(0.08 * sampling_rate), max(1, audio_np.size // 8))
+    if fade > 1:
+        ramp = np.linspace(0.0, 1.0, fade, dtype="float32")
+        audio_np[:fade] *= ramp
+        audio_np[-fade:] *= ramp[::-1]
+
+    drive = 1.15
+    audio_np = np.tanh(audio_np * drive) / np.tanh(drive)
+    peak = max(1e-6, float(np.max(np.abs(audio_np))))
+    return (audio_np / peak * 0.78).astype("float32")
 
 
 def render_guide_fallback_mp3(request: dict, result) -> Path:

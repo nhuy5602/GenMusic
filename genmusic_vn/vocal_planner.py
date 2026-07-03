@@ -108,10 +108,10 @@ def _keyed_pitch(harmony: HarmonyPlan, octave: int) -> str:
 
 def _delivery(emotion: EmotionProfile, gender: str) -> str:
     voice = {
-        "female": "female Vietnamese lead vocal",
-        "male": "male Vietnamese lead vocal",
+        "female": "female Vietnamese singer timbre",
+        "male": "male Vietnamese singer timbre",
         "duet": "male and female Vietnamese duet",
-    }.get(gender, "Vietnamese lead vocal")
+    }.get(gender, "Vietnamese singer timbre")
 
     if emotion.label in {"sadness", "nostalgic"}:
         return f"soft, breathy, intimate {voice}"
