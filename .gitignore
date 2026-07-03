@@ -5,6 +5,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .env
+.env.local
 outputs/
 models/
 kaggle/working/

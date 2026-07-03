@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
 
 from genmusic_vn.emotion import analyze_emotion
-from genmusic_vn.kaggle_auto import KaggleJobConfig, slugify, submit_text_to_music_job
+from genmusic_vn.kaggle_auto import KaggleJobConfig, load_kaggle_api_tokens, slugify, submit_text_to_music_job
 from genmusic_vn.music_theory import chord_notes
 from genmusic_vn.pipeline import create_music_project
 from genmusic_vn.stylebank import get_emotion_music, load_stylebank
@@ -90,6 +91,25 @@ class PipelineTests(unittest.TestCase):
         sadness = get_emotion_music("sadness")
         self.assertEqual(sadness["scale"], "minor")
         self.assertIn("sao_truc", sadness["vietnamese_instruments"])
+
+    def test_kaggle_api_tokens_can_be_read_from_environment(self) -> None:
+        old_username = os.environ.get("KAGGLE_USERNAME")
+        old_key = os.environ.get("KAGGLE_KEY")
+        try:
+            os.environ["KAGGLE_USERNAME"] = "demo_user"
+            os.environ["KAGGLE_KEY"] = "demo_key"
+            tokens = load_kaggle_api_tokens()
+            self.assertEqual(tokens["KAGGLE_USERNAME"], "demo_user")
+            self.assertEqual(tokens["KAGGLE_KEY"], "demo_key")
+        finally:
+            if old_username is None:
+                os.environ.pop("KAGGLE_USERNAME", None)
+            else:
+                os.environ["KAGGLE_USERNAME"] = old_username
+            if old_key is None:
+                os.environ.pop("KAGGLE_KEY", None)
+            else:
+                os.environ["KAGGLE_KEY"] = old_key
 
 
 if __name__ == "__main__":

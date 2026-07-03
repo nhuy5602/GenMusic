@@ -20,6 +20,9 @@ class KaggleAutoError(RuntimeError):
     pass
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
 @dataclass(frozen=True)
 class KaggleJobConfig:
     model: str = "facebook/musicgen-small"
@@ -308,11 +311,12 @@ def kaggle_readiness(username: str | None = None) -> dict[str, Any]:
 
     user = resolve_kaggle_username(username)
     if not user:
-        messages.append("Kaggle username missing. Put token at ~/.kaggle/kaggle.json or set KAGGLE_USERNAME.")
+        messages.append("Kaggle username missing. Set KAGGLE_USERNAME in .env or environment.")
 
-    has_key = bool(os.getenv("KAGGLE_KEY")) or (Path.home() / ".kaggle" / "kaggle.json").exists()
+    tokens = load_kaggle_api_tokens()
+    has_key = bool(tokens.get("KAGGLE_KEY")) or (Path.home() / ".kaggle" / "kaggle.json").exists()
     if not has_key:
-        messages.append("Kaggle API key missing. Download kaggle.json from Kaggle account settings.")
+        messages.append("Kaggle API key missing. Set KAGGLE_KEY in .env or environment.")
 
     return {"ready": cli is not None and bool(user) and has_key, "username": user, "messages": messages}
 
@@ -320,7 +324,8 @@ def kaggle_readiness(username: str | None = None) -> dict[str, Any]:
 def resolve_kaggle_username(username: str | None = None) -> str | None:
     if username:
         return username.strip()
-    env_user = os.getenv("KAGGLE_USERNAME")
+    tokens = load_kaggle_api_tokens()
+    env_user = tokens.get("KAGGLE_USERNAME")
     if env_user:
         return env_user.strip()
     token_path = Path.home() / ".kaggle" / "kaggle.json"
@@ -344,6 +349,33 @@ def kaggle_cli_command() -> list[str] | None:
     if candidate.exists():
         return [str(candidate)]
     return None
+
+
+def load_kaggle_api_tokens() -> dict[str, str]:
+    tokens: dict[str, str] = {}
+    tokens.update(_read_env_file(PROJECT_ROOT / ".env"))
+    tokens.update(_read_env_file(PROJECT_ROOT / ".env.local"))
+    for key in ("KAGGLE_USERNAME", "KAGGLE_KEY"):
+        value = os.getenv(key) or tokens.get(key)
+        if value:
+            tokens[key] = value.strip()
+    return {key: value for key, value in tokens.items() if key in {"KAGGLE_USERNAME", "KAGGLE_KEY"} and value}
+
+
+def _read_env_file(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            values[key] = value
+    return values
 
 
 def make_run_id(text: str) -> str:
@@ -476,7 +508,7 @@ def _write_source_zip(path: Path) -> None:
 def _commands(dataset_dir: Path, kernel_dir: Path, download_dir: Path, kernel_ref: str) -> list[str]:
     return [
         "pip install -U kaggle",
-        "# Put kaggle.json in $HOME/.kaggle/kaggle.json, or set KAGGLE_USERNAME and KAGGLE_KEY.",
+        "# Tao file .env hoac .env.local voi KAGGLE_USERNAME va KAGGLE_KEY truoc khi chay.",
         f'kaggle datasets create -p "{dataset_dir}" -r zip',
         f'kaggle kernels push -p "{kernel_dir}"',
         f'kaggle kernels status "{kernel_ref}"',
@@ -521,6 +553,7 @@ def _write_state(state: dict[str, Any]) -> None:
 def _run(command: list[str], *, timeout: int) -> dict[str, Any]:
     env = os.environ.copy()
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    env.update(load_kaggle_api_tokens())
     proc = subprocess.run(
         command,
         capture_output=True,
