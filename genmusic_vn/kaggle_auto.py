@@ -158,6 +158,8 @@ def stage_text_to_music_job(
     )
 
     commands = _commands(dataset_dir, kernel_dir, download_dir, kernel_ref)
+    shell_commands = _shell_commands(commands)
+    (job_dir / "run_commands.sh").write_text("\n".join(shell_commands) + "\n", encoding="utf-8")
     (job_dir / "run_commands.ps1").write_text("\n".join(commands) + "\n", encoding="utf-8")
 
     state = {
@@ -189,6 +191,9 @@ def stage_text_to_music_job(
         "vocal_url": "",
         "tts_model": "facebook/mms-tts-vie",
         "commands": commands,
+        "shell_commands": shell_commands,
+        "shell_commands_path": str(job_dir / "run_commands.sh"),
+        "powershell_commands_path": str(job_dir / "run_commands.ps1"),
         "messages": ["Kaggle MusicGen job files prepared."],
         "last_error": "",
         "history": [],
@@ -301,7 +306,7 @@ def refresh_kaggle_job(state_or_path: dict[str, Any] | str | Path) -> dict[str, 
 def sync_kaggle_artifact(*, source: str, ref: str, output_dir: str | Path = "models/current") -> dict[str, Any]:
     cli = kaggle_cli_command()
     if cli is None:
-        raise KaggleAutoError("Kaggle CLI was not found. Install with `pip install kaggle`.")
+        raise KaggleAutoError("Kaggle CLI was not found. Install with `python3 -m pip install --user -U kaggle`.")
 
     target = Path(output_dir)
     target.mkdir(parents=True, exist_ok=True)
@@ -334,18 +339,23 @@ def kaggle_readiness(username: str | None = None) -> dict[str, Any]:
     messages: list[str] = []
     cli = kaggle_cli_command()
     if cli is None:
-        messages.append("Kaggle CLI missing. Install with `pip install kaggle`.")
+        messages.append("Kaggle CLI missing. Install with `python3 -m pip install --user -U kaggle`.")
 
     user = resolve_kaggle_username(username)
     if not user:
         messages.append("Kaggle username missing. Set KAGGLE_USERNAME in .env or environment.")
 
     tokens = load_kaggle_api_tokens()
-    has_key = bool(tokens.get("KAGGLE_KEY"))
-    if not has_key:
-        messages.append("Kaggle API key missing. Set KAGGLE_KEY in .env or environment.")
+    has_access_token = bool(tokens.get("KAGGLE_API_TOKEN"))
+    has_legacy_key = bool(tokens.get("KAGGLE_KEY"))
+    needs_access_token = _kaggle_cli_needs_access_token(cli)
+    if needs_access_token and not has_access_token:
+        messages.append("Kaggle API token missing. Set KAGGLE_API_TOKEN in .env or save it to ~/.kaggle/access_token.")
+    elif not has_access_token and not has_legacy_key:
+        messages.append("Kaggle API key missing. Set KAGGLE_API_TOKEN or KAGGLE_KEY in .env or environment.")
 
-    return {"ready": cli is not None and bool(user) and has_key, "username": user, "messages": messages}
+    auth_ready = has_access_token if needs_access_token else (has_access_token or has_legacy_key)
+    return {"ready": cli is not None and bool(user) and auth_ready, "username": user, "messages": messages}
 
 
 def resolve_kaggle_username(username: str | None = None) -> str | None:
@@ -380,16 +390,42 @@ def kaggle_cli_command() -> list[str] | None:
     return None
 
 
+def _kaggle_cli_needs_access_token(cli: list[str] | None) -> bool:
+    if cli is None:
+        return False
+    try:
+        result = subprocess.run(
+            cli + ["--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            env=os.environ.copy(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    output = f"{result.stdout}\n{result.stderr}"
+    if re.search(r"Kaggle CLI\s+2\.", output):
+        return True
+    return "KAGGLE_API_TOKEN" in output or "access_token" in output
+
+
 def load_kaggle_api_tokens() -> dict[str, str]:
     tokens: dict[str, str] = {}
     tokens.update(_read_kaggle_json(Path.home() / ".kaggle" / "kaggle.json"))
+    tokens.update(_read_kaggle_access_token(Path.home() / ".kaggle" / "access_token"))
     tokens.update(_read_env_file(PROJECT_ROOT / ".env"))
     tokens.update(_read_env_file(PROJECT_ROOT / ".env.local"))
-    for key in ("KAGGLE_USERNAME", "KAGGLE_KEY"):
+    for key in ("KAGGLE_USERNAME", "KAGGLE_KEY", "KAGGLE_API_TOKEN"):
         value = os.getenv(key) or tokens.get(key)
         if value:
             tokens[key] = _clean_env_value(value)
-    return {key: value for key, value in tokens.items() if key in {"KAGGLE_USERNAME", "KAGGLE_KEY"} and value}
+    return {
+        key: value
+        for key, value in tokens.items()
+        if key in {"KAGGLE_USERNAME", "KAGGLE_KEY", "KAGGLE_API_TOKEN"} and value
+    }
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -423,6 +459,16 @@ def _read_kaggle_json(path: Path) -> dict[str, str]:
     if isinstance(key, str):
         values["KAGGLE_KEY"] = _clean_env_value(key)
     return values
+
+
+def _read_kaggle_access_token(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    try:
+        token = _clean_env_value(_read_text_flexible(path))
+    except OSError:
+        return {}
+    return {"KAGGLE_API_TOKEN": token} if token else {}
 
 
 def _read_text_flexible(path: Path) -> str:
@@ -879,12 +925,20 @@ def _write_source_zip(path: Path) -> None:
 
 def _commands(dataset_dir: Path, kernel_dir: Path, download_dir: Path, kernel_ref: str) -> list[str]:
     return [
-        "pip install -U kaggle",
-        "# Tao file .env hoac .env.local voi KAGGLE_USERNAME va KAGGLE_KEY truoc khi chay.",
+        "python3 -m pip install --user -U kaggle",
+        "# Tao file .env hoac .env.local voi KAGGLE_USERNAME va KAGGLE_API_TOKEN truoc khi chay.",
         f'kaggle datasets create -p "{dataset_dir}" -r zip',
         f'kaggle kernels push -p "{kernel_dir}"',
         f'kaggle kernels status "{kernel_ref}"',
         f'kaggle kernels output "{kernel_ref}" -p "{download_dir}"',
+    ]
+
+
+def _shell_commands(commands: list[str]) -> list[str]:
+    return [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        *commands,
     ]
 
 
@@ -904,6 +958,19 @@ def _wait_for_dataset_ready(
         result = _run(cli + ["datasets", "status", state["dataset_ref"], "--format", "json"], timeout=120)
         state["history"].append(_history_item("datasets status", result))
         if result["returncode"] != 0:
+            if _is_dataset_status_forbidden(result):
+                state["status"] = "dataset_status_unavailable"
+                state["last_dataset_status"] = "forbidden"
+                _append_message_once(
+                    state,
+                    "Kaggle dataset status endpoint returned 403; continuing after a short wait.",
+                )
+                _write_state(state)
+                time.sleep(max(1, poll_seconds))
+                state["status"] = "dataset_ready"
+                _append_message_once(state, "Continuing to submit kernel without dataset status confirmation.")
+                _write_state(state)
+                return True
             state["status"] = "failed"
             state["last_error"] = _summarize_cli_error(result)
             _append_message_once(state, "Could not read Kaggle dataset status.")
@@ -929,6 +996,11 @@ def _wait_for_dataset_ready(
     state["last_error"] = "Timed out while waiting for Kaggle dataset to become ready."
     _append_message_once(state, state["last_error"])
     return False
+
+
+def _is_dataset_status_forbidden(result: dict[str, Any]) -> bool:
+    text = f"{result.get('stdout', '')}\n{result.get('stderr', '')}".lower()
+    return "403" in text and "getdatasetstatus" in text
 
 
 def _dataset_status_from_output(output: str) -> str:
@@ -1113,14 +1185,13 @@ def _run(command: list[str], *, timeout: int) -> dict[str, Any]:
     env.setdefault("PYTHONUTF8", "1")
     tokens = load_kaggle_api_tokens()
     env.update(tokens)
-    if tokens.get("KAGGLE_USERNAME") and tokens.get("KAGGLE_KEY"):
+    if tokens.get("KAGGLE_API_TOKEN") or (tokens.get("KAGGLE_USERNAME") and tokens.get("KAGGLE_KEY")):
         runtime_home = PROJECT_ROOT / ".kaggle_runtime_home"
         config_dir = runtime_home / ".kaggle"
         config_dir.mkdir(parents=True, exist_ok=True)
         env["HOME"] = str(runtime_home)
         env["USERPROFILE"] = str(runtime_home)
         env["KAGGLE_CONFIG_DIR"] = str(config_dir)
-        env.pop("KAGGLE_API_TOKEN", None)
         env.pop("KAGGLE_API_V1_TOKEN_PATH", None)
     proc = subprocess.run(
         command,

@@ -80,7 +80,9 @@ function renderJob(job) {
   if (job.mp3_path) {
     lines.push("", `MP3: ${job.mp3_path}`);
   }
-  if (job.last_error) {
+  if (job.last_error && job.status === "complete" && job.mp3_path) {
+    lines.push("", `Warning detail: ${job.last_error}`);
+  } else if (job.last_error) {
     lines.push("", `Error detail: ${job.last_error}`);
   }
   if (job.commands?.length && job.status === "needs_setup") {

@@ -11,6 +11,7 @@ from unittest.mock import patch
 from genmusic_vn.emotion import analyze_emotion
 from genmusic_vn.kaggle_auto import (
     KaggleJobConfig,
+    _is_dataset_status_forbidden,
     kaggle_cli_command,
     load_kaggle_api_tokens,
     make_run_id,
@@ -126,6 +127,11 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("render_mms_tts_vocal", kernel_script)
             self.assertIn("mix_vocal_with_backing", kernel_script)
             self.assertIn("_backing.mp3", kernel_script)
+            self.assertTrue((Path(job["job_dir"]) / "run_commands.sh").exists())
+            self.assertTrue(job["shell_commands_path"].endswith("run_commands.sh"))
+            shell_commands = (Path(job["job_dir"]) / "run_commands.sh").read_text(encoding="utf-8")
+            self.assertIn("#!/usr/bin/env bash", shell_commands)
+            self.assertIn("python3 -m pip install --user -U kaggle", shell_commands)
 
     def test_slugify_keeps_kaggle_safe_slug(self) -> None:
         self.assertEqual(slugify("GenMusic Việt Nam Demo!!!", 50), "genmusic-viet-nam-demo")
@@ -146,12 +152,15 @@ class PipelineTests(unittest.TestCase):
     def test_kaggle_api_tokens_can_be_read_from_environment(self) -> None:
         old_username = os.environ.get("KAGGLE_USERNAME")
         old_key = os.environ.get("KAGGLE_KEY")
+        old_api_token = os.environ.get("KAGGLE_API_TOKEN")
         try:
             os.environ["KAGGLE_USERNAME"] = "demo_user"
             os.environ["KAGGLE_KEY"] = "demo_key"
+            os.environ["KAGGLE_API_TOKEN"] = "demo_access_token"
             tokens = load_kaggle_api_tokens()
             self.assertEqual(tokens["KAGGLE_USERNAME"], "demo_user")
             self.assertEqual(tokens["KAGGLE_KEY"], "demo_key")
+            self.assertEqual(tokens["KAGGLE_API_TOKEN"], "demo_access_token")
         finally:
             if old_username is None:
                 os.environ.pop("KAGGLE_USERNAME", None)
@@ -161,6 +170,38 @@ class PipelineTests(unittest.TestCase):
                 os.environ.pop("KAGGLE_KEY", None)
             else:
                 os.environ["KAGGLE_KEY"] = old_key
+            if old_api_token is None:
+                os.environ.pop("KAGGLE_API_TOKEN", None)
+            else:
+                os.environ["KAGGLE_API_TOKEN"] = old_api_token
+
+    def test_kaggle_api_token_can_be_read_from_access_token_file(self) -> None:
+        old_api_token = os.environ.get("KAGGLE_API_TOKEN")
+        try:
+            os.environ.pop("KAGGLE_API_TOKEN", None)
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                config_dir = root / ".kaggle"
+                config_dir.mkdir()
+                (config_dir / "access_token").write_text("demo_file_access_token\n", encoding="utf-8")
+                with patch("genmusic_vn.kaggle_auto.Path.home", return_value=root):
+                    tokens = load_kaggle_api_tokens()
+            self.assertEqual(tokens["KAGGLE_API_TOKEN"], "demo_file_access_token")
+        finally:
+            if old_api_token is None:
+                os.environ.pop("KAGGLE_API_TOKEN", None)
+            else:
+                os.environ["KAGGLE_API_TOKEN"] = old_api_token
+
+    def test_dataset_status_forbidden_is_detected(self) -> None:
+        self.assertTrue(
+            _is_dataset_status_forbidden(
+                {
+                    "stdout": "",
+                    "stderr": "403 Client Error: Forbidden for url: https://api.kaggle.com/v1/datasets.DatasetApiService/GetDatasetStatus",
+                }
+            )
+        )
 
     def test_kaggle_cli_command_finds_user_site_scripts(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

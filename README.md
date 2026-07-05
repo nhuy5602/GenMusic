@@ -4,6 +4,82 @@ Project bài tập lớn môn AI tạo sinh.
 
 Mục tiêu: nhập văn bản tiếng Việt, chạy toàn bộ pipeline AI trên Kaggle GPU, sau đó trả về file nhạc nền `.mp3`.
 
+## Chạy Nhanh Trên macOS
+
+Các bước này đã được kiểm tra trên máy macOS hiện tại. Project dùng `python3`, không dùng lệnh `python`.
+
+1. Đi tới thư mục project:
+
+```bash
+cd /Users/user/IdeaProjects/GenMusic
+```
+
+2. Kiểm tra Python và Kaggle CLI:
+
+```bash
+python3 --version
+which kaggle
+```
+
+Nếu chưa có Kaggle CLI:
+
+```bash
+python3 -m pip install --user -U kaggle
+```
+
+3. Tạo hoặc kiểm tra file `.env` ở thư mục gốc project:
+
+```env
+KAGGLE_USERNAME=your_kaggle_username
+KAGGLE_API_TOKEN=your_kaggle_api_token
+```
+
+Với Kaggle CLI 2.x, dùng `KAGGLE_API_TOKEN` hoặc file `~/.kaggle/access_token`. Cặp `KAGGLE_USERNAME`/`KAGGLE_KEY` kiểu cũ có thể làm project nhận nhầm là đã sẵn sàng nhưng Kaggle CLI vẫn fail khi upload dataset.
+
+4. Chạy test nhanh:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+5. Chạy web local:
+
+```bash
+python3 -m genmusic_vn.server --port 8000
+```
+
+Khi thấy dòng này là server đã chạy:
+
+```text
+GenMusic VN running at http://127.0.0.1:8000
+```
+
+6. Mở trình duyệt:
+
+```text
+http://127.0.0.1:8000
+```
+
+7. Nhập một đoạn tiếng Việt, ví dụ:
+
+```text
+Một chiều mưa, tôi nhớ về những con phố cũ và ánh đèn vàng bên hiên nhà.
+```
+
+Sau đó bấm `Generate MP3`. Web sẽ tạo Kaggle job, gửi text lên Kaggle GPU, theo dõi trạng thái và hiện audio player/link tải khi MP3 tải xong.
+
+Nếu chỉ muốn kiểm tra local có tạo job đúng mà chưa submit lên Kaggle:
+
+```bash
+python3 -m genmusic_vn.cli generate --text "Một chiều mưa, tôi nhớ về những con phố cũ." --duration 30 --no-submit
+```
+
+Nếu port `8000` đang bận, đổi sang port khác:
+
+```bash
+python3 -m genmusic_vn.server --port 8001
+```
+
 ## Kiến Trúc
 
 ```text
@@ -71,6 +147,34 @@ Vì đây là bài tập lớn phi thương mại, MusicGen phù hợp để dem
 - local app nhẹ
 - tránh phức tạp khi duy trì nhiều backend sinh nhạc
 
+## Chạy Trên macOS
+
+Máy macOS thường có lệnh `python3`, không có sẵn lệnh `python`. Các lệnh dưới đây dùng `python3` để chạy đúng trên máy này.
+
+Kiểm tra Python:
+
+```bash
+python3 --version
+```
+
+Nếu cần cài Kaggle CLI:
+
+```bash
+python3 -m pip install --user -U kaggle
+```
+
+Nếu terminal báo không thấy `kaggle` sau khi cài bằng `pip`, mở shell mới hoặc thêm Python user bin vào `PATH`. Trên macOS thường là một trong các thư mục dạng:
+
+```bash
+export PATH="$HOME/Library/Python/3.12/bin:$PATH"
+```
+
+Trên máy này Kaggle CLI đang có ở:
+
+```text
+/opt/homebrew/bin/kaggle
+```
+
 ## Cài Đặt Kaggle API Token
 
 Tạo token trên Kaggle:
@@ -81,30 +185,31 @@ Tạo token trên Kaggle:
 
 Cài Kaggle CLI:
 
-```powershell
-pip install -U kaggle
+```bash
+python3 -m pip install --user -U kaggle
 ```
 
 Cách khuyến nghị cho project này: tạo file `.env` hoặc `.env.local` ở thư mục gốc project:
 
 ```env
 KAGGLE_USERNAME=your_kaggle_username
-KAGGLE_KEY=your_kaggle_api_key
+KAGGLE_API_TOKEN=your_kaggle_api_token
 ```
 
-Project sẽ tự đọc token từ `.env`, `.env.local` hoặc environment variables rồi truyền vào Kaggle CLI. Không commit `.env` hoặc `.env.local` lên GitHub.
+Project sẽ tự đọc token từ `.env`, `.env.local`, environment variables hoặc `~/.kaggle/access_token` rồi truyền vào Kaggle CLI. Không commit `.env` hoặc `.env.local` lên GitHub.
 
 Có thể dùng cách chuẩn của Kaggle nếu muốn:
 
-```powershell
-mkdir $HOME\.kaggle
-# đặt kaggle.json vào $HOME\.kaggle\kaggle.json
+```bash
+mkdir -p ~/.kaggle
+# đặt token mới vào ~/.kaggle/access_token
+chmod 600 ~/.kaggle/access_token
 ```
 
 ## Chạy Web Demo
 
-```powershell
-python -m genmusic_vn.server --port 8000
+```bash
+python3 -m genmusic_vn.server --port 8000
 ```
 
 Mở:
@@ -119,14 +224,14 @@ Nhập text tiếng Việt và bấm `Generate MP3`. Khi Kaggle job hoàn tất,
 
 Chỉ stage job, chưa submit lên Kaggle:
 
-```powershell
-python -m genmusic_vn.cli generate --text "Một chiều mưa, tôi nhớ về những con phố cũ." --duration 30 --no-submit
+```bash
+python3 -m genmusic_vn.cli generate --text "Một chiều mưa, tôi nhớ về những con phố cũ." --duration 30 --no-submit
 ```
 
 Submit lên Kaggle và đợi tải MP3:
 
-```powershell
-python -m genmusic_vn.cli generate --text "Một chiều mưa, tôi nhớ về những con phố cũ." --duration 30 --wait
+```bash
+python3 -m genmusic_vn.cli generate --text "Một chiều mưa, tôi nhớ về những con phố cũ." --duration 30 --wait
 ```
 
 MP3 sau khi tải về nằm ở:
@@ -150,6 +255,7 @@ outputs/<run_id>/
     kernel/
       run_genmusic_vn.py
       kernel-metadata.json
+    run_commands.sh
     run_commands.ps1
 ```
 
@@ -185,8 +291,8 @@ tests/
 
 ## Kiểm Thử
 
-```powershell
-python -m unittest discover -s tests -v
+```bash
+python3 -m unittest discover -s tests -v
 ```
 
 ## Tài Liệu Tham Khảo
@@ -194,4 +300,3 @@ python -m unittest discover -s tests -v
 - AudioCraft / MusicGen: https://github.com/facebookresearch/audiocraft
 - MusicGen docs: https://raw.githubusercontent.com/facebookresearch/audiocraft/main/docs/MUSICGEN.md
 - Kaggle API docs: https://www.kaggle.com/docs/api
-
