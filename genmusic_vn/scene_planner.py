@@ -1,0 +1,207 @@
+from __future__ import annotations
+
+import unicodedata
+
+from .schemas import EmotionProfile, ScenePlan
+
+
+SCENE_RULES = [
+    {
+        "label": "rain",
+        "raw_phrases": ["mưa", "giọt mưa", "cơn mưa", "trời mưa", "bão"],
+        "phrases": ["con mua", "giot mua", "troi mua", "mua roi", "rain", "storm"],
+        "prompt_cues": ["rainy atmosphere", "soft rain texture", "wet reflections"],
+        "arrangement_cues": ["felt piano droplets", "warm strings under the melody", "gentle reverb"],
+        "ambience_layers": ["rain"],
+        "mix_cues": ["low rain ambience behind the vocal"],
+    },
+    {
+        "label": "old_street",
+        "phrases": ["pho cu", "con pho", "duong cu", "ngo cu", "hem nho", "street"],
+        "prompt_cues": ["nostalgic old streets", "distant city ambience", "memory haze"],
+        "arrangement_cues": ["soft piano motif", "muted guitar pulse", "wide background pads"],
+        "ambience_layers": ["street"],
+        "mix_cues": ["wide stereo city depth"],
+    },
+    {
+        "label": "city_lights",
+        "phrases": ["anh den", "den vang", "den duong", "thanh pho", "pho dem", "city light"],
+        "prompt_cues": ["lonely city lights", "warm street lamps", "night urban glow"],
+        "arrangement_cues": ["electric piano shimmer", "soft sustained strings", "slow cinematic pulse"],
+        "ambience_layers": ["street"],
+        "mix_cues": ["gentle stereo reflections"],
+    },
+    {
+        "label": "night",
+        "raw_phrases": ["đêm", "khuya", "bóng tối", "trăng", "ngôi sao"],
+        "phrases": ["dem khuya", "bong toi", "anh trang", "night"],
+        "prompt_cues": ["quiet night mood", "deep blue atmosphere", "intimate late-night space"],
+        "arrangement_cues": ["low warm pad", "sparse piano", "slow breathing pauses"],
+        "ambience_layers": ["night"],
+        "mix_cues": ["dark but clean ambience"],
+    },
+    {
+        "label": "morning_sun",
+        "raw_phrases": ["nắng", "bình minh", "sáng sớm", "mặt trời", "ngày mới"],
+        "phrases": ["binh minh", "sang som", "mat troi", "ngay moi", "morning", "sun"],
+        "prompt_cues": ["soft morning light", "open hopeful air", "sunlit warmth"],
+        "arrangement_cues": ["bright piano", "light acoustic guitar", "gentle rising strings"],
+        "ambience_layers": ["air"],
+        "mix_cues": ["clear open stereo image"],
+    },
+    {
+        "label": "river_sea",
+        "raw_phrases": ["sông", "biển", "sóng", "bờ sông", "con sông"],
+        "phrases": ["song nuoc", "bo song", "con song", "song bien", "wave", "river", "sea"],
+        "prompt_cues": ["flowing water atmosphere", "wide horizon", "gentle wave motion"],
+        "arrangement_cues": ["arpeggiated piano flow", "soft strings swell", "airy flute line"],
+        "ambience_layers": ["water"],
+        "mix_cues": ["smooth wide ambience"],
+    },
+    {
+        "label": "nature_wind",
+        "raw_phrases": ["gió", "hàng cây", "cánh đồng", "rừng", "đồi", "núi"],
+        "phrases": ["hang cay", "canh dong", "rung cay", "doi nui", "forest", "wind"],
+        "prompt_cues": ["natural wind and open air", "pastoral Vietnamese color", "organic calm space"],
+        "arrangement_cues": ["sao truc flute air", "dan tranh texture", "nylon guitar"],
+        "ambience_layers": ["air"],
+        "mix_cues": ["airy natural reverb"],
+    },
+    {
+        "label": "home_room",
+        "phrases": ["nha", "can phong", "mai hien", "cua so", "bep", "room", "home"],
+        "prompt_cues": ["close indoor intimacy", "quiet room", "personal memory"],
+        "arrangement_cues": ["felt piano close mic", "soft pad", "minimal percussion"],
+        "ambience_layers": ["room"],
+        "mix_cues": ["warm intimate vocal space"],
+    },
+    {
+        "label": "love_promise",
+        "phrases": ["yeu", "thuong", "loi hua", "hen", "nho em", "nho anh", "trai tim", "heart", "love"],
+        "prompt_cues": ["unspoken promise", "gentle longing", "romantic restraint"],
+        "arrangement_cues": ["heartfelt piano voicing", "warm strings", "voice-like dan bau accent"],
+        "ambience_layers": [],
+        "mix_cues": ["vocal-forward but not dry"],
+    },
+    {
+        "label": "hope_rise",
+        "phrases": ["hy vong", "dung day", "vuot qua", "ngay mai", "niem tin", "mo ra", "hope"],
+        "prompt_cues": ["hopeful lift", "small light growing", "forward motion"],
+        "arrangement_cues": ["gradual build", "rising strings", "open chorus lift"],
+        "ambience_layers": ["air"],
+        "mix_cues": ["bright clean lift"],
+    },
+    {
+        "label": "conflict_fire",
+        "phrases": ["gian", "bat cong", "lua", "chien", "dau tranh", "vo tan", "anger", "fight"],
+        "prompt_cues": ["controlled tension", "dark urgent emotion", "restless pulse"],
+        "arrangement_cues": ["tight low drums", "dark strings", "short minor motif"],
+        "ambience_layers": [],
+        "mix_cues": ["punchy but unclipped"],
+    },
+    {
+        "label": "fear_shadow",
+        "raw_phrases": ["sợ", "lo lắng", "run rẩy", "bóng tối"],
+        "phrases": ["lo lang", "run ray", "duong vang", "bong toi", "mat hut", "fear"],
+        "prompt_cues": ["shadowy suspense", "uncertain pulse", "cold distant space"],
+        "arrangement_cues": ["low drone", "prepared piano", "thin strings"],
+        "ambience_layers": ["night"],
+        "mix_cues": ["dark spacious tension"],
+    },
+]
+
+
+EMOTION_FALLBACKS = {
+    "joy": {
+        "prompt_cues": ["bright Vietnamese pop mood", "fresh optimistic motion"],
+        "arrangement_cues": ["light drums", "bright piano", "acoustic guitar"],
+        "mix_cues": ["clean bright stereo"],
+    },
+    "sadness": {
+        "prompt_cues": ["Vietnamese melancholic ballad", "tender restrained emotion"],
+        "arrangement_cues": ["soft piano", "warm strings", "slow tempo"],
+        "mix_cues": ["gentle reverb without distortion"],
+    },
+    "anger": {
+        "prompt_cues": ["dark intense cinematic pop", "controlled aggression"],
+        "arrangement_cues": ["tight percussion", "low strings", "minor motif"],
+        "mix_cues": ["clear punch without clipping"],
+    },
+    "fear": {
+        "prompt_cues": ["cold suspenseful atmosphere", "unresolved tension"],
+        "arrangement_cues": ["low drone", "thin strings", "sparse piano"],
+        "mix_cues": ["wide dark space"],
+    },
+    "calm": {
+        "prompt_cues": ["peaceful Vietnamese acoustic mood", "slow breathing warmth"],
+        "arrangement_cues": ["felt piano", "nylon guitar", "soft pad"],
+        "mix_cues": ["warm natural stereo"],
+    },
+    "romantic": {
+        "prompt_cues": ["romantic Vietnamese ballad", "soft heartfelt longing"],
+        "arrangement_cues": ["warm strings", "felt piano", "gentle guitar"],
+        "mix_cues": ["intimate vocal space"],
+    },
+    "hope": {
+        "prompt_cues": ["hopeful cinematic lift", "open emotional horizon"],
+        "arrangement_cues": ["rising strings", "piano pulse", "light drums"],
+        "mix_cues": ["wide clean lift"],
+    },
+    "nostalgic": {
+        "prompt_cues": ["nostalgic Vietnamese memory", "bittersweet warmth"],
+        "arrangement_cues": ["upright piano", "muted guitar", "soft strings"],
+        "mix_cues": ["warm tape-like depth"],
+    },
+}
+
+
+def build_scene_plan(text: str, emotion: EmotionProfile) -> ScenePlan:
+    lowered = text.lower()
+    folded = _fold(text)
+    labels: list[str] = []
+    prompt_cues: list[str] = []
+    arrangement_cues: list[str] = []
+    ambience_layers: list[str] = []
+    mix_cues: list[str] = []
+
+    for rule in SCENE_RULES:
+        raw_phrases = rule.get("raw_phrases", [])
+        if any(phrase in lowered for phrase in raw_phrases) or any(phrase in folded for phrase in rule["phrases"]):
+            labels.append(str(rule["label"]))
+            prompt_cues.extend(rule["prompt_cues"])
+            arrangement_cues.extend(rule["arrangement_cues"])
+            ambience_layers.extend(rule["ambience_layers"])
+            mix_cues.extend(rule["mix_cues"])
+
+    fallback = EMOTION_FALLBACKS.get(emotion.label, EMOTION_FALLBACKS["calm"])
+    prompt_cues.extend(fallback["prompt_cues"])
+    arrangement_cues.extend(fallback["arrangement_cues"])
+    mix_cues.extend(fallback["mix_cues"])
+
+    if not labels:
+        labels.append(f"emotion_{emotion.label}")
+
+    return ScenePlan(
+        labels=_dedupe(labels),
+        prompt_cues=_dedupe(prompt_cues)[:10],
+        arrangement_cues=_dedupe(arrangement_cues)[:10],
+        ambience_layers=_dedupe(ambience_layers)[:4],
+        mix_cues=_dedupe(mix_cues)[:6],
+    )
+
+
+def _fold(text: str) -> str:
+    decomposed = unicodedata.normalize("NFD", text.lower())
+    stripped = "".join(char for char in decomposed if unicodedata.category(char) != "Mn")
+    return stripped.replace("đ", "d").replace("Đ", "D")
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        cleaned = item.strip()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            result.append(cleaned)
+    return result

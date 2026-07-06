@@ -20,6 +20,7 @@ from genmusic_vn.kaggle_auto import (
 )
 from genmusic_vn.music_theory import chord_notes
 from genmusic_vn.pipeline import create_music_project
+from genmusic_vn.scene_planner import build_scene_plan
 from genmusic_vn.stylebank import get_emotion_music, load_stylebank
 from genmusic_vn.synthetic_dataset import generate_synthetic_records, write_jsonl
 
@@ -72,6 +73,9 @@ class PipelineTests(unittest.TestCase):
             self.assertTrue(any("[Verse 2]" in line for line in result.lyrics.full_song))
             self.assertIn("song form:", result.prompt)
             self.assertIn("vocal plan:", result.prompt)
+            self.assertIn("scene cues:", result.prompt)
+            self.assertIn("source keywords:", result.prompt)
+            self.assertIn("source text images:", result.prompt)
             self.assertIn("singer-ready melody", result.prompt)
             self.assertNotIn("titled", result.prompt)
             self.assertNotIn("without lead vocal", result.prompt)
@@ -88,6 +92,9 @@ class PipelineTests(unittest.TestCase):
             )
             lyrics_text = "\n".join(result.lyrics.full_song)
             self.assertEqual(result.lyrics.title, "")
+            self.assertIn("rain", result.scene.labels)
+            self.assertIn("old_street", result.scene.labels)
+            self.assertIn("love_promise", result.scene.labels)
             self.assertEqual(result.lyrics.song_form, ["Verse", "Chorus", "Outro"])
             self.assertFalse(any("[Title]" in line for line in result.lyrics.full_song))
             self.assertFalse(any("[Verse 2]" in line for line in result.lyrics.full_song))
@@ -98,6 +105,10 @@ class PipelineTests(unittest.TestCase):
             self.assertNotIn("o lai", lyrics_text)
             self.assertNotIn("binh yen", lyrics_text)
             self.assertIn("vocal plan:", result.prompt)
+            self.assertIn("rainy atmosphere", result.prompt)
+            self.assertIn("nostalgic old streets", result.prompt)
+            self.assertIn("unspoken promise", result.prompt)
+            self.assertIn("wide stereo", result.prompt)
             self.assertNotIn("titled", result.prompt)
             self.assertNotIn("no lead vocal", result.prompt)
             self.assertNotIn("lyric lines:", result.prompt)
@@ -142,10 +153,34 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("build_duration_plan", kernel_script)
             self.assertIn("planned_backing_duration_seconds", kernel_script)
             self.assertIn("duration_plan.json", kernel_script)
+            self.assertIn("scene_plan", kernel_script)
+            self.assertIn("select_tts_lines_for_duration", kernel_script)
             self.assertIn("duration_ceiling_seconds", kernel_script)
             self.assertIn("enforce_audio_duration", kernel_script)
             self.assertIn("duration=first", kernel_script)
             self.assertIn("normalize=0", kernel_script)
+            self.assertIn("anoisesrc", kernel_script)
+            self.assertIn("aformat=channel_layouts=stereo", kernel_script)
+
+    def test_scene_plan_handles_multiple_input_types(self) -> None:
+        hopeful_text = "Sau thất bại, tôi đứng dậy đón bình minh và tin vào ngày mai."
+        hopeful = analyze_emotion(hopeful_text)
+        hopeful_scene = build_scene_plan(hopeful_text, hopeful)
+        self.assertIn("morning_sun", hopeful_scene.labels)
+        self.assertIn("hope_rise", hopeful_scene.labels)
+
+        tense_text = "Tôi giận dữ trước bất công, tim như lửa và vẫn muốn đấu tranh."
+        tense = analyze_emotion(tense_text)
+        tense_scene = build_scene_plan(tense_text, tense)
+        self.assertIn("conflict_fire", tense_scene.labels)
+        with tempfile.TemporaryDirectory() as temp:
+            tense_result = create_music_project(tense_text, output_root=temp, duration_seconds=12, render_audio=False)
+        self.assertIn("dark Vietnamese cinematic pop cue", tense_result.prompt)
+
+        summer_text = "Mùa hè có tiếng cười và sân trường rực nắng."
+        summer = analyze_emotion(summer_text)
+        summer_scene = build_scene_plan(summer_text, summer)
+        self.assertNotIn("rain", summer_scene.labels)
 
     def test_slugify_keeps_kaggle_safe_slug(self) -> None:
         self.assertEqual(slugify("GenMusic Việt Nam Demo!!!", 50), "genmusic-viet-nam-demo")
@@ -170,6 +205,8 @@ class PipelineTests(unittest.TestCase):
             report = evaluate_dataset(output_root=temp, duration_seconds=8)
         self.assertGreaterEqual(report["sample_count"], 6)
         self.assertIn("emotion_match", report["summary"])
+        self.assertIn("prompt_keyword_recall", report["summary"])
+        self.assertIn("scene_cue_density", report["summary"])
         self.assertIn("no_title", report["summary"])
         self.assertIn("romanized_violation_count", report["summary"])
         self.assertIn("unknown", report["by_length"])

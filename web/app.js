@@ -176,6 +176,17 @@ function renderDownloads(job) {
 function renderLyrics(job) {
   const lines = [];
   const vocal = job.vocal_plan || {};
+  const scene = job.scene_plan || job.analysis?.scene || {};
+  if (Array.isArray(scene.labels) && scene.labels.length) {
+    lines.push(`Scene: ${scene.labels.join(", ")}`);
+    if (Array.isArray(scene.ambience_layers) && scene.ambience_layers.length) {
+      lines.push(`Ambience: ${scene.ambience_layers.join(", ")}`);
+    }
+    if (Array.isArray(scene.prompt_cues) && scene.prompt_cues.length) {
+      lines.push(`Prompt cues: ${scene.prompt_cues.slice(0, 4).join(", ")}`);
+    }
+    lines.push("");
+  }
   if (Object.keys(vocal).length) {
     lines.push(`Recommended singer: ${formatVocalGender(vocal.gender)} ${vocal.register || ""}`.trim());
     lines.push(`Actual TTS voice: ${job.tts_voice_actual || "fixed_mms_vietnamese_voice"}`);

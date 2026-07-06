@@ -25,6 +25,12 @@
       "mix": "airy, natural, spacious, meditative",
       "recommended_emotions": ["calm", "fear", "sadness"]
     },
+    "dark_cinematic": {
+      "prompt_prefix": "dark Vietnamese cinematic pop cue",
+      "rhythm": "driving minor pulse, tight percussion, controlled dramatic build",
+      "mix": "punchy wide mix without clipping, dark low-end control",
+      "recommended_emotions": ["anger", "fear"]
+    },
     "upbeat_pop": {
       "prompt_prefix": "bright Vietnamese upbeat pop instrumental",
       "rhythm": "clear pop groove, light drums, optimistic guitar strums",
@@ -33,4 +39,3 @@
     }
   }
 }
-

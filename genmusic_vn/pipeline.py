@@ -11,6 +11,7 @@ from .generators.guide_track import GuideTrackGenerator
 from .lyric_writer import rewrite_lyrics
 from .music_theory import build_harmony, build_melody_events
 from .prompt_builder import build_music_prompt
+from .scene_planner import build_scene_plan
 from .schemas import GeneratedFile, MusicResult, to_plain_data
 from .text_planner import build_text_plan
 from .text_utils import normalize_text
@@ -53,7 +54,17 @@ def create_music_project(
     melody = build_melody_events(generation_text, harmony, duration_seconds)
     lyrics = rewrite_lyrics(generation_text, emotion, harmony)
     vocal = build_vocal_plan(normalized, emotion, harmony)
-    prompt, negative_prompt = build_music_prompt(emotion, harmony, lyrics, vocal, genre=genre)
+    scene = build_scene_plan(normalized, emotion)
+    prompt, negative_prompt = build_music_prompt(
+        emotion,
+        harmony,
+        lyrics,
+        vocal,
+        scene=scene,
+        source_keywords=text_plan.keywords,
+        source_excerpt=text_plan.condensed_text or normalized,
+        genre=genre,
+    )
 
     generator_input = GeneratorInput(
         run_id=run_id,
@@ -83,6 +94,7 @@ def create_music_project(
         lyrics=lyrics,
         vocal=vocal,
         text_plan=text_plan,
+        scene=scene,
         prompt=prompt,
         negative_prompt=negative_prompt,
         files=files,
@@ -107,6 +119,7 @@ def create_music_project(
         lyrics=result.lyrics,
         vocal=result.vocal,
         text_plan=result.text_plan,
+        scene=result.scene,
         prompt=result.prompt,
         negative_prompt=result.negative_prompt,
         files=files,
@@ -123,6 +136,7 @@ def _prompt_pack(result: MusicResult) -> dict:
         "negative_prompt": result.negative_prompt,
         "lyrics": to_plain_data(result.lyrics),
         "vocal": to_plain_data(result.vocal),
+        "scene": to_plain_data(result.scene),
         "harmony": to_plain_data(result.harmony),
         "emotion": to_plain_data(result.emotion),
         "melody": to_plain_data(result.melody),

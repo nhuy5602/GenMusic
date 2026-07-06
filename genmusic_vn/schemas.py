@@ -75,6 +75,15 @@ class TextPlan:
 
 
 @dataclass(frozen=True)
+class ScenePlan:
+    labels: list[str]
+    prompt_cues: list[str]
+    arrangement_cues: list[str]
+    ambience_layers: list[str]
+    mix_cues: list[str]
+
+
+@dataclass(frozen=True)
 class GeneratedFile:
     kind: str
     path: str
@@ -94,6 +103,7 @@ class MusicResult:
     lyrics: LyricDraft
     vocal: VocalPlan
     text_plan: TextPlan
+    scene: ScenePlan
     prompt: str
     negative_prompt: str
     files: list[GeneratedFile] = field(default_factory=list)

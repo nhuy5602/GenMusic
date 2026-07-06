@@ -698,7 +698,28 @@ def lyric_lines_for_tts(result) -> list[str]:
     return lyric_lines_for_duration(result)
 
 
-def render_mms_tts_vocal(request: dict, result) -> Path:
+def select_tts_lines_for_duration(result, duration_plan: dict) -> list[str]:
+    all_lines = lyric_lines_for_tts(result)
+    if not all_lines:
+        return []
+    planned = max(6, int(duration_plan.get("planned_backing_duration_seconds", 30)))
+    word_budget = max(18, int(max(6, planned - 3) / 0.42))
+    selected: list[str] = []
+    used_words = 0
+    for line in all_lines:
+        line_words = len(line.split())
+        if selected and used_words + line_words > word_budget:
+            break
+        selected.append(line)
+        used_words += line_words
+        if len(selected) >= 18:
+            break
+    if all_lines[-1] not in selected and len(selected) >= 2:
+        selected[-1] = all_lines[-1]
+    return selected or all_lines[:1]
+
+
+def render_mms_tts_vocal(request: dict, result, duration_plan: dict) -> Path:
     ensure_transformers_version("4.33.0")
     ensure("accelerate", "accelerate")
     ensure("scipy", "scipy")
@@ -718,7 +739,7 @@ def render_mms_tts_vocal(request: dict, result) -> Path:
 
     pieces = []
     silence = np.zeros(int(sampling_rate * 0.42), dtype="float32")
-    for line in lyric_lines_for_tts(result)[:18]:
+    for line in select_tts_lines_for_duration(result, duration_plan):
         clean_line = clean_tts_line(line)
         if not clean_line:
             continue
@@ -776,7 +797,8 @@ def apply_vocal_profile(raw_path: Path, output_path: Path, vocal, sampling_rate:
         pitch_filter = f"aresample={{sampling_rate}}"
     filter_chain = (
         f"{{pitch_filter}},highpass=f=90,lowpass=f=8500,"
-        "acompressor=threshold=-18dB:ratio=2.2:attack=10:release=160,volume=1.05"
+        "acompressor=threshold=-18dB:ratio=2.2:attack=10:release=160,"
+        "aecho=0.8:0.88:45:0.06,alimiter=limit=0.86,volume=0.98"
     )
     subprocess.run(
         ["ffmpeg", "-y", "-i", str(raw_path), "-af", filter_chain, str(output_path)],
@@ -788,15 +810,51 @@ def apply_vocal_profile(raw_path: Path, output_path: Path, vocal, sampling_rate:
     return output_path
 
 
-def mix_vocal_with_backing(request: dict, backing_mp3_path: Path, vocal_wav_path: Path, duration_plan: dict) -> Path:
-    final_mp3_path = OUTPUT_DIR / f"{{request.get('run_id', 'genmusic_vn')}}.mp3"
-    filter_complex = (
-        "[0:a]volume=0.78,afade=t=in:st=0:d=0.08[bg];"
-        "[1:a]adelay=350|350,volume=0.92,highpass=f=90,lowpass=f=8500,"
-        "acompressor=threshold=-18dB:ratio=2.5:attack=12:release=180[vox];"
-        "[bg][vox]amix=inputs=2:duration=first:dropout_transition=1:normalize=0,"
-        "alimiter=limit=0.90[out]"
+def build_mix_filter(duration_plan: dict, scene_plan: dict) -> str:
+    layers = set(scene_plan.get("ambience_layers") or [])
+    base = (
+        "[0:a]volume=0.74,afade=t=in:st=0:d=0.08,"
+        "aformat=channel_layouts=stereo,aecho=0.8:0.88:18:0.06[bg];"
+        "[1:a]adelay=280|280,volume=0.86,highpass=f=90,lowpass=f=8500,"
+        "acompressor=threshold=-18dB:ratio=2.5:attack=12:release=180,"
+        "aformat=channel_layouts=stereo[vox];"
     )
+    ambience_layers = layers.intersection({{"rain", "street", "night", "water", "air", "room"}})
+    if ambience_layers:
+        duration = max(1.0, float(duration_plan.get("planned_backing_duration_seconds", 30)))
+        fade_out = max(0.0, duration - 1.2)
+        amplitude = ambience_amplitude(ambience_layers)
+        lowpass = 5200 if "rain" in ambience_layers else 3600
+        highpass = 750 if "rain" in ambience_layers else 120
+        return (
+            base
+            + f"anoisesrc=color=pink:amplitude={{amplitude:.3f}}:duration={{duration:.2f}}[amb0];"
+            + f"[amb0]highpass=f={{highpass}},lowpass=f={{lowpass}},volume=0.42,"
+            + f"afade=t=in:st=0:d=1.0,afade=t=out:st={{fade_out:.2f}}:d=1.0,"
+            + "aformat=channel_layouts=stereo[amb];"
+            + "[bg][vox][amb]amix=inputs=3:duration=first:dropout_transition=1:normalize=0,"
+            + "alimiter=limit=0.90[out]"
+        )
+    return (
+        base
+        + "[bg][vox]amix=inputs=2:duration=first:dropout_transition=1:normalize=0,"
+        + "alimiter=limit=0.90[out]"
+    )
+
+
+def ambience_amplitude(layers: set[str]) -> float:
+    if "rain" in layers:
+        return 0.026
+    if "water" in layers:
+        return 0.020
+    if "street" in layers or "night" in layers:
+        return 0.016
+    return 0.012
+
+
+def mix_vocal_with_backing(request: dict, backing_mp3_path: Path, vocal_wav_path: Path, duration_plan: dict, scene_plan: dict) -> Path:
+    final_mp3_path = OUTPUT_DIR / f"{{request.get('run_id', 'genmusic_vn')}}.mp3"
+    filter_complex = build_mix_filter(duration_plan, scene_plan)
     subprocess.run(
         [
             "ffmpeg",
@@ -868,6 +926,8 @@ def main() -> None:
     tts_error = ""
     backing_mp3_path = None
     vocal_path = None
+    report = to_plain_data(result)
+    scene_plan = report.get("scene", {{}})
     duration_plan = build_duration_plan(request, result)
     request["planned_duration_seconds"] = duration_plan["planned_backing_duration_seconds"]
     (OUTPUT_DIR / "duration_plan.json").write_text(
@@ -884,15 +944,14 @@ def main() -> None:
         generation_backend = "guide_fallback"
 
     try:
-        vocal_path = render_mms_tts_vocal(request, result)
-        mp3_path = mix_vocal_with_backing(request, backing_mp3_path, vocal_path, duration_plan)
+        vocal_path = render_mms_tts_vocal(request, result, duration_plan)
+        mp3_path = mix_vocal_with_backing(request, backing_mp3_path, vocal_path, duration_plan, scene_plan)
         generation_backend = generation_backend + "+mms_tts_vocal_mix"
     except Exception as exc:
         tts_error = "".join(traceback.format_exception(exc))[-4000:]
         (OUTPUT_DIR / "tts_error.txt").write_text(tts_error, encoding="utf-8")
         mp3_path = backing_mp3_path
 
-    report = to_plain_data(result)
     lyrics_text = "\\n".join(result.lyrics.full_song)
     (OUTPUT_DIR / "lyrics.txt").write_text(lyrics_text, encoding="utf-8")
     (OUTPUT_DIR / "lyrics.json").write_text(
@@ -924,6 +983,7 @@ def main() -> None:
         "lyrics_text": lyrics_text,
         "lyrics": report.get("lyrics"),
         "vocal_plan": report.get("vocal"),
+        "scene_plan": scene_plan,
         "analysis": report,
     }}
     (OUTPUT_DIR / "kaggle_result.json").write_text(json.dumps(final, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1151,6 +1211,9 @@ def _apply_kaggle_result_metadata(state: dict[str, Any], files: list[Path]) -> N
         vocal_plan = data.get("vocal_plan")
         if isinstance(vocal_plan, dict):
             state["vocal_plan"] = vocal_plan
+        scene_plan = data.get("scene_plan")
+        if isinstance(scene_plan, dict):
+            state["scene_plan"] = scene_plan
         return
 
 

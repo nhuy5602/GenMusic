@@ -85,6 +85,7 @@ def evaluate_record(record: dict[str, Any], output_root: Path, *, duration_secon
 
     keyword_hits = _match_count(expected_keywords, lyric_text)
     phrase_hits = _match_count(expected_phrases, lyric_text)
+    prompt_keyword_hits = _match_count(expected_keywords, result.prompt)
     romanized_violations = sorted(
         phrase for phrase in ROMANIZED_TEMPLATE_PHRASES if phrase in lyric_text.lower()
     )
@@ -92,7 +93,9 @@ def evaluate_record(record: dict[str, Any], output_root: Path, *, duration_secon
     metrics = {
         "emotion_match": int(not expected_emotions or result.emotion.label in expected_emotions),
         "keyword_recall": _ratio(keyword_hits, len(expected_keywords)),
+        "prompt_keyword_recall": _ratio(prompt_keyword_hits, len(expected_keywords)),
         "phrase_recall": _ratio(phrase_hits, len(expected_phrases)),
+        "scene_cue_density": _ratio(min(len(result.scene.prompt_cues), 4), 4),
         "no_title": int(result.lyrics.title == "" and not any(line.startswith("[Title]") for line in result.lyrics.full_song)),
         "diacritic_line_rate": _ratio(sum(1 for line in lyric_lines if _has_vietnamese_diacritic(line)), len(lyric_lines)),
         "romanized_violation_count": len(romanized_violations),
@@ -102,7 +105,9 @@ def evaluate_record(record: dict[str, Any], output_root: Path, *, duration_secon
         [
             metrics["emotion_match"],
             metrics["keyword_recall"],
+            metrics["prompt_keyword_recall"],
             metrics["phrase_recall"],
+            metrics["scene_cue_density"],
             metrics["no_title"],
             metrics["diacritic_line_rate"],
             int(metrics["romanized_violation_count"] == 0),
@@ -126,6 +131,7 @@ def evaluate_record(record: dict[str, Any], output_root: Path, *, duration_secon
             "vocal_gender": result.vocal.gender,
             "lyrics": result.lyrics.full_song,
             "prompt": result.prompt,
+            "scene": result.scene.labels,
         },
         "metrics": metrics,
         "romanized_violations": romanized_violations,
