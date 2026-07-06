@@ -115,9 +115,13 @@ class PipelineTests(unittest.TestCase):
             )
             self.assertEqual(job["status"], "staged")
             self.assertEqual(job["backend"], "musicgen")
+            self.assertEqual(job["duration_policy"], "soft_target")
+            self.assertEqual(job["target_duration_seconds"], 6)
             self.assertEqual(job["tts_voice_actual"], "fixed_mms_vietnamese_voice")
             self.assertIn("fixed single-speaker", job["tts_voice_note"])
-            self.assertTrue((Path(job["dataset_dir"]) / "request.json").exists())
+            request_pack = json.loads((Path(job["dataset_dir"]) / "request.json").read_text(encoding="utf-8"))
+            self.assertEqual(request_pack["duration_policy"], "soft_target")
+            self.assertEqual(request_pack["target_duration_seconds"], 6)
             source_zip = Path(job["dataset_dir"]) / "genmusic_vn_source.zip"
             self.assertTrue(source_zip.exists())
             with zipfile.ZipFile(source_zip) as archive:
@@ -135,6 +139,10 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("mix_vocal_with_backing", kernel_script)
             self.assertIn("_backing.mp3", kernel_script)
             self.assertIn("tts_voice_actual", kernel_script)
+            self.assertIn("build_duration_plan", kernel_script)
+            self.assertIn("planned_backing_duration_seconds", kernel_script)
+            self.assertIn("duration_plan.json", kernel_script)
+            self.assertIn("apad=pad_dur=", kernel_script)
 
     def test_slugify_keeps_kaggle_safe_slug(self) -> None:
         self.assertEqual(slugify("GenMusic Việt Nam Demo!!!", 50), "genmusic-viet-nam-demo")

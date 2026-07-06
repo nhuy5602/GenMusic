@@ -111,6 +111,8 @@ def stage_text_to_music_job(
         "run_id": run_id,
         "text": normalized,
         "duration_seconds": duration_seconds,
+        "target_duration_seconds": duration_seconds,
+        "duration_policy": "soft_target",
         "genre": genre or "Vietnamese cinematic pop text-to-song",
         "model": config.model,
         "tts_model": DEFAULT_TTS_MODEL,
@@ -169,6 +171,12 @@ def stage_text_to_music_job(
         "kaggle_ready": False,
         "backend": "musicgen",
         "model": config.model,
+        "duration_policy": "soft_target",
+        "target_duration_seconds": duration_seconds,
+        "duration_plan": {
+            "policy": "soft_target",
+            "target_duration_seconds": duration_seconds,
+        },
         "dataset_ref": dataset_ref,
         "kernel_ref": kernel_ref,
         "run_dir": str(run_dir),
@@ -554,7 +562,40 @@ def convert_wav_to_mp3(wav_path: Path, mp3_path: Path) -> Path:
     return mp3_path
 
 
-def render_musicgen_backing_mp3(request: dict, prompt: str, negative_prompt: str) -> Path:
+def lyric_lines_for_duration(result) -> list[str]:
+    lines: list[str] = []
+    for line in result.lyrics.full_song:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("["):
+            continue
+        lines.append(stripped)
+    if not lines:
+        lines = result.lyrics.verse + result.lyrics.chorus + result.lyrics.bridge
+    return [line for line in lines if line.strip()]
+
+
+def build_duration_plan(request: dict, result) -> dict:
+    target = max(6, min(180, int(request.get("target_duration_seconds", request.get("duration_seconds", 30)))))
+    lines = lyric_lines_for_duration(result)
+    word_count = sum(len(line.split()) for line in lines)
+    section_count = sum(1 for line in result.lyrics.full_song if line.strip().startswith("["))
+    estimated_vocal = word_count * 0.48 + max(0, len(lines) - 1) * 0.55 + section_count * 0.55
+    outro_tail = 6.0 if target <= 30 else 8.0
+    breathing_room = min(24.0, max(5.0, len(lines) * 0.5))
+    planned = int(round(max(target + outro_tail, estimated_vocal + breathing_room + outro_tail)))
+    planned = max(6, min(180, planned))
+    return {{
+        "policy": "soft_target",
+        "target_duration_seconds": target,
+        "planned_backing_duration_seconds": planned,
+        "estimated_vocal_duration_seconds": round(estimated_vocal, 2),
+        "outro_tail_seconds": outro_tail,
+        "lyric_line_count": len(lines),
+        "lyric_word_count": word_count,
+    }}
+
+
+def render_musicgen_backing_mp3(request: dict, prompt: str, negative_prompt: str, duration_plan: dict) -> Path:
     ensure_transformers_version("4.33.0")
     ensure("accelerate", "accelerate")
     ensure("scipy", "scipy")
@@ -565,7 +606,7 @@ def render_musicgen_backing_mp3(request: dict, prompt: str, negative_prompt: str
     from transformers import AutoProcessor, MusicgenForConditionalGeneration
 
     model_name = request.get("model") or "facebook/musicgen-small"
-    duration = max(6, min(180, int(request.get("duration_seconds", 30))))
+    duration = max(6, min(180, int(duration_plan.get("planned_backing_duration_seconds", request.get("duration_seconds", 30)))))
     device = "cpu"
     if torch.cuda.is_available():
         major, _minor = torch.cuda.get_device_capability()
@@ -580,7 +621,7 @@ def render_musicgen_backing_mp3(request: dict, prompt: str, negative_prompt: str
     backing_prompt = (
         prompt
         + "; instrumental backing track only; leave space for a separate Vietnamese vocal track; "
-        "no lead singing, no spoken words, no garbled vocals"
+        "natural ending with a short outro tail; no lead singing, no spoken words, no garbled vocals"
     )
 
     inputs = processor(text=[backing_prompt], padding=True, return_tensors="pt")
@@ -631,19 +672,7 @@ def postprocess_audio(audio_np, sampling_rate: int):
 
 
 def lyric_lines_for_tts(result) -> list[str]:
-    lines: list[str] = []
-    for line in result.lyrics.full_song:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.startswith("[Title]"):
-            continue
-        if stripped.startswith("["):
-            continue
-        lines.append(stripped)
-    if not lines:
-        lines = result.lyrics.verse + result.lyrics.chorus + result.lyrics.bridge
-    return [line for line in lines if line.strip()]
+    return lyric_lines_for_duration(result)
 
 
 def render_mms_tts_vocal(request: dict, result) -> Path:
@@ -665,7 +694,7 @@ def render_mms_tts_vocal(request: dict, result) -> Path:
     sampling_rate = int(getattr(model.config, "sampling_rate", 16000))
 
     pieces = []
-    silence = np.zeros(int(sampling_rate * 0.28), dtype="float32")
+    silence = np.zeros(int(sampling_rate * 0.42), dtype="float32")
     for line in lyric_lines_for_tts(result)[:18]:
         clean_line = clean_tts_line(line)
         if not clean_line:
@@ -681,6 +710,8 @@ def render_mms_tts_vocal(request: dict, result) -> Path:
 
     if not pieces:
         pieces = [np.zeros(int(sampling_rate * 1.0), dtype="float32")]
+    else:
+        pieces.append(np.zeros(int(sampling_rate * 1.4), dtype="float32"))
 
     vocal_np = np.concatenate(pieces).astype("float32")
     raw_path = OUTPUT_DIR / f"{{request.get('run_id', 'genmusic_vn')}}_vocal_mms_raw.wav"
@@ -734,13 +765,14 @@ def apply_vocal_profile(raw_path: Path, output_path: Path, vocal, sampling_rate:
     return output_path
 
 
-def mix_vocal_with_backing(request: dict, backing_mp3_path: Path, vocal_wav_path: Path) -> Path:
+def mix_vocal_with_backing(request: dict, backing_mp3_path: Path, vocal_wav_path: Path, duration_plan: dict) -> Path:
     final_mp3_path = OUTPUT_DIR / f"{{request.get('run_id', 'genmusic_vn')}}.mp3"
+    tail_pad = max(3.0, float(duration_plan.get("outro_tail_seconds", 3.0)))
     filter_complex = (
-        "[0:a]volume=0.52,afade=t=in:st=0:d=0.20[bg];"
+        f"[0:a]volume=0.52,afade=t=in:st=0:d=0.20,apad=pad_dur={{tail_pad:.1f}}[bg];"
         "[1:a]adelay=850|850,volume=1.10,highpass=f=90,lowpass=f=8500,"
         "acompressor=threshold=-18dB:ratio=2.5:attack=12:release=180[vox];"
-        "[bg][vox]amix=inputs=2:duration=longest:dropout_transition=2,"
+        "[bg][vox]amix=inputs=2:duration=longest:dropout_transition=3,"
         "alimiter=limit=0.88[out]"
     )
     subprocess.run(
@@ -783,7 +815,7 @@ def render_guide_fallback_mp3(request: dict, result) -> Path:
         lyrics=result.lyrics,
         vocal=result.vocal,
         melody=result.melody,
-        duration_seconds=int(request.get("duration_seconds", 30)),
+        duration_seconds=int(request.get("planned_duration_seconds", request.get("duration_seconds", 30))),
     )
     fallback_dir = OUTPUT_DIR / "fallback"
     generated = GuideTrackGenerator().generate(generator_input, fallback_dir)
@@ -814,8 +846,14 @@ def main() -> None:
     tts_error = ""
     backing_mp3_path = None
     vocal_path = None
+    duration_plan = build_duration_plan(request, result)
+    request["planned_duration_seconds"] = duration_plan["planned_backing_duration_seconds"]
+    (OUTPUT_DIR / "duration_plan.json").write_text(
+        json.dumps(duration_plan, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     try:
-        backing_mp3_path = render_musicgen_backing_mp3(request, result.prompt, result.negative_prompt)
+        backing_mp3_path = render_musicgen_backing_mp3(request, result.prompt, result.negative_prompt, duration_plan)
         generation_backend = "musicgen"
     except Exception as exc:
         musicgen_error = "".join(traceback.format_exception(exc))[-4000:]
@@ -825,7 +863,7 @@ def main() -> None:
 
     try:
         vocal_path = render_mms_tts_vocal(request, result)
-        mp3_path = mix_vocal_with_backing(request, backing_mp3_path, vocal_path)
+        mp3_path = mix_vocal_with_backing(request, backing_mp3_path, vocal_path, duration_plan)
         generation_backend = generation_backend + "+mms_tts_vocal_mix"
     except Exception as exc:
         tts_error = "".join(traceback.format_exception(exc))[-4000:]
@@ -843,6 +881,12 @@ def main() -> None:
         "run_id": request.get("run_id"),
         "backend": generation_backend,
         "model": request.get("model"),
+        "duration_policy": "soft_target",
+        "target_duration_seconds": duration_plan["target_duration_seconds"],
+        "planned_backing_duration_seconds": duration_plan["planned_backing_duration_seconds"],
+        "estimated_vocal_duration_seconds": duration_plan["estimated_vocal_duration_seconds"],
+        "outro_tail_seconds": duration_plan["outro_tail_seconds"],
+        "duration_plan": duration_plan,
         "tts_model": request.get("tts_model") or DEFAULT_TTS_MODEL,
         "tts_voice_actual": DEFAULT_TTS_VOICE_ACTUAL,
         "tts_voice_note": DEFAULT_TTS_VOICE_NOTE,
@@ -1032,6 +1076,30 @@ def _apply_kaggle_result_metadata(state: dict[str, Any], files: list[Path]) -> N
         tts_voice_note = data.get("tts_voice_note")
         if isinstance(tts_voice_note, str):
             state["tts_voice_note"] = tts_voice_note
+        duration_plan = data.get("duration_plan")
+        if isinstance(duration_plan, dict):
+            state["duration_plan"] = duration_plan
+            for key in (
+                "policy",
+                "target_duration_seconds",
+                "planned_backing_duration_seconds",
+                "estimated_vocal_duration_seconds",
+                "outro_tail_seconds",
+                "lyric_line_count",
+                "lyric_word_count",
+            ):
+                if key in duration_plan:
+                    state_key = "duration_policy" if key == "policy" else key
+                    state[state_key] = duration_plan[key]
+        for key in (
+            "duration_policy",
+            "target_duration_seconds",
+            "planned_backing_duration_seconds",
+            "estimated_vocal_duration_seconds",
+            "outro_tail_seconds",
+        ):
+            if key in data:
+                state[key] = data[key]
         backing_path = data.get("backing_path")
         if isinstance(backing_path, str):
             state["kaggle_backing_path"] = backing_path

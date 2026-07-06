@@ -14,7 +14,7 @@ let isGenerating = false;
 let activePollId = 0;
 
 duration.addEventListener("input", () => {
-  durationValue.textContent = `${duration.value}s`;
+  durationValue.textContent = `${duration.value}s target`;
 });
 
 form.addEventListener("submit", async (event) => {
@@ -68,6 +68,10 @@ function setGenerating(active, label = "Generate MP3") {
 }
 
 function renderJob(job) {
+  const durationPlan = job.duration_plan || {};
+  const targetDuration = job.target_duration_seconds || durationPlan.target_duration_seconds;
+  const plannedBacking = job.planned_backing_duration_seconds || durationPlan.planned_backing_duration_seconds;
+  const outroTail = job.outro_tail_seconds || durationPlan.outro_tail_seconds;
   const lines = [
     `Status: ${job.status}`,
     `Model: ${job.model}`,
@@ -78,6 +82,15 @@ function renderJob(job) {
     "",
     ...(job.messages || []),
   ];
+  if (targetDuration) {
+    lines.splice(2, 0, `Target duration: ${targetDuration}s (soft)`);
+  }
+  if (plannedBacking) {
+    lines.splice(targetDuration ? 3 : 2, 0, `Planned backing: ~${plannedBacking}s`);
+  }
+  if (outroTail) {
+    lines.splice(targetDuration || plannedBacking ? 4 : 2, 0, `Outro tail: ~${outroTail}s`);
+  }
   if (job.mp3_path) {
     lines.push("", `MP3: ${job.mp3_path}`);
   }
