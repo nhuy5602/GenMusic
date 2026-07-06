@@ -50,7 +50,7 @@ def build_music_prompt(
         f"vocal plan: {vocal.gender}, {vocal.register}, pitch center {vocal.pitch_center}, "
         f"comfortable range {vocal.range_low}-{vocal.range_high}, {vocal.delivery}, "
         f"{vocal.intensity} intensity; "
-        f"compose a singer-ready melody for the Vietnamese lyric sheet titled '{lyrics.title}'; "
+        "compose a singer-ready melody for the Vietnamese lyric sheet; "
         f"lyric hook reference: '{lyric_hint}'; "
         "clean accompaniment, optional soft wordless humming only, no garbled sung words, "
         "original melody, clean arrangement, natural ending"

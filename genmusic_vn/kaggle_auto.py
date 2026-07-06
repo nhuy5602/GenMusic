@@ -23,6 +23,8 @@ class KaggleAutoError(RuntimeError):
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_TTS_MODEL = "facebook/mms-tts-vie"
+DEFAULT_TTS_VOICE_NOTE = "MMS Vietnamese TTS is a fixed single-speaker voice; gender labels are singer recommendations only."
 
 
 @dataclass(frozen=True)
@@ -111,7 +113,7 @@ def stage_text_to_music_job(
         "duration_seconds": duration_seconds,
         "genre": genre or "Vietnamese cinematic pop text-to-song",
         "model": config.model,
-        "tts_model": "facebook/mms-tts-vie",
+        "tts_model": DEFAULT_TTS_MODEL,
         "backend": "musicgen",
         "created_at": _now(),
     }
@@ -187,7 +189,9 @@ def stage_text_to_music_job(
         "backing_url": "",
         "vocal_path": "",
         "vocal_url": "",
-        "tts_model": "facebook/mms-tts-vie",
+        "tts_model": DEFAULT_TTS_MODEL,
+        "tts_voice_actual": "fixed_mms_vietnamese_voice",
+        "tts_voice_note": DEFAULT_TTS_VOICE_NOTE,
         "commands": commands,
         "messages": ["Kaggle MusicGen job files prepared."],
         "last_error": "",
@@ -473,6 +477,9 @@ SOURCE_DIR = Path("/kaggle/working/genmusic_vn_source")
 PIPELINE_DIR = Path("/kaggle/working/pipeline_output")
 OUTPUT_DIR = Path("/kaggle/working/genmusic_vn")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+DEFAULT_TTS_MODEL = "facebook/mms-tts-vie"
+DEFAULT_TTS_VOICE_ACTUAL = "fixed_mms_vietnamese_voice"
+DEFAULT_TTS_VOICE_NOTE = "MMS Vietnamese TTS is a fixed single-speaker voice; gender labels are singer recommendations only."
 
 
 def ensure(import_name: str, *pip_specs: str) -> None:
@@ -630,9 +637,6 @@ def lyric_lines_for_tts(result) -> list[str]:
         if not stripped:
             continue
         if stripped.startswith("[Title]"):
-            title = stripped.removeprefix("[Title]").strip()
-            if title:
-                lines.append(title)
             continue
         if stripped.startswith("["):
             continue
@@ -653,7 +657,7 @@ def render_mms_tts_vocal(request: dict, result) -> Path:
     from scipy.io import wavfile
     from transformers import AutoModelForTextToWaveform, AutoTokenizer
 
-    model_name = request.get("tts_model") or "facebook/mms-tts-vie"
+    model_name = request.get("tts_model") or DEFAULT_TTS_MODEL
     device = "cuda" if torch.cuda.is_available() else "cpu"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForTextToWaveform.from_pretrained(model_name).to(device)
@@ -713,7 +717,7 @@ def apply_vocal_profile(raw_path: Path, output_path: Path, vocal, sampling_rate:
     if gender == "male":
         pitch_filter = f"asetrate={{sampling_rate}}*0.90,aresample={{sampling_rate}},atempo=1.111"
     elif gender == "female":
-        pitch_filter = f"asetrate={{sampling_rate}}*1.03,aresample={{sampling_rate}},atempo=0.971"
+        pitch_filter = f"asetrate={{sampling_rate}}*1.10,aresample={{sampling_rate}},atempo=0.909"
     else:
         pitch_filter = f"aresample={{sampling_rate}}"
     filter_chain = (
@@ -839,7 +843,9 @@ def main() -> None:
         "run_id": request.get("run_id"),
         "backend": generation_backend,
         "model": request.get("model"),
-        "tts_model": request.get("tts_model") or "facebook/mms-tts-vie",
+        "tts_model": request.get("tts_model") or DEFAULT_TTS_MODEL,
+        "tts_voice_actual": DEFAULT_TTS_VOICE_ACTUAL,
+        "tts_voice_note": DEFAULT_TTS_VOICE_NOTE,
         "mp3_path": str(mp3_path),
         "backing_path": str(backing_mp3_path),
         "vocal_path": str(vocal_path) if vocal_path else "",
@@ -1020,6 +1026,12 @@ def _apply_kaggle_result_metadata(state: dict[str, Any], files: list[Path]) -> N
         tts_model = data.get("tts_model")
         if isinstance(tts_model, str):
             state["tts_model"] = tts_model
+        tts_voice_actual = data.get("tts_voice_actual")
+        if isinstance(tts_voice_actual, str):
+            state["tts_voice_actual"] = tts_voice_actual
+        tts_voice_note = data.get("tts_voice_note")
+        if isinstance(tts_voice_note, str):
+            state["tts_voice_note"] = tts_voice_note
         backing_path = data.get("backing_path")
         if isinstance(backing_path, str):
             state["kaggle_backing_path"] = backing_path

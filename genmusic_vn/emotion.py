@@ -39,6 +39,11 @@ PHRASE_LEXICON = {
         "tức giận": 1.9,
         "bốc cháy": 1.5,
         "gào thét": 1.7,
+        "bất công": 2.0,
+        "cúi đầu": 1.4,
+        "siết chặt": 1.4,
+        "trống trận": 1.7,
+        "nhịp tim dồn": 1.3,
     },
     "fear": {
         "bóng đêm": 1.6,
@@ -80,7 +85,7 @@ PHRASE_LEXICON = {
 WORD_LEXICON = {
     "joy": {"vui": 1.2, "cười": 1.1, "nắng": 0.8, "mừng": 1.2, "sáng": 0.8, "rạng": 1.0},
     "sadness": {"buồn": 1.5, "đau": 1.4, "khóc": 1.2, "mưa": 0.8, "xa": 0.9, "nhớ": 0.9, "lạc": 0.8},
-    "anger": {"giận": 1.5, "tức": 1.4, "cháy": 1.1, "đập": 0.9, "xé": 1.0, "gắt": 1.0},
+    "anger": {"giận": 1.5, "tức": 1.4, "cháy": 1.1, "đập": 0.9, "xé": 1.0, "gắt": 1.0, "bất": 0.6, "công": 0.6, "trống": 1.0, "trận": 0.8, "siết": 0.8},
     "fear": {"sợ": 1.5, "lo": 1.2, "lạnh": 0.9, "tối": 0.9, "run": 1.0, "mất": 0.8},
     "calm": {"êm": 1.0, "dịu": 1.2, "lặng": 1.0, "hiền": 1.0, "yên": 1.1, "ru": 0.8},
     "romantic": {"yêu": 1.5, "thương": 1.3, "tim": 1.1, "môi": 0.8, "hôn": 1.0, "hẹn": 0.9},
@@ -145,4 +150,3 @@ def analyze_emotion(text: str) -> EmotionProfile:
         keywords=extract_keywords(text),
         scores={label: round(score, 3) for label, score in sorted(scores.items())},
     )
-

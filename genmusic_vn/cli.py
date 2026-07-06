@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from .evaluation import DEFAULT_EVAL_DATASET, evaluate_dataset
 from .kaggle_auto import KaggleAutoError, KaggleJobConfig, submit_text_to_music_job, sync_kaggle_artifact
 
 
@@ -29,6 +30,11 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--source", required=True, choices=["dataset", "kernel"], help="Download from a Kaggle dataset or kernel output.")
     sync.add_argument("--ref", required=True, help="Kaggle ref, e.g. username/dataset-slug or username/kernel-slug.")
     sync.add_argument("--out", default="models/current", help="Local target directory.")
+
+    evaluate = sub.add_parser("evaluate", help="Evaluate text-to-lyrics/vocal planning on the benchmark dataset.")
+    evaluate.add_argument("--dataset", default=str(DEFAULT_EVAL_DATASET), help="JSONL evaluation dataset.")
+    evaluate.add_argument("--out", default="outputs/evaluation", help="Output directory for evaluation artifacts.")
+    evaluate.add_argument("--duration", type=int, default=12, help="Duration used for pipeline planning.")
     return parser
 
 
@@ -44,6 +50,15 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"error": str(exc)}, ensure_ascii=False, indent=2))
             return 1
         print(json.dumps(manifest, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "evaluate":
+        report = evaluate_dataset(args.dataset, output_root=args.out, duration_seconds=args.duration)
+        report_path = Path(args.out) / "evaluation_report.json"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report["report_path"] = str(report_path)
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
 
     job = submit_text_to_music_job(

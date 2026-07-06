@@ -8,6 +8,7 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
+from genmusic_vn.evaluation import evaluate_dataset, load_eval_dataset
 from genmusic_vn.emotion import analyze_emotion
 from genmusic_vn.kaggle_auto import (
     KaggleJobConfig,
@@ -71,6 +72,7 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("song form:", result.prompt)
             self.assertIn("vocal plan:", result.prompt)
             self.assertIn("singer-ready melody", result.prompt)
+            self.assertNotIn("titled", result.prompt)
             self.assertNotIn("without lead vocal", result.prompt)
             self.assertIn(result.vocal.gender, {"female", "male", "duet"})
             self.assertIn("vocal", json.loads((Path(temp) / result.run_id / "prompt_pack.json").read_text(encoding="utf-8")))
@@ -84,7 +86,9 @@ class PipelineTests(unittest.TestCase):
                 render_audio=False,
             )
             lyrics_text = "\n".join(result.lyrics.full_song)
+            self.assertEqual(result.lyrics.title, "")
             self.assertEqual(result.lyrics.song_form, ["Verse", "Chorus", "Outro"])
+            self.assertFalse(any("[Title]" in line for line in result.lyrics.full_song))
             self.assertFalse(any("[Verse 2]" in line for line in result.lyrics.full_song))
             self.assertIn("ngày xưa nghiêng trong màu nắng cũ", lyrics_text)
             self.assertIn("chiều ơi, ở lại thêm một lần", lyrics_text)
@@ -93,6 +97,7 @@ class PipelineTests(unittest.TestCase):
             self.assertNotIn("o lai", lyrics_text)
             self.assertNotIn("binh yen", lyrics_text)
             self.assertIn("vocal plan:", result.prompt)
+            self.assertNotIn("titled", result.prompt)
             self.assertNotIn("no lead vocal", result.prompt)
             self.assertNotIn("lyric lines:", result.prompt)
             self.assertTrue(result.vocal.pitch_center)
@@ -109,6 +114,8 @@ class PipelineTests(unittest.TestCase):
             )
             self.assertEqual(job["status"], "staged")
             self.assertEqual(job["backend"], "musicgen")
+            self.assertEqual(job["tts_voice_actual"], "fixed_mms_vietnamese_voice")
+            self.assertIn("fixed single-speaker", job["tts_voice_note"])
             self.assertTrue((Path(job["dataset_dir"]) / "request.json").exists())
             source_zip = Path(job["dataset_dir"]) / "genmusic_vn_source.zip"
             self.assertTrue(source_zip.exists())
@@ -126,6 +133,7 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("render_mms_tts_vocal", kernel_script)
             self.assertIn("mix_vocal_with_backing", kernel_script)
             self.assertIn("_backing.mp3", kernel_script)
+            self.assertIn("tts_voice_actual", kernel_script)
 
     def test_slugify_keeps_kaggle_safe_slug(self) -> None:
         self.assertEqual(slugify("GenMusic Việt Nam Demo!!!", 50), "genmusic-viet-nam-demo")
@@ -142,6 +150,16 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(sadness["scale"], "minor")
         self.assertIn("sao_truc", sadness["vietnamese_instruments"])
         self.assertIn("ngày xưa nghiêng", load_stylebank()["lyric_patterns"]["patterns"]["nostalgic"]["chorus"][0])
+
+    def test_evaluation_dataset_reports_metrics(self) -> None:
+        records = load_eval_dataset()
+        self.assertGreaterEqual(len(records), 6)
+        with tempfile.TemporaryDirectory() as temp:
+            report = evaluate_dataset(output_root=temp, duration_seconds=8)
+        self.assertGreaterEqual(report["sample_count"], 6)
+        self.assertIn("emotion_match", report["summary"])
+        self.assertIn("no_title", report["summary"])
+        self.assertIn("romanized_violation_count", report["summary"])
 
     def test_kaggle_api_tokens_can_be_read_from_environment(self) -> None:
         old_username = os.environ.get("KAGGLE_USERNAME")

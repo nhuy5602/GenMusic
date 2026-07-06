@@ -72,6 +72,7 @@ function renderJob(job) {
     `Status: ${job.status}`,
     `Model: ${job.model}`,
     `TTS: ${job.tts_model || "facebook/mms-tts-vie"}`,
+    `TTS voice: ${job.tts_voice_actual || "fixed_mms_vietnamese_voice"}`,
     `Dataset: ${job.dataset_ref}`,
     `Kernel: ${job.kernel_ref}`,
     "",
@@ -159,7 +160,9 @@ function renderLyrics(job) {
   const lines = [];
   const vocal = job.vocal_plan || {};
   if (Object.keys(vocal).length) {
-    lines.push(`Voice: ${formatVocalGender(vocal.gender)} ${vocal.register || ""}`.trim());
+    lines.push(`Recommended singer: ${formatVocalGender(vocal.gender)} ${vocal.register || ""}`.trim());
+    lines.push(`Actual TTS voice: ${job.tts_voice_actual || "fixed_mms_vietnamese_voice"}`);
+    if (job.tts_voice_note) lines.push(`TTS note: ${job.tts_voice_note}`);
     lines.push(`Pitch: ${vocal.pitch_center || "-"} | Range: ${vocal.range_low || "-"}-${vocal.range_high || "-"}`);
     if (vocal.delivery) lines.push(`Delivery: ${vocal.delivery}`);
     if (vocal.intensity) lines.push(`Intensity: ${vocal.intensity}`);

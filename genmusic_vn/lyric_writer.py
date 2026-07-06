@@ -17,13 +17,6 @@ DEFAULT_CHORUS = {
 }
 
 
-def _title_from_keywords(keywords: list[str], fallback: str) -> str:
-    if keywords:
-        return " ".join(keywords[:4]).capitalize()
-    first = compact_line(fallback, 4)
-    return first.capitalize() if first else "Khúc hát chưa đặt tên"
-
-
 def _polish_line(line: str) -> str:
     return line.strip(" ,.;:-").lower()
 
@@ -100,7 +93,6 @@ def _make_outro(chorus: list[str], emotion: EmotionProfile) -> list[str]:
 
 
 def _build_full_song(
-    title: str,
     verse1: list[str],
     pre_chorus: list[str],
     chorus: list[str],
@@ -110,8 +102,6 @@ def _build_full_song(
 ) -> tuple[list[str], list[str]]:
     song_form = ["Verse 1", "Pre-Chorus", "Chorus", "Verse 2", "Bridge", "Final Chorus", "Outro"]
     full_song = [
-        f"[Title] {title}",
-        "",
         "[Verse 1]",
         *verse1,
         "",
@@ -137,13 +127,11 @@ def _build_full_song(
     return song_form, full_song
 
 
-def _build_short_song(title: str, verse: list[str], chorus: list[str], outro: list[str]) -> tuple[list[str], list[str]]:
+def _build_short_song(verse: list[str], chorus: list[str], outro: list[str]) -> tuple[list[str], list[str]]:
     short_verse = verse[:2]
     short_chorus = chorus[:2]
     song_form = ["Verse", "Chorus", "Outro"]
     full_song = [
-        f"[Title] {title}",
-        "",
         "[Verse]",
         *short_verse,
         "",
@@ -157,8 +145,6 @@ def _build_short_song(title: str, verse: list[str], chorus: list[str], outro: li
 
 
 def rewrite_lyrics(text: str, emotion: EmotionProfile, harmony: HarmonyPlan) -> LyricDraft:
-    keywords = extract_keywords(text, 10)
-    title = _title_from_keywords(keywords, text)
     sentence_count = len(split_sentences(text))
     word_count = len(tokenize_words(text))
     verse1 = _make_verse_lines(text, offset=0)
@@ -170,12 +156,12 @@ def rewrite_lyrics(text: str, emotion: EmotionProfile, harmony: HarmonyPlan) -> 
     hook_words = tokenize_words(chorus[1])[:6]
     hook = " ".join(hook_words) if hook_words else chorus[1]
     if sentence_count <= 2 and word_count <= 40:
-        song_form, full_song = _build_short_song(title, verse1, chorus, outro)
+        song_form, full_song = _build_short_song(verse1, chorus, outro)
     else:
-        song_form, full_song = _build_full_song(title, verse1, pre_chorus, chorus, verse2, bridge, outro)
+        song_form, full_song = _build_full_song(verse1, pre_chorus, chorus, verse2, bridge, outro)
 
     return LyricDraft(
-        title=title,
+        title="",
         verse=verse1,
         chorus=chorus,
         bridge=bridge,
