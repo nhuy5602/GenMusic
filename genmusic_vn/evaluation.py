@@ -62,6 +62,8 @@ def evaluate_dataset(
         "dataset": str(Path(dataset_path)),
         "sample_count": len(items),
         "summary": summary,
+        "by_length": _aggregate_by(items, "length_bucket"),
+        "by_expected_emotion": _aggregate_by(items, "expected_emotion"),
         "items": items,
     }
 
@@ -110,6 +112,8 @@ def evaluate_record(record: dict[str, Any], output_root: Path, *, duration_secon
 
     return {
         "id": record.get("id", result.run_id),
+        "length_bucket": record.get("length_bucket", "unknown"),
+        "expected_emotion": sorted(expected_emotions)[0] if expected_emotions else "",
         "expected": {
             "emotions": sorted(expected_emotions),
             "keywords": expected_keywords,
@@ -169,3 +173,10 @@ def _aggregate(items: list[dict[str, Any]]) -> dict[str, float]:
         name: _mean([item["metrics"][name] for item in items])
         for name in metric_names
     }
+
+
+def _aggregate_by(items: list[dict[str, Any]], key: str) -> dict[str, dict[str, float]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        grouped.setdefault(str(item.get(key) or "unknown"), []).append(item)
+    return {group: _aggregate(group_items) for group, group_items in sorted(grouped.items())}

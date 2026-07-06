@@ -21,6 +21,7 @@ from genmusic_vn.kaggle_auto import (
 from genmusic_vn.music_theory import chord_notes
 from genmusic_vn.pipeline import create_music_project
 from genmusic_vn.stylebank import get_emotion_music, load_stylebank
+from genmusic_vn.synthetic_dataset import generate_synthetic_records, write_jsonl
 
 
 class PipelineTests(unittest.TestCase):
@@ -91,7 +92,7 @@ class PipelineTests(unittest.TestCase):
             self.assertFalse(any("[Title]" in line for line in result.lyrics.full_song))
             self.assertFalse(any("[Verse 2]" in line for line in result.lyrics.full_song))
             self.assertIn("ngày xưa nghiêng trong màu nắng cũ", lyrics_text)
-            self.assertIn("chiều ơi, ở lại thêm một lần", lyrics_text)
+            self.assertIn("phố cũ ơi, ở lại thêm một lần", lyrics_text)
             self.assertIn("bình yên nằm lại trên đôi tay", lyrics_text)
             self.assertNotIn("ngay xua", lyrics_text)
             self.assertNotIn("o lai", lyrics_text)
@@ -160,6 +161,19 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("emotion_match", report["summary"])
         self.assertIn("no_title", report["summary"])
         self.assertIn("romanized_violation_count", report["summary"])
+        self.assertIn("unknown", report["by_length"])
+        self.assertIn("nostalgic", report["by_expected_emotion"])
+
+    def test_synthetic_evaluation_dataset_can_be_generated(self) -> None:
+        records = generate_synthetic_records(6, seed=7, lengths=["short"])
+        self.assertEqual(len(records), 6)
+        self.assertTrue(all(record["length_bucket"] == "short" for record in records))
+        with tempfile.TemporaryDirectory() as temp:
+            dataset_path = write_jsonl(records, Path(temp) / "synthetic.jsonl")
+            report = evaluate_dataset(dataset_path, output_root=Path(temp) / "runs", duration_seconds=8)
+        self.assertEqual(report["sample_count"], 6)
+        self.assertIn("short", report["by_length"])
+        self.assertGreaterEqual(report["summary"]["no_title"], 1.0)
 
     def test_kaggle_api_tokens_can_be_read_from_environment(self) -> None:
         old_username = os.environ.get("KAGGLE_USERNAME")

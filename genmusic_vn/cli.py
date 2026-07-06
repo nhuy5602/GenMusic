@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .evaluation import DEFAULT_EVAL_DATASET, evaluate_dataset
 from .kaggle_auto import KaggleAutoError, KaggleJobConfig, submit_text_to_music_job, sync_kaggle_artifact
+from .synthetic_dataset import generate_synthetic_records, write_jsonl
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -35,6 +36,13 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--dataset", default=str(DEFAULT_EVAL_DATASET), help="JSONL evaluation dataset.")
     evaluate.add_argument("--out", default="outputs/evaluation", help="Output directory for evaluation artifacts.")
     evaluate.add_argument("--duration", type=int, default=12, help="Duration used for pipeline planning.")
+
+    synth = sub.add_parser("make-eval-dataset", help="Generate a labeled synthetic JSONL benchmark dataset.")
+    synth.add_argument("--count", type=int, default=24, help="Number of synthetic records.")
+    synth.add_argument("--seed", type=int, default=42, help="Deterministic random seed.")
+    synth.add_argument("--out", default="datasets/evaluation/synthetic_eval.jsonl", help="Output JSONL path.")
+    synth.add_argument("--emotions", default="", help="Comma-separated emotion labels. Defaults to all labels.")
+    synth.add_argument("--lengths", default="", help="Comma-separated length buckets: short,medium,long.")
     return parser
 
 
@@ -59,6 +67,14 @@ def main(argv: list[str] | None = None) -> int:
         report["report_path"] = str(report_path)
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "make-eval-dataset":
+        emotions = [item.strip() for item in args.emotions.split(",") if item.strip()] or None
+        lengths = [item.strip() for item in args.lengths.split(",") if item.strip()] or None
+        records = generate_synthetic_records(args.count, seed=args.seed, emotions=emotions, lengths=lengths)
+        output_path = write_jsonl(records, args.out)
+        print(json.dumps({"path": str(output_path), "count": len(records), "seed": args.seed}, ensure_ascii=False, indent=2))
         return 0
 
     job = submit_text_to_music_job(

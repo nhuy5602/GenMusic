@@ -17,12 +17,60 @@ DEFAULT_CHORUS = {
 }
 
 
+MOTIF_PHRASES = {
+    "joy": ["tiếng cười", "ngày mới", "nắng sớm", "con đường mới"],
+    "sadness": ["nỗi nhớ", "mưa", "đêm", "người rời xa", "lời chưa nói"],
+    "anger": ["bất công", "nhịp tim", "trống trận", "bàn tay", "vết thương"],
+    "fear": ["bóng tối", "căn phòng", "đường vắng", "ánh sáng"],
+    "calm": ["bờ sông", "gió", "tiếng nước", "bình yên", "hàng cây"],
+    "romantic": ["thành phố", "đèn vàng", "lời chào", "mùa hẹn", "yêu thương"],
+    "hope": ["ánh sáng", "khởi đầu", "ngày mai", "niềm tin", "đứng dậy"],
+    "nostalgic": ["phố cũ", "ánh đèn", "lời hứa", "chiều mưa", "ngày xưa"],
+}
+BAD_MOTIFS = {
+    "sau",
+    "nhiều",
+    "chúng",
+    "muốn",
+    "gặp",
+    "dưới",
+    "hàng",
+    "lời",
+    "chào",
+    "khẽ",
+    "đủ",
+    "buổi",
+    "sáng",
+    "một",
+    "tôi",
+    "anh",
+    "em",
+}
+
+
 def _polish_line(line: str) -> str:
     return line.strip(" ,.;:-").lower()
 
 
-def _line_from_sentence(sentence: str, max_words: int = 9) -> str:
+def _line_from_sentence(sentence: str, max_words: int = 10) -> str:
     return _polish_line(compact_line(sentence, max_words=max_words))
+
+
+def _line_chunks_from_sentence(sentence: str, max_words: int = 10, max_lines: int = 2) -> list[str]:
+    words = tokenize_words(sentence)
+    if not words:
+        return []
+    if len(words) <= max_words:
+        return [_line_from_sentence(sentence, max_words=max_words)]
+
+    lines: list[str] = []
+    for start in range(0, len(words), max_words):
+        chunk = _polish_line(" ".join(words[start : start + max_words]))
+        if chunk:
+            lines.append(chunk)
+        if len(lines) >= max_lines:
+            break
+    return lines
 
 
 def _make_verse_lines(text: str, offset: int = 0) -> list[str]:
@@ -30,11 +78,17 @@ def _make_verse_lines(text: str, offset: int = 0) -> list[str]:
     lines: list[str] = []
     selected = sentences[offset : offset + 4]
     for sentence in selected:
-        compacted = _line_from_sentence(sentence, max_words=9)
-        if compacted:
-            lines.append(compacted)
+        remaining = 4 - len(lines)
+        word_len = len(tokenize_words(sentence))
+        max_lines = min(remaining, 3 if len(selected) == 1 else (2 if word_len > 9 else 1))
+        for compacted in _line_chunks_from_sentence(sentence, max_words=10, max_lines=max_lines):
+            if compacted:
+                lines.append(compacted)
         if len(lines) >= 4:
             break
+
+    if offset == 0 and len(sentences) <= 2 and lines:
+        return lines[:4]
 
     keywords = extract_keywords(text, 10)
     while len(lines) < 4:
@@ -47,9 +101,24 @@ def _make_verse_lines(text: str, offset: int = 0) -> list[str]:
     return lines[:4]
 
 
+def _select_motif(text: str, emotion: EmotionProfile, limit: int = 10) -> str:
+    lowered = text.lower()
+    for phrase in MOTIF_PHRASES.get(emotion.label, []):
+        if phrase in lowered:
+            return phrase
+    for phrase_list in MOTIF_PHRASES.values():
+        for phrase in phrase_list:
+            if phrase in lowered:
+                return phrase
+
+    for keyword in extract_keywords(text, limit):
+        if keyword not in BAD_MOTIFS and len(keyword) > 2:
+            return keyword
+    return emotion.label_vi
+
+
 def _make_pre_chorus(text: str, emotion: EmotionProfile) -> list[str]:
-    keywords = extract_keywords(text, 8)
-    motif = keywords[0] if keywords else emotion.label_vi
+    motif = _select_motif(text, emotion, 8)
     if emotion.valence < -0.2:
         return [f"ta giữ {motif} ở giữa lặng im", "để trái tim tìm lại lối về"]
     if emotion.energy > 0.65:
@@ -58,8 +127,7 @@ def _make_pre_chorus(text: str, emotion: EmotionProfile) -> list[str]:
 
 
 def _make_bridge(text: str, emotion: EmotionProfile, harmony: HarmonyPlan) -> list[str]:
-    keywords = extract_keywords(text, 6)
-    center = keywords[0] if keywords else emotion.label_vi
+    center = _select_motif(text, emotion, 6)
     pattern = get_lyric_pattern(emotion.label)
     bridge_template = pattern.get("bridge", [])
     if len(bridge_template) >= 2:
@@ -72,8 +140,7 @@ def _make_bridge(text: str, emotion: EmotionProfile, harmony: HarmonyPlan) -> li
 
 
 def _make_chorus(text: str, emotion: EmotionProfile) -> list[str]:
-    keywords = extract_keywords(text, 10)
-    motif = keywords[0] if keywords else emotion.label_vi
+    motif = _select_motif(text, emotion, 10)
     pattern = get_lyric_pattern(emotion.label)
     template = pattern.get("chorus") or DEFAULT_CHORUS.get(emotion.label, DEFAULT_CHORUS["calm"])
     return [
@@ -128,7 +195,7 @@ def _build_full_song(
 
 
 def _build_short_song(verse: list[str], chorus: list[str], outro: list[str]) -> tuple[list[str], list[str]]:
-    short_verse = verse[:2]
+    short_verse = verse[:3]
     short_chorus = chorus[:2]
     song_form = ["Verse", "Chorus", "Outro"]
     full_song = [
