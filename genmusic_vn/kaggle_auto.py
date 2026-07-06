@@ -579,15 +579,20 @@ def build_duration_plan(request: dict, result) -> dict:
     lines = lyric_lines_for_duration(result)
     word_count = sum(len(line.split()) for line in lines)
     section_count = sum(1 for line in result.lyrics.full_song if line.strip().startswith("["))
-    estimated_vocal = word_count * 0.48 + max(0, len(lines) - 1) * 0.55 + section_count * 0.55
-    outro_tail = 6.0 if target <= 30 else 8.0
-    breathing_room = min(24.0, max(5.0, len(lines) * 0.5))
-    planned = int(round(max(target + outro_tail, estimated_vocal + breathing_room + outro_tail)))
+    estimated_vocal = word_count * 0.42 + max(0, len(lines) - 1) * 0.35 + section_count * 0.35
+    outro_tail = 2.5 if target <= 30 else 4.0
+    breathing_room = min(8.0, max(2.0, len(lines) * 0.25))
+    soft_overrun = max(2, min(8, int(round(target * 0.18))))
+    duration_ceiling = min(180, target + soft_overrun)
+    natural_needed = int(round(max(target, estimated_vocal + breathing_room + outro_tail)))
+    planned = min(natural_needed, duration_ceiling)
     planned = max(6, min(180, planned))
     return {{
         "policy": "soft_target",
         "target_duration_seconds": target,
         "planned_backing_duration_seconds": planned,
+        "duration_ceiling_seconds": duration_ceiling,
+        "duration_was_capped": natural_needed > duration_ceiling,
         "estimated_vocal_duration_seconds": round(estimated_vocal, 2),
         "outro_tail_seconds": outro_tail,
         "lyric_line_count": len(lines),
@@ -621,7 +626,8 @@ def render_musicgen_backing_mp3(request: dict, prompt: str, negative_prompt: str
     backing_prompt = (
         prompt
         + "; instrumental backing track only; leave space for a separate Vietnamese vocal track; "
-        "natural ending with a short outro tail; no lead singing, no spoken words, no garbled vocals"
+        "audible instrumental bed starts immediately under the vocal; natural short ending; "
+        "no lead singing, no spoken words, no garbled vocals"
     )
 
     inputs = processor(text=[backing_prompt], padding=True, return_tensors="pt")
@@ -644,6 +650,7 @@ def render_musicgen_backing_mp3(request: dict, prompt: str, negative_prompt: str
     if audio.ndim == 2:
         audio = audio[0]
     audio_np = postprocess_audio(audio.numpy(), sampling_rate)
+    audio_np = enforce_audio_duration(audio_np, sampling_rate, duration)
 
     wav_path = OUTPUT_DIR / f"{{request.get('run_id', 'genmusic_vn')}}_musicgen.wav"
     wavfile.write(str(wav_path), rate=sampling_rate, data=audio_np)
@@ -669,6 +676,22 @@ def postprocess_audio(audio_np, sampling_rate: int):
     audio_np = np.tanh(audio_np * drive) / np.tanh(drive)
     peak = max(1e-6, float(np.max(np.abs(audio_np))))
     return (audio_np / peak * 0.78).astype("float32")
+
+
+def enforce_audio_duration(audio_np, sampling_rate: int, duration_seconds: int):
+    import numpy as np
+
+    target_samples = max(1, int(duration_seconds * sampling_rate))
+    if audio_np.size > target_samples:
+        audio_np = audio_np[:target_samples].copy()
+        fade = min(int(0.45 * sampling_rate), max(1, audio_np.size // 6))
+        if fade > 1:
+            ramp = np.linspace(1.0, 0.0, fade, dtype="float32")
+            audio_np[-fade:] *= ramp
+    elif audio_np.size < target_samples:
+        pad = np.zeros(target_samples - audio_np.size, dtype="float32")
+        audio_np = np.concatenate([audio_np, pad])
+    return audio_np.astype("float32")
 
 
 def lyric_lines_for_tts(result) -> list[str]:
@@ -767,13 +790,12 @@ def apply_vocal_profile(raw_path: Path, output_path: Path, vocal, sampling_rate:
 
 def mix_vocal_with_backing(request: dict, backing_mp3_path: Path, vocal_wav_path: Path, duration_plan: dict) -> Path:
     final_mp3_path = OUTPUT_DIR / f"{{request.get('run_id', 'genmusic_vn')}}.mp3"
-    tail_pad = max(3.0, float(duration_plan.get("outro_tail_seconds", 3.0)))
     filter_complex = (
-        f"[0:a]volume=0.52,afade=t=in:st=0:d=0.20,apad=pad_dur={{tail_pad:.1f}}[bg];"
-        "[1:a]adelay=850|850,volume=1.10,highpass=f=90,lowpass=f=8500,"
+        "[0:a]volume=0.78,afade=t=in:st=0:d=0.08[bg];"
+        "[1:a]adelay=350|350,volume=0.92,highpass=f=90,lowpass=f=8500,"
         "acompressor=threshold=-18dB:ratio=2.5:attack=12:release=180[vox];"
-        "[bg][vox]amix=inputs=2:duration=longest:dropout_transition=3,"
-        "alimiter=limit=0.88[out]"
+        "[bg][vox]amix=inputs=2:duration=first:dropout_transition=1:normalize=0,"
+        "alimiter=limit=0.90[out]"
     )
     subprocess.run(
         [
@@ -884,6 +906,8 @@ def main() -> None:
         "duration_policy": "soft_target",
         "target_duration_seconds": duration_plan["target_duration_seconds"],
         "planned_backing_duration_seconds": duration_plan["planned_backing_duration_seconds"],
+        "duration_ceiling_seconds": duration_plan["duration_ceiling_seconds"],
+        "duration_was_capped": duration_plan["duration_was_capped"],
         "estimated_vocal_duration_seconds": duration_plan["estimated_vocal_duration_seconds"],
         "outro_tail_seconds": duration_plan["outro_tail_seconds"],
         "duration_plan": duration_plan,
@@ -1083,6 +1107,8 @@ def _apply_kaggle_result_metadata(state: dict[str, Any], files: list[Path]) -> N
                 "policy",
                 "target_duration_seconds",
                 "planned_backing_duration_seconds",
+                "duration_ceiling_seconds",
+                "duration_was_capped",
                 "estimated_vocal_duration_seconds",
                 "outro_tail_seconds",
                 "lyric_line_count",
@@ -1095,6 +1121,8 @@ def _apply_kaggle_result_metadata(state: dict[str, Any], files: list[Path]) -> N
             "duration_policy",
             "target_duration_seconds",
             "planned_backing_duration_seconds",
+            "duration_ceiling_seconds",
+            "duration_was_capped",
             "estimated_vocal_duration_seconds",
             "outro_tail_seconds",
         ):

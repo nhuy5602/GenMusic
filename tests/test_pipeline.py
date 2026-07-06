@@ -142,7 +142,10 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("build_duration_plan", kernel_script)
             self.assertIn("planned_backing_duration_seconds", kernel_script)
             self.assertIn("duration_plan.json", kernel_script)
-            self.assertIn("apad=pad_dur=", kernel_script)
+            self.assertIn("duration_ceiling_seconds", kernel_script)
+            self.assertIn("enforce_audio_duration", kernel_script)
+            self.assertIn("duration=first", kernel_script)
+            self.assertIn("normalize=0", kernel_script)
 
     def test_slugify_keeps_kaggle_safe_slug(self) -> None:
         self.assertEqual(slugify("GenMusic Việt Nam Demo!!!", 50), "genmusic-viet-nam-demo")

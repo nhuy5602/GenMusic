@@ -71,6 +71,7 @@ function renderJob(job) {
   const durationPlan = job.duration_plan || {};
   const targetDuration = job.target_duration_seconds || durationPlan.target_duration_seconds;
   const plannedBacking = job.planned_backing_duration_seconds || durationPlan.planned_backing_duration_seconds;
+  const durationCeiling = job.duration_ceiling_seconds || durationPlan.duration_ceiling_seconds;
   const outroTail = job.outro_tail_seconds || durationPlan.outro_tail_seconds;
   const lines = [
     `Status: ${job.status}`,
@@ -88,8 +89,11 @@ function renderJob(job) {
   if (plannedBacking) {
     lines.splice(targetDuration ? 3 : 2, 0, `Planned backing: ~${plannedBacking}s`);
   }
+  if (durationCeiling) {
+    lines.splice(targetDuration || plannedBacking ? 4 : 2, 0, `Soft ceiling: ${durationCeiling}s`);
+  }
   if (outroTail) {
-    lines.splice(targetDuration || plannedBacking ? 4 : 2, 0, `Outro tail: ~${outroTail}s`);
+    lines.splice(targetDuration || plannedBacking || durationCeiling ? 5 : 2, 0, `Outro tail: ~${outroTail}s`);
   }
   if (job.mp3_path) {
     lines.push("", `MP3: ${job.mp3_path}`);
