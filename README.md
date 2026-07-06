@@ -62,15 +62,6 @@ Với text dài, Kaggle tạo `TextPlan`:
 
 Text gốc vẫn được giữ nguyên trong `request.json`; chỉ prompt sinh nhạc được cô đọng để MusicGen không bị loãng.
 
-## Vì Sao Chỉ Dùng MusicGen
-
-Vì đây là bài tập lớn phi thương mại, MusicGen phù hợp để demo:
-
-- mô hình text-to-music dễ giải thích
-- chạy được trên Kaggle GPU
-- local app nhẹ
-- tránh phức tạp khi duy trì nhiều backend sinh nhạc
-
 ## Cài Đặt Kaggle API Token
 
 Tạo token trên Kaggle:
