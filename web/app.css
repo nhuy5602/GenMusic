@@ -284,6 +284,23 @@ canvas {
   padding: 10px;
 }
 
+.warning-slot {
+  border: 1px solid #d68c23;
+  border-left: 4px solid var(--warm);
+  border-radius: 8px;
+  padding: 12px 14px;
+  color: #5a3511;
+  background: #fff7ed;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.warning-slot[hidden] {
+  display: none;
+}
+
 audio {
   display: block;
   width: 100%;

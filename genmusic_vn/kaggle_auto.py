@@ -197,6 +197,7 @@ def stage_text_to_music_job(
         "backing_url": "",
         "vocal_path": "",
         "vocal_url": "",
+        "vocal_failed": False,
         "tts_model": DEFAULT_TTS_MODEL,
         "tts_voice_actual": "fixed_mms_vietnamese_voice",
         "tts_voice_note": DEFAULT_TTS_VOICE_NOTE,
@@ -731,7 +732,14 @@ def render_mms_tts_vocal(request: dict, result, duration_plan: dict) -> Path:
     from transformers import AutoModelForTextToWaveform, AutoTokenizer
 
     model_name = request.get("tts_model") or DEFAULT_TTS_MODEL
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Keep MMS TTS on CPU. On Kaggle, CUDA can be left in a bad state after MusicGen
+    # generation, which makes the TTS model fail before it can render any vocal.
+    device = "cpu"
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForTextToWaveform.from_pretrained(model_name).to(device)
     model.eval()
@@ -951,6 +959,7 @@ def main() -> None:
         tts_error = "".join(traceback.format_exception(exc))[-4000:]
         (OUTPUT_DIR / "tts_error.txt").write_text(tts_error, encoding="utf-8")
         mp3_path = backing_mp3_path
+        generation_backend = generation_backend + "+tts_failed_backing_only"
 
     lyrics_text = "\\n".join(result.lyrics.full_song)
     (OUTPUT_DIR / "lyrics.txt").write_text(lyrics_text, encoding="utf-8")
@@ -976,6 +985,7 @@ def main() -> None:
         "mp3_path": str(mp3_path),
         "backing_path": str(backing_mp3_path),
         "vocal_path": str(vocal_path) if vocal_path else "",
+        "vocal_failed": bool(tts_error),
         "musicgen_error": musicgen_error,
         "tts_error": tts_error,
         "prompt": result.prompt,
@@ -1038,8 +1048,18 @@ def _wait_for_dataset_ready(
         result = _run(cli + ["datasets", "status", state["dataset_ref"], "--format", "json"], timeout=120)
         state["history"].append(_history_item("datasets status", result))
         if result["returncode"] != 0:
+            error = _summarize_cli_error(result)
+            if "403" in error or "GetDatasetStatus" in error:
+                state["status"] = "dataset_ready"
+                state["dataset_status_warning"] = error
+                _append_message_once(
+                    state,
+                    "Kaggle dataset status check was blocked; continuing after successful upload.",
+                )
+                _write_state(state)
+                return True
             state["status"] = "failed"
-            state["last_error"] = _summarize_cli_error(result)
+            state["last_error"] = error
             _append_message_once(state, "Could not read Kaggle dataset status.")
             return False
 
@@ -1123,6 +1143,8 @@ def _download_kernel_output(state: dict[str, Any], cli: list[str], *, expect_mp3
         state["mp3_url"] = _output_url(state, mp3_path)
         if "mms_tts_vocal_mix" in state.get("generation_backend", ""):
             _append_message_once(state, "MusicGen backing and MMS Vietnamese TTS vocal were mixed into the final MP3.")
+        elif state.get("vocal_failed") or "tts_failed" in state.get("generation_backend", ""):
+            _append_message_once(state, "TTS/Vocal failed; downloaded MP3 is backing track only.")
         elif state.get("generation_backend") == "guide_fallback":
             _append_message_once(state, "MusicGen failed on Kaggle; fallback MP3 downloaded.")
         else:
@@ -1194,6 +1216,9 @@ def _apply_kaggle_result_metadata(state: dict[str, Any], files: list[Path]) -> N
         vocal_path = data.get("vocal_path")
         if isinstance(vocal_path, str):
             state["kaggle_vocal_path"] = vocal_path
+        vocal_failed = data.get("vocal_failed")
+        if isinstance(vocal_failed, bool):
+            state["vocal_failed"] = vocal_failed
         musicgen_error = data.get("musicgen_error")
         if isinstance(musicgen_error, str) and musicgen_error.strip():
             state["last_error"] = musicgen_error.strip()[-1000:]

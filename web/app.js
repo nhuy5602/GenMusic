@@ -7,6 +7,7 @@ const buttonText = generateButton.querySelector(".button-text");
 const kaggleJobBox = document.querySelector("#kaggle-job");
 const downloads = document.querySelector("#downloads");
 const audioSlot = document.querySelector("#audio-slot");
+const warningSlot = document.querySelector("#warning-slot");
 const lyricsOutput = document.querySelector("#lyrics-output");
 const canvas = document.querySelector("#wave-canvas");
 const ctx = canvas.getContext("2d");
@@ -24,6 +25,7 @@ form.addEventListener("submit", async (event) => {
   setGenerating(true, "Submitting...");
   statusPill.textContent = "Submitting";
   downloads.innerHTML = "";
+  renderWarning(null);
   audioSlot.textContent = "Waiting for Kaggle MusicGen output...";
   lyricsOutput.textContent = "Preparing lyrics and vocal plan...";
   kaggleJobBox.textContent = "";
@@ -106,6 +108,7 @@ function renderJob(job) {
   }
   kaggleJobBox.textContent = lines.join("\n");
   renderAudio(job);
+  renderWarning(job);
   renderLyrics(job);
   renderDownloads(job);
   drawWave(job.status);
@@ -150,6 +153,46 @@ function renderAudio(job) {
     return;
   }
   audioSlot.innerHTML = `<audio controls src="${job.mp3_url}"></audio>`;
+}
+
+function renderWarning(job) {
+  if (!warningSlot) return;
+  if (!job) {
+    warningSlot.hidden = true;
+    warningSlot.textContent = "";
+    return;
+  }
+
+  const backend = `${job.generation_backend || job.backend || ""}`;
+  const ttsFailed = Boolean(job.vocal_failed || job.tts_error || backend.includes("tts_failed"));
+  if (ttsFailed) {
+    const detail = summarizeError(job.tts_error || job.last_error || "");
+    warningSlot.hidden = false;
+    warningSlot.textContent = [
+      "TTS/Vocal bị lỗi. MP3 hiện tại chỉ là nhạc nền, chưa có giọng hát.",
+      detail ? `Chi tiết: ${detail}` : "",
+    ].filter(Boolean).join("\n");
+    return;
+  }
+
+  if (job.mp3_url && job.lyrics_text && !job.vocal_url && backend && !backend.includes("mms_tts_vocal_mix")) {
+    warningSlot.hidden = false;
+    warningSlot.textContent = "Không nhận được file vocal WAV từ Kaggle. MP3 có thể chỉ là nhạc nền.";
+    return;
+  }
+
+  warningSlot.hidden = true;
+  warningSlot.textContent = "";
+}
+
+function summarizeError(value) {
+  return String(value || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-4)
+    .join(" ")
+    .slice(0, 420);
 }
 
 function renderDownloads(job) {

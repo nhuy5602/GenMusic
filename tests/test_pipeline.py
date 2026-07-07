@@ -154,6 +154,55 @@ class PipelineTests(unittest.TestCase):
         self.assertGreaterEqual(head_tail_rhyme_rate(head_tail_lines), 0.9)
         self.assertEqual(vietnamese_rhyme_profile(head_tail_lines)["head_tail"], 1.0)
 
+    def test_short_existing_chorus_is_preserved_without_extra_generated_sections(self) -> None:
+        chorus_text = "\n".join(
+            [
+                "Ánh đèn rơi xuống vai",
+                "Vai ai còn giữ tiếng ca",
+                "Ca bay qua phố xa",
+                "Xa rồi vẫn nhớ nhà",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            result = create_music_project(chorus_text, output_root=temp, duration_seconds=30, render_audio=False)
+
+        content_lines = [
+            line
+            for line in result.lyrics.full_song
+            if line.strip() and not line.startswith("[")
+        ]
+        self.assertEqual(result.text_plan.input_kind, "lyrics")
+        self.assertEqual(result.text_plan.mode, "lyrics_chorus")
+        self.assertEqual(result.lyrics.song_form, ["Chorus"])
+        self.assertEqual(len(content_lines), 4)
+        self.assertIn("selected short chorus input", result.lyrics.rhyme_scheme)
+        self.assertGreaterEqual(head_tail_rhyme_rate(content_lines), 0.9)
+
+    def test_flattened_existing_lyrics_are_recovered_as_lyric_lines(self) -> None:
+        flattened = (
+            "Ánh chiều rơi trên mái hiên "
+            "Mưa nhẹ rơi qua phố quen "
+            "Từ ngày em xa chốn cũ "
+            "Đến khi tim thôi gọi tên "
+            "Lời hẹn bay theo cánh gió "
+            "Một ngày ta vẫn chờ nhau "
+            "Từ mùa yêu hóa thành nhớ "
+            "Đến khi đêm ngủ thật sâu"
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            result = create_music_project(flattened, output_root=temp, duration_seconds=30, render_audio=False)
+
+        content_lines = [
+            line
+            for line in result.lyrics.full_song
+            if line.strip() and not line.startswith("[")
+        ]
+        self.assertEqual(result.text_plan.input_kind, "lyrics")
+        self.assertEqual(result.text_plan.mode, "lyrics")
+        self.assertEqual(result.lyrics.song_form, ["Verse", "Chorus"])
+        self.assertLessEqual(len(content_lines), 8)
+        self.assertIn("selected lyric input excerpt", result.lyrics.rhyme_scheme)
+
     def test_existing_long_lyrics_are_arranged_as_duration_limited_excerpt(self) -> None:
         lyric_text = "\n".join(
             [
@@ -228,6 +277,9 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("vocal_plan", kernel_script)
             self.assertIn("facebook/mms-tts-vie", kernel_script)
             self.assertIn("render_mms_tts_vocal", kernel_script)
+            self.assertIn("Keep MMS TTS on CPU", kernel_script)
+            self.assertIn("tts_failed_backing_only", kernel_script)
+            self.assertIn('"vocal_failed": bool(tts_error)', kernel_script)
             self.assertIn("mix_vocal_with_backing", kernel_script)
             self.assertIn("_backing.mp3", kernel_script)
             self.assertIn("tts_voice_actual", kernel_script)

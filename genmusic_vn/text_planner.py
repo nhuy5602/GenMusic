@@ -4,7 +4,7 @@ from collections import Counter
 import unicodedata
 
 from .schemas import TextPlan
-from .text_utils import extract_keywords, normalize_text, split_sentences, tokenize_words
+from .text_utils import extract_keywords, extract_lyric_lines, normalize_text, split_sentences, tokenize_words
 
 
 def build_text_plan(
@@ -62,8 +62,9 @@ def _build_lyric_text_plan(text: str, *, duration_seconds: int | None = None) ->
         "ending": selected[-min(2, len(selected)) :] if selected else [],
         "selected_lyric_lines": selected,
     }
+    mode = "lyrics_chorus" if len(lines) <= 4 else ("lyrics_long" if len(lines) > max_lines else "lyrics")
     return TextPlan(
-        mode="lyrics_long" if len(lines) > max_lines else "lyrics",
+        mode=mode,
         sentence_count=len(lines),
         word_count=len(words),
         keywords=keywords,
@@ -76,29 +77,22 @@ def _build_lyric_text_plan(text: str, *, duration_seconds: int | None = None) ->
 
 def _looks_like_lyrics(text: str) -> bool:
     lines = _lyric_lines(text)
-    if len(lines) < 6:
+    if len(lines) < 2:
         return False
     short_lines = sum(1 for line in lines if 2 <= len(tokenize_words(line)) <= 14)
+    if len(lines) < 6:
+        return ("\n" in text or len(lines) >= 4) and short_lines == len(lines)
     return short_lines / len(lines) >= 0.65
 
 
 def _lyric_lines(text: str) -> list[str]:
-    lines: list[str] = []
-    for raw_line in normalize_text(text).splitlines():
-        line = raw_line.strip(" \t,;:-")
-        if not line:
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            continue
-        if tokenize_words(line):
-            lines.append(line)
-    return lines
+    return extract_lyric_lines(text)
 
 
 def _lyric_line_budget(duration_seconds: int | None) -> int:
     if duration_seconds is None:
         return 12
-    return max(6, min(16, int(max(12, duration_seconds) / 5)))
+    return max(4, min(18, (int(max(16, duration_seconds)) + 3) // 4))
 
 
 def _select_lyric_excerpt(lines: list[str], *, max_lines: int) -> list[str]:

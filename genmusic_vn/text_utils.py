@@ -4,6 +4,53 @@ import re
 from collections import Counter
 
 
+FLATTENED_LYRIC_LINE_STARTS = {
+    "ai",
+    "ánh",
+    "anh",
+    "bao",
+    "bình",
+    "chẳng",
+    "cho",
+    "còn",
+    "cuộc",
+    "dẫu",
+    "để",
+    "đêm",
+    "đến",
+    "đời",
+    "em",
+    "gọi",
+    "hẹn",
+    "hoa",
+    "hóa",
+    "họa",
+    "khi",
+    "lặng",
+    "lời",
+    "lòng",
+    "một",
+    "mưa",
+    "ngày",
+    "nếu",
+    "nhìn",
+    "phố",
+    "sao",
+    "ta",
+    "tháng",
+    "thương",
+    "tiếng",
+    "tình",
+    "trăng",
+    "trời",
+    "từ",
+    "và",
+    "vẫn",
+    "về",
+    "yêu",
+}
+
+
 VI_STOPWORDS = {
     "anh",
     "ấy",
@@ -150,6 +197,64 @@ def split_sentences(text: str) -> list[str]:
 
 def tokenize_words(text: str) -> list[str]:
     return re.findall(r"[^\W\d_]+", text.lower(), flags=re.UNICODE)
+
+
+def extract_lyric_lines(text: str, *, recover_flattened: bool = True) -> list[str]:
+    normalized = normalize_text(text)
+    lines: list[str] = []
+    for raw_line in normalized.splitlines():
+        line = raw_line.strip(" \t,;:-")
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            continue
+        if tokenize_words(line):
+            lines.append(line)
+
+    if len(lines) >= 2 or not recover_flattened:
+        return lines
+
+    recovered = recover_flattened_lyric_lines(normalized)
+    return recovered or lines
+
+
+def recover_flattened_lyric_lines(text: str) -> list[str]:
+    normalized = normalize_text(text)
+    if not normalized or "\n" in normalized or re.search(r"[.!?…]", normalized):
+        return []
+
+    words = re.findall(r"[^\W\d_]+", normalized, flags=re.UNICODE)
+    if len(words) < 24 or len(words) > 180:
+        return []
+
+    lines: list[str] = []
+    current: list[str] = []
+    for word in words:
+        lower_word = word.lower()
+        should_break = current and (
+            (len(current) >= 5 and lower_word in FLATTENED_LYRIC_LINE_STARTS)
+            or len(current) >= 8
+        )
+        if should_break:
+            lines.append(" ".join(current))
+            current = []
+        current.append(word)
+
+    if current:
+        if lines and len(current) < 3:
+            lines[-1] = f"{lines[-1]} {' '.join(current)}"
+        else:
+            lines.append(" ".join(current))
+
+    if len(lines) < 4:
+        return []
+
+    lengths = [len(tokenize_words(line)) for line in lines]
+    short_ratio = sum(4 <= length <= 10 for length in lengths) / len(lengths)
+    average_length = sum(lengths) / len(lengths)
+    if short_ratio < 0.75 or not 5 <= average_length <= 9:
+        return []
+    return lines
 
 
 def extract_keywords(text: str, limit: int = 10) -> list[str]:
