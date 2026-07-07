@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+import unicodedata
+
 from .schemas import EmotionProfile, HarmonyPlan, LyricDraft
 from .stylebank import get_lyric_pattern
 from .text_utils import compact_line, extract_keywords, split_sentences, tokenize_words
@@ -46,10 +49,242 @@ BAD_MOTIFS = {
     "anh",
     "em",
 }
+MOTIF_STOPWORDS = BAD_MOTIFS | {
+    "có",
+    "còn",
+    "của",
+    "cùng",
+    "đã",
+    "đang",
+    "đặt",
+    "đến",
+    "để",
+    "đi",
+    "đứng",
+    "gì",
+    "giữa",
+    "khi",
+    "không",
+    "là",
+    "làm",
+    "lên",
+    "lúc",
+    "mà",
+    "mình",
+    "muốn",
+    "này",
+    "nói",
+    "qua",
+    "ra",
+    "rồi",
+    "sẽ",
+    "sự",
+    "ta",
+    "thấy",
+    "trong",
+    "trước",
+    "và",
+    "vào",
+    "về",
+    "với",
+    "xuống",
+    "ấy",
+}
+SAFE_FALLBACK_MOTIFS = {
+    "joy": "tiếng cười",
+    "sadness": "nỗi nhớ",
+    "anger": "lửa lòng",
+    "fear": "bóng tối",
+    "calm": "bình yên",
+    "romantic": "yêu thương",
+    "hope": "niềm tin",
+    "nostalgic": "ngày xưa",
+}
+RHYME_ENDINGS = {
+    "joy": ["trên môi", "sáng ngời", "ngày mới", "đầy vơi"],
+    "sadness": ["trong tim", "lặng im", "mưa đêm", "bên thềm"],
+    "anger": ["lửa lên", "không quên", "bền gan", "hiên ngang"],
+    "fear": ["trong đêm", "lạnh thêm", "âm thầm", "xa xăm"],
+    "calm": ["êm đềm", "bên thềm", "trong tim", "nhẹ tênh"],
+    "romantic": ["trong tay", "đêm nay", "thật lâu", "bên nhau"],
+    "hope": ["chân trời", "sáng ngời", "ngày mới", "không rời"],
+    "nostalgic": ["thật lâu", "êm đềm", "trong tim", "ngày xưa"],
+}
+FALLBACK_RHYME_ENDINGS = ["trong tim", "sáng ngời", "bên thềm", "thật lâu"]
+CLAUSE_SPLIT_RE = re.compile(r"[,;]+")
+VI_ONSETS = (
+    "ngh",
+    "ng",
+    "gh",
+    "gi",
+    "qu",
+    "kh",
+    "ch",
+    "ph",
+    "th",
+    "tr",
+    "nh",
+    "b",
+    "c",
+    "d",
+    "g",
+    "h",
+    "k",
+    "l",
+    "m",
+    "n",
+    "p",
+    "q",
+    "r",
+    "s",
+    "t",
+    "v",
+    "x",
+)
 
 
 def _polish_line(line: str) -> str:
     return line.strip(" ,.;:-").lower()
+
+
+def _strip_accents(text: str) -> str:
+    decomposed = unicodedata.normalize("NFD", text)
+    stripped = "".join(char for char in decomposed if unicodedata.category(char) != "Mn")
+    return stripped.replace("đ", "d").replace("Đ", "D")
+
+
+def _last_word(line: str) -> str:
+    words = tokenize_words(line)
+    return words[-1] if words else ""
+
+
+def _rhyme_key(line: str) -> str:
+    word = re.sub(r"[^a-z]", "", _strip_accents(_last_word(line)).lower())
+    for onset in VI_ONSETS:
+        if word.startswith(onset) and len(word) > len(onset):
+            return word[len(onset) :]
+    return word
+
+
+def _rhyme_endings(emotion: EmotionProfile) -> list[str]:
+    if emotion.label in RHYME_ENDINGS:
+        return RHYME_ENDINGS[emotion.label]
+    if emotion.valence < -0.15:
+        return RHYME_ENDINGS["sadness"]
+    if emotion.valence > 0.35:
+        return RHYME_ENDINGS["hope"]
+    return FALLBACK_RHYME_ENDINGS
+
+
+def _ensure_rhyme_ending(line: str, ending: str, max_words: int = 12) -> str:
+    base = _polish_line(line)
+    ending = _polish_line(ending)
+    if not base:
+        return ending
+    if _rhyme_key(base) == _rhyme_key(ending):
+        return base
+
+    base_words = tokenize_words(base)
+    ending_words = tokenize_words(ending)
+    if len(base_words) + len(ending_words) <= max_words:
+        return _polish_line(f"{base} {ending}")
+
+    stem_limit = max(4, max_words - len(ending_words))
+    stem = " ".join(base_words[:stem_limit])
+    return _polish_line(f"{stem} {ending}")
+
+
+def _shape_lines_for_melody(
+    lines: list[str],
+    emotion: EmotionProfile,
+    *,
+    start_pair: int = 0,
+    max_words: int = 12,
+) -> list[str]:
+    endings = _rhyme_endings(emotion)
+    shaped = [_polish_line(line) for line in lines if _polish_line(line)]
+    for index, line in enumerate(shaped):
+        if len(shaped) % 2 == 1 and index == len(shaped) - 1 and index > 0:
+            pair_index = start_pair + ((index - 1) // 2)
+        else:
+            pair_index = start_pair + (index // 2)
+        ending = endings[pair_index % len(endings)]
+        shaped[index] = _ensure_rhyme_ending(line, ending, max_words=max_words)
+    return shaped
+
+
+def _existing_lyric_lines(text: str) -> list[str]:
+    lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = _polish_line(raw_line)
+        if not line or (line.startswith("[") and line.endswith("]")):
+            continue
+        if tokenize_words(line):
+            lines.append(line)
+    return lines
+
+
+def _looks_like_existing_lyrics(text: str) -> bool:
+    lines = _existing_lyric_lines(text)
+    if len(lines) < 6:
+        return False
+    short_lines = sum(1 for line in lines if 2 <= len(tokenize_words(line)) <= 14)
+    return short_lines / len(lines) >= 0.65
+
+
+def _section_pair_rhyme_rate(lines: list[str]) -> float:
+    pairs = [(lines[index], lines[index + 1]) for index in range(0, len(lines) - 1, 2)]
+    if not pairs:
+        return 1.0
+    hits = sum(1 for first, second in pairs if _rhyme_key(first) == _rhyme_key(second))
+    return hits / len(pairs)
+
+
+def _repair_section_if_needed(lines: list[str], emotion: EmotionProfile, *, start_pair: int) -> list[str]:
+    cleaned = [_polish_line(line) for line in lines if _polish_line(line)]
+    if _section_pair_rhyme_rate(cleaned) >= 0.5:
+        return cleaned
+    return _shape_lines_for_melody(cleaned, emotion, start_pair=start_pair)
+
+
+def _rewrite_existing_lyrics(lines: list[str], emotion: EmotionProfile) -> LyricDraft:
+    cleaned = [_polish_line(line) for line in lines if _polish_line(line)]
+    verse = _repair_section_if_needed(cleaned[:4], emotion, start_pair=0)
+    chorus_source = cleaned[4:8] if len(cleaned) >= 6 else []
+    chorus = _repair_section_if_needed(chorus_source, emotion, start_pair=2)
+    if len(chorus) < 2:
+        chorus = _shape_lines_for_melody(
+            [SAFE_FALLBACK_MOTIFS.get(emotion.label, emotion.label_vi), "ở lại thêm một lần"],
+            emotion,
+            start_pair=2,
+        )
+
+    bridge_source = cleaned[8:10]
+    bridge = _repair_section_if_needed(bridge_source, emotion, start_pair=4) if bridge_source else []
+    outro_source = cleaned[-2:] if len(cleaned) > 8 else cleaned[-1:]
+    outro = _repair_section_if_needed(outro_source, emotion, start_pair=5) if outro_source else []
+
+    song_form = ["Verse", "Chorus"]
+    full_song = ["[Verse]", *verse, "", "[Chorus]", *chorus]
+    if bridge:
+        song_form.append("Bridge")
+        full_song.extend(["", "[Bridge]", *bridge])
+    if outro:
+        song_form.append("Outro")
+        full_song.extend(["", "[Outro]", *outro])
+
+    hook_words = tokenize_words(chorus[0])[:6]
+    hook = " ".join(hook_words) if hook_words else chorus[0]
+    return LyricDraft(
+        title="",
+        verse=verse,
+        chorus=chorus,
+        bridge=bridge,
+        hook=hook,
+        song_form=song_form,
+        full_song=full_song,
+        rhyme_scheme="selected lyric input excerpt; paired rhyme repair when needed",
+    )
 
 
 def _line_from_sentence(sentence: str, max_words: int = 10) -> str:
@@ -57,6 +292,18 @@ def _line_from_sentence(sentence: str, max_words: int = 10) -> str:
 
 
 def _line_chunks_from_sentence(sentence: str, max_words: int = 10, max_lines: int = 2) -> list[str]:
+    clauses = [part.strip() for part in CLAUSE_SPLIT_RE.split(sentence) if part.strip()]
+    if len(clauses) > 1:
+        clause_lines: list[str] = []
+        for clause in clauses:
+            remaining = max_lines - len(clause_lines)
+            if remaining <= 0:
+                break
+            clause_lines.extend(
+                _line_chunks_from_sentence(clause, max_words=max_words, max_lines=remaining)
+            )
+        return clause_lines[:max_lines]
+
     words = tokenize_words(sentence)
     if not words:
         return []
@@ -64,8 +311,10 @@ def _line_chunks_from_sentence(sentence: str, max_words: int = 10, max_lines: in
         return [_line_from_sentence(sentence, max_words=max_words)]
 
     lines: list[str] = []
-    for start in range(0, len(words), max_words):
-        chunk = _polish_line(" ".join(words[start : start + max_words]))
+    line_count = min(max_lines, (len(words) + max_words - 1) // max_words)
+    chunk_size = max(1, (len(words) + line_count - 1) // line_count)
+    for start in range(0, len(words), chunk_size):
+        chunk = _polish_line(" ".join(words[start : start + chunk_size]))
         if chunk:
             lines.append(chunk)
         if len(lines) >= max_lines:
@@ -111,10 +360,27 @@ def _select_motif(text: str, emotion: EmotionProfile, limit: int = 10) -> str:
             if phrase in lowered:
                 return phrase
 
+    candidate_phrase = _candidate_motif_phrase(lowered)
+    if candidate_phrase:
+        return candidate_phrase
+
     for keyword in extract_keywords(text, limit):
-        if keyword not in BAD_MOTIFS and len(keyword) > 2:
+        if keyword not in MOTIF_STOPWORDS and len(keyword) > 3:
             return keyword
-    return emotion.label_vi
+    return SAFE_FALLBACK_MOTIFS.get(emotion.label, emotion.label_vi)
+
+
+def _candidate_motif_phrase(text: str) -> str:
+    words = tokenize_words(text)
+    for size in (3, 2):
+        for start in range(0, max(0, len(words) - size + 1)):
+            phrase_words = words[start : start + size]
+            if any(word in MOTIF_STOPWORDS for word in phrase_words):
+                continue
+            phrase = " ".join(phrase_words)
+            if len(phrase) >= 6:
+                return phrase
+    return ""
 
 
 def _make_pre_chorus(text: str, emotion: EmotionProfile) -> list[str]:
@@ -195,7 +461,7 @@ def _build_full_song(
 
 
 def _build_short_song(verse: list[str], chorus: list[str], outro: list[str]) -> tuple[list[str], list[str]]:
-    short_verse = verse[:3]
+    short_verse = verse[:4]
     short_chorus = chorus[:2]
     song_form = ["Verse", "Chorus", "Outro"]
     full_song = [
@@ -212,14 +478,17 @@ def _build_short_song(verse: list[str], chorus: list[str], outro: list[str]) -> 
 
 
 def rewrite_lyrics(text: str, emotion: EmotionProfile, harmony: HarmonyPlan) -> LyricDraft:
+    if _looks_like_existing_lyrics(text):
+        return _rewrite_existing_lyrics(_existing_lyric_lines(text), emotion)
+
     sentence_count = len(split_sentences(text))
     word_count = len(tokenize_words(text))
-    verse1 = _make_verse_lines(text, offset=0)
-    verse2 = _make_verse_lines(text, offset=4)
-    pre_chorus = _make_pre_chorus(text, emotion)
-    chorus = _make_chorus(text, emotion)
-    bridge = _make_bridge(text, emotion, harmony)
-    outro = _make_outro(chorus, emotion)
+    verse1 = _shape_lines_for_melody(_make_verse_lines(text, offset=0), emotion, start_pair=0)
+    verse2 = _shape_lines_for_melody(_make_verse_lines(text, offset=4), emotion, start_pair=3)
+    pre_chorus = _shape_lines_for_melody(_make_pre_chorus(text, emotion), emotion, start_pair=1)
+    chorus = _shape_lines_for_melody(_make_chorus(text, emotion), emotion, start_pair=2)
+    bridge = _shape_lines_for_melody(_make_bridge(text, emotion, harmony), emotion, start_pair=4)
+    outro = _shape_lines_for_melody(_make_outro(chorus, emotion), emotion, start_pair=2)
     hook_words = tokenize_words(chorus[1])[:6]
     hook = " ".join(hook_words) if hook_words else chorus[1]
     if sentence_count <= 2 and word_count <= 40:
@@ -235,4 +504,5 @@ def rewrite_lyrics(text: str, emotion: EmotionProfile, harmony: HarmonyPlan) -> 
         hook=hook,
         song_form=song_form,
         full_song=full_song,
+        rhyme_scheme="paired A-A / B-B Vietnamese end rhymes",
     )

@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from genmusic_vn.evaluation import evaluate_dataset, load_eval_dataset
+from genmusic_vn.evaluation import _rhyme_pair_rate, evaluate_dataset, load_eval_dataset
 from genmusic_vn.emotion import analyze_emotion
 from genmusic_vn.kaggle_auto import (
     KaggleJobConfig,
@@ -114,6 +114,68 @@ class PipelineTests(unittest.TestCase):
             self.assertNotIn("lyric lines:", result.prompt)
             self.assertTrue(result.vocal.pitch_center)
             self.assertIn(result.vocal.gender, {"female", "male", "duet"})
+
+    def test_non_rhyming_input_is_shaped_into_singable_rhymed_lines(self) -> None:
+        text = (
+            "Tôi mở cửa đi qua thành phố. "
+            "Chiếc xe dừng lại dưới ánh đèn. "
+            "Một người lạ gọi tên tôi. "
+            "Ngày mai chưa biết sẽ ra sao."
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            result = create_music_project(text, output_root=temp, duration_seconds=12, render_audio=False)
+
+        content_lines = [
+            line
+            for line in result.lyrics.full_song
+            if line.strip() and not line.startswith("[")
+        ]
+        self.assertEqual(result.lyrics.rhyme_scheme, "paired A-A / B-B Vietnamese end rhymes")
+        self.assertGreaterEqual(_rhyme_pair_rate(content_lines), 0.75)
+        self.assertTrue(all(4 <= len(line.split()) <= 12 for line in content_lines))
+        self.assertIn("lyric rhyme scheme:", result.prompt)
+
+    def test_existing_long_lyrics_are_arranged_as_duration_limited_excerpt(self) -> None:
+        lyric_text = "\n".join(
+            [
+                "Một con đường mở ra trong nắng",
+                "Tôi nghe nhịp tim còn vang",
+                "Bàn tay ai chạm vào ký ức",
+                "Cho đêm dài bỗng dịu dàng",
+                "Ánh đèn đang gọi tên ta",
+                "Giữ lại một mùa đi xa",
+                "Nếu ngày mai còn nhiều giông gió",
+                "Ta vẫn về chung một nhà",
+                "Tôi qua những ngày rất vội",
+                "Nhặt từng câu hát chưa phai",
+                "Ánh đèn đang gọi tên ta",
+                "Giữ lại một mùa đi xa",
+                "Nếu ngày mai còn nhiều giông gió",
+                "Ta vẫn về chung một nhà",
+                "Ngoài kia mưa rơi thật lâu",
+                "Trong tim còn nguyên nhiệm màu",
+                "Ánh đèn đang gọi tên ta",
+                "Giữ lại một mùa đi xa",
+                "Nếu ngày mai còn nhiều giông gió",
+                "Ta vẫn về chung một nhà",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            result = create_music_project(lyric_text, output_root=temp, duration_seconds=60, render_audio=False)
+
+        content_lines = [
+            line
+            for line in result.lyrics.full_song
+            if line.strip() and not line.startswith("[")
+        ]
+        self.assertEqual(result.text_plan.input_kind, "lyrics")
+        self.assertEqual(result.text_plan.mode, "lyrics_long")
+        self.assertLessEqual(len(result.text_plan.representative_sentences), 12)
+        self.assertLessEqual(len(content_lines), 12)
+        self.assertIn("selected lyric input excerpt", result.lyrics.rhyme_scheme)
+        self.assertIn("một con đường mở ra", "\n".join(result.lyrics.full_song))
+        self.assertIn("ánh đèn đang gọi tên ta", "\n".join(result.lyrics.full_song))
+        self.assertIn("lyric rhyme scheme:", result.prompt)
 
     def test_kaggle_job_stages_raw_text_request_and_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -236,6 +298,8 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("prompt_keyword_recall", report["summary"])
         self.assertIn("scene_cue_density", report["summary"])
         self.assertIn("no_title", report["summary"])
+        self.assertIn("rhyme_pair_rate", report["summary"])
+        self.assertIn("melody_line_rate", report["summary"])
         self.assertIn("romanized_violation_count", report["summary"])
         self.assertIn("unknown", report["by_length"])
         self.assertIn("nostalgic", report["by_expected_emotion"])

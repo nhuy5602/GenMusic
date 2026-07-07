@@ -47,7 +47,7 @@ def create_music_project(
     run_dir = Path(output_root) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    text_plan = build_text_plan(normalized)
+    text_plan = build_text_plan(normalized, duration_seconds=duration_seconds)
     generation_text = text_plan.condensed_text or normalized
     emotion_source = f"{normalized} {genre or ''}".strip()
     emotion = analyze_emotion(emotion_source)

@@ -49,6 +49,7 @@ class LyricDraft:
     hook: str
     song_form: list[str] = field(default_factory=list)
     full_song: list[str] = field(default_factory=list)
+    rhyme_scheme: str = ""
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,7 @@ class TextPlan:
     representative_sentences: list[str]
     condensed_text: str
     sections: dict[str, list[str]]
+    input_kind: str = "prose"
 
 
 @dataclass(frozen=True)

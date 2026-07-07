@@ -62,6 +62,19 @@ Với text dài, Kaggle tạo `TextPlan`:
 
 Text gốc vẫn được giữ nguyên trong `request.json`; chỉ prompt sinh nhạc được cô đọng để MusicGen không bị loãng.
 
+### Input Là Lời Bài Hát Dài
+
+Nếu người dùng paste sẵn nhiều dòng lyrics, project tự nhận diện `input_kind = lyrics`.
+
+- với lyrics ngắn: giữ cấu trúc dòng gốc để TTS hát trực tiếp
+- với lyrics dài hơn duration cho phép: tự chọn excerpt gồm verse mở đầu, chorus/refrain lặp lại và đoạn kết
+- với lyrics chưa có vần rõ: sửa nhẹ từng section thành cặp vần A-A / B-B để dễ bám melody
+- với lyrics đã có vần: ưu tiên giữ nguyên dòng gốc, không ép thêm đuôi vần
+
+Ví dụ duration 60s không cố hát toàn bộ một bài dài vài chục dòng; hệ thống chọn khoảng 10-12 dòng hát được để tránh TTS bị quá tải hoặc rơi về file nhạc nền không lời.
+
+Khi làm báo cáo hoặc demo công khai, nên dùng lyrics tự viết, lyrics sinh tổng hợp hoặc dữ liệu có quyền sử dụng; nếu dùng lời bài hát có bản quyền thì cần ghi rõ nguồn và phạm vi sử dụng học thuật.
+
 ## Cài Đặt Kaggle API Token
 
 Tạo token trên Kaggle:
@@ -185,4 +198,3 @@ python -m unittest discover -s tests -v
 - AudioCraft / MusicGen: https://github.com/facebookresearch/audiocraft
 - MusicGen docs: https://raw.githubusercontent.com/facebookresearch/audiocraft/main/docs/MUSICGEN.md
 - Kaggle API docs: https://www.kaggle.com/docs/api
-

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import unicodedata
 from pathlib import Path
@@ -8,6 +9,7 @@ from typing import Any
 
 from .pipeline import create_music_project
 from .schemas import MusicResult
+from .text_utils import tokenize_words
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +24,35 @@ ROMANIZED_TEMPLATE_PHRASES = {
     "trai tim",
     "anh den",
 }
+VI_ONSETS = (
+    "ngh",
+    "ng",
+    "gh",
+    "gi",
+    "qu",
+    "kh",
+    "ch",
+    "ph",
+    "th",
+    "tr",
+    "nh",
+    "b",
+    "c",
+    "d",
+    "g",
+    "h",
+    "k",
+    "l",
+    "m",
+    "n",
+    "p",
+    "q",
+    "r",
+    "s",
+    "t",
+    "v",
+    "x",
+)
 
 
 def load_eval_dataset(path: str | Path = DEFAULT_EVAL_DATASET) -> list[dict[str, Any]]:
@@ -78,7 +109,8 @@ def evaluate_record(record: dict[str, Any], output_root: Path, *, duration_secon
         render_audio=False,
     )
     lyric_text = "\n".join(result.lyrics.full_song)
-    lyric_lines = _content_lyric_lines(result)
+    lyric_sections = _content_lyric_sections(result)
+    lyric_lines = [line for section in lyric_sections for line in section]
 
     expected_emotions = set(record.get("expected_emotions") or [])
     expected_keywords = list(record.get("expected_keywords") or [])
@@ -100,6 +132,8 @@ def evaluate_record(record: dict[str, Any], output_root: Path, *, duration_secon
         "scene_cue_density": _ratio(min(len(result.scene.prompt_cues), 4), 4),
         "no_title": int(result.lyrics.title == "" and not any(line.startswith("[Title]") for line in result.lyrics.full_song)),
         "diacritic_line_rate": _ratio(sum(1 for line in lyric_lines if _has_vietnamese_diacritic(line)), len(lyric_lines)),
+        "rhyme_pair_rate": _section_rhyme_pair_rate(lyric_sections),
+        "melody_line_rate": _melody_line_rate(lyric_lines),
         "romanized_violation_count": len(romanized_violations),
         "vocal_recommendation_match": int(not expected_vocal_gender or result.vocal.gender == expected_vocal_gender),
     }
@@ -112,6 +146,8 @@ def evaluate_record(record: dict[str, Any], output_root: Path, *, duration_secon
             metrics["scene_cue_density"],
             metrics["no_title"],
             metrics["diacritic_line_rate"],
+            metrics["rhyme_pair_rate"],
+            metrics["melody_line_rate"],
             int(metrics["romanized_violation_count"] == 0),
             metrics["vocal_recommendation_match"],
         ]
@@ -144,11 +180,61 @@ def evaluate_record(record: dict[str, Any], output_root: Path, *, duration_secon
 
 
 def _content_lyric_lines(result: MusicResult) -> list[str]:
-    return [
-        line.strip()
-        for line in result.lyrics.full_song
-        if line.strip() and not line.startswith("[")
-    ]
+    return [line for section in _content_lyric_sections(result) for line in section]
+
+
+def _content_lyric_sections(result: MusicResult) -> list[list[str]]:
+    sections: list[list[str]] = []
+    current: list[str] = []
+    for raw_line in result.lyrics.full_song:
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("["):
+            if current:
+                sections.append(current)
+                current = []
+            continue
+        current.append(line)
+    if current:
+        sections.append(current)
+    return sections
+
+
+def _section_rhyme_pair_rate(sections: list[list[str]]) -> float:
+    pairs: list[tuple[str, str]] = []
+    for lines in sections:
+        pairs.extend((lines[index], lines[index + 1]) for index in range(0, len(lines) - 1, 2))
+    if not pairs:
+        return 1.0
+    hits = sum(1 for first, second in pairs if _line_rhyme_key(first) == _line_rhyme_key(second))
+    return _ratio(hits, len(pairs))
+
+
+def _rhyme_pair_rate(lines: list[str]) -> float:
+    pairs = [(lines[index], lines[index + 1]) for index in range(0, len(lines) - 1, 2)]
+    if not pairs:
+        return 1.0
+    hits = sum(1 for first, second in pairs if _line_rhyme_key(first) == _line_rhyme_key(second))
+    return _ratio(hits, len(pairs))
+
+
+def _melody_line_rate(lines: list[str]) -> float:
+    if not lines:
+        return 1.0
+    singable = sum(1 for line in lines if 4 <= len(tokenize_words(line)) <= 12)
+    return _ratio(singable, len(lines))
+
+
+def _line_rhyme_key(line: str) -> str:
+    words = tokenize_words(line)
+    if not words:
+        return ""
+    normalized = re.sub(r"[^a-z]", "", _strip_accents(words[-1]).lower())
+    for onset in VI_ONSETS:
+        if normalized.startswith(onset) and len(normalized) > len(onset):
+            return normalized[len(onset) :]
+    return normalized
 
 
 def _match_count(expected: list[str], text: str) -> int:
