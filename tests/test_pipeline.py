@@ -20,6 +20,7 @@ from genmusic_vn.kaggle_auto import (
 )
 from genmusic_vn.music_theory import chord_notes
 from genmusic_vn.pipeline import create_music_project
+from genmusic_vn.rhyme import head_tail_rhyme_rate, luc_bat_rhyme_rate, vietnamese_rhyme_profile
 from genmusic_vn.scene_planner import build_scene_plan
 from genmusic_vn.stylebank import get_emotion_music, load_stylebank
 from genmusic_vn.synthetic_dataset import generate_synthetic_records, write_jsonl
@@ -130,10 +131,28 @@ class PipelineTests(unittest.TestCase):
             for line in result.lyrics.full_song
             if line.strip() and not line.startswith("[")
         ]
-        self.assertEqual(result.lyrics.rhyme_scheme, "paired A-A / B-B Vietnamese end rhymes")
+        self.assertIn("Vietnamese mixed rhyme", result.lyrics.rhyme_scheme)
         self.assertGreaterEqual(_rhyme_pair_rate(content_lines), 0.75)
         self.assertTrue(all(4 <= len(line.split()) <= 12 for line in content_lines))
         self.assertIn("lyric rhyme scheme:", result.prompt)
+
+    def test_vietnamese_rhyme_schemes_detect_luc_bat_and_head_tail(self) -> None:
+        luc_bat_lines = [
+            "Chiều nghiêng qua bến sông xanh",
+            "Mây trôi lành giữa đồng xanh nhẹ bay",
+            "Ta nghe tiếng gió về đây",
+            "Lời ru say giữa vòng tay mẹ hiền",
+        ]
+        head_tail_lines = [
+            "Ánh đèn rơi xuống vai",
+            "Vai ai còn giữ tiếng ca",
+            "Ca lên giữa phố xa",
+            "Xa rồi vẫn nhớ nhà",
+        ]
+
+        self.assertGreaterEqual(luc_bat_rhyme_rate(luc_bat_lines), 0.5)
+        self.assertGreaterEqual(head_tail_rhyme_rate(head_tail_lines), 0.9)
+        self.assertEqual(vietnamese_rhyme_profile(head_tail_lines)["head_tail"], 1.0)
 
     def test_existing_long_lyrics_are_arranged_as_duration_limited_excerpt(self) -> None:
         lyric_text = "\n".join(
@@ -299,6 +318,9 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("scene_cue_density", report["summary"])
         self.assertIn("no_title", report["summary"])
         self.assertIn("rhyme_pair_rate", report["summary"])
+        self.assertIn("head_tail_rhyme_rate", report["summary"])
+        self.assertIn("luc_bat_rhyme_rate", report["summary"])
+        self.assertIn("vietnamese_rhyme_rate", report["summary"])
         self.assertIn("melody_line_rate", report["summary"])
         self.assertIn("romanized_violation_count", report["summary"])
         self.assertIn("unknown", report["by_length"])

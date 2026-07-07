@@ -68,8 +68,9 @@ Nếu người dùng paste sẵn nhiều dòng lyrics, project tự nhận diệ
 
 - với lyrics ngắn: giữ cấu trúc dòng gốc để TTS hát trực tiếp
 - với lyrics dài hơn duration cho phép: tự chọn excerpt gồm verse mở đầu, chorus/refrain lặp lại và đoạn kết
-- với lyrics chưa có vần rõ: sửa nhẹ từng section thành cặp vần A-A / B-B để dễ bám melody
+- với lyrics chưa có vần rõ: sửa nhẹ từng section để dễ bám melody
 - với lyrics đã có vần: ưu tiên giữ nguyên dòng gốc, không ép thêm đuôi vần
+- bộ đánh giá vần hỗ trợ nhiều kiểu vần tiếng Việt: vần cuối câu, vần móc đầu-cuối và vần lưng kiểu lục bát
 
 Ví dụ duration 60s không cố hát toàn bộ một bài dài vài chục dòng; hệ thống chọn khoảng 10-12 dòng hát được để tránh TTS bị quá tải hoặc rơi về file nhạc nền không lời.
 
@@ -185,6 +186,35 @@ web/
   app.js
 tests/
   test_pipeline.py
+```
+
+## Chạy Đánh Giá
+
+Đánh giá pipeline text -> emotion -> lyric -> prompt trên dataset mặc định:
+
+```powershell
+python -m genmusic_vn.cli evaluate --out outputs/evaluation
+```
+
+Đánh giá bằng file Excel benchmark tiếng Việt:
+
+```powershell
+python -m genmusic_vn.cli evaluate-xlsx --xlsx "C:\Users\ADMIN\Documents\GenMusic\vietnamese_musicgen_input_dataset.xlsx" --out outputs/evaluation_xlsx
+```
+
+Report sẽ được ghi vào:
+
+```text
+outputs/evaluation/evaluation_report.json
+outputs/evaluation_xlsx/evaluation_report.json
+```
+
+Các metric chính gồm `emotion_match`, `keyword_recall`, `prompt_keyword_recall`, `scene_cue_density`, `diacritic_line_rate`, `vietnamese_rhyme_rate`, `rhyme_pair_rate`, `head_tail_rhyme_rate`, `luc_bat_rhyme_rate`, `melody_line_rate` và `overall_score`.
+
+Nếu muốn vừa submit các dòng trong Excel lên Kaggle để sinh MP3 thật, dùng:
+
+```powershell
+python -m genmusic_vn.cli batch-generate-xlsx --xlsx "C:\Users\ADMIN\Documents\GenMusic\vietnamese_musicgen_input_dataset.xlsx" --out outputs/xlsx_batch --limit 3 --wait
 ```
 
 ## Kiểm Thử

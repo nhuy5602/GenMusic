@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import re
-import unicodedata
 
+from .rhyme import dominant_rhyme_scheme, end_pair_rhyme_rate, end_rhyme_key, vietnamese_rhyme_rate
 from .schemas import EmotionProfile, HarmonyPlan, LyricDraft
 from .stylebank import get_lyric_pattern
 from .text_utils import compact_line, extract_keywords, split_sentences, tokenize_words
@@ -112,58 +112,14 @@ RHYME_ENDINGS = {
 }
 FALLBACK_RHYME_ENDINGS = ["trong tim", "sáng ngời", "bên thềm", "thật lâu"]
 CLAUSE_SPLIT_RE = re.compile(r"[,;]+")
-VI_ONSETS = (
-    "ngh",
-    "ng",
-    "gh",
-    "gi",
-    "qu",
-    "kh",
-    "ch",
-    "ph",
-    "th",
-    "tr",
-    "nh",
-    "b",
-    "c",
-    "d",
-    "g",
-    "h",
-    "k",
-    "l",
-    "m",
-    "n",
-    "p",
-    "q",
-    "r",
-    "s",
-    "t",
-    "v",
-    "x",
-)
 
 
 def _polish_line(line: str) -> str:
     return line.strip(" ,.;:-").lower()
 
 
-def _strip_accents(text: str) -> str:
-    decomposed = unicodedata.normalize("NFD", text)
-    stripped = "".join(char for char in decomposed if unicodedata.category(char) != "Mn")
-    return stripped.replace("đ", "d").replace("Đ", "D")
-
-
-def _last_word(line: str) -> str:
-    words = tokenize_words(line)
-    return words[-1] if words else ""
-
-
 def _rhyme_key(line: str) -> str:
-    word = re.sub(r"[^a-z]", "", _strip_accents(_last_word(line)).lower())
-    for onset in VI_ONSETS:
-        if word.startswith(onset) and len(word) > len(onset):
-            return word[len(onset) :]
-    return word
+    return end_rhyme_key(line)
 
 
 def _rhyme_endings(emotion: EmotionProfile) -> list[str]:
@@ -233,16 +189,12 @@ def _looks_like_existing_lyrics(text: str) -> bool:
 
 
 def _section_pair_rhyme_rate(lines: list[str]) -> float:
-    pairs = [(lines[index], lines[index + 1]) for index in range(0, len(lines) - 1, 2)]
-    if not pairs:
-        return 1.0
-    hits = sum(1 for first, second in pairs if _rhyme_key(first) == _rhyme_key(second))
-    return hits / len(pairs)
+    return end_pair_rhyme_rate(lines)
 
 
 def _repair_section_if_needed(lines: list[str], emotion: EmotionProfile, *, start_pair: int) -> list[str]:
     cleaned = [_polish_line(line) for line in lines if _polish_line(line)]
-    if _section_pair_rhyme_rate(cleaned) >= 0.5:
+    if vietnamese_rhyme_rate(cleaned) >= 0.5:
         return cleaned
     return _shape_lines_for_melody(cleaned, emotion, start_pair=start_pair)
 
@@ -275,6 +227,7 @@ def _rewrite_existing_lyrics(lines: list[str], emotion: EmotionProfile) -> Lyric
 
     hook_words = tokenize_words(chorus[0])[:6]
     hook = " ".join(hook_words) if hook_words else chorus[0]
+    detected_scheme = dominant_rhyme_scheme(verse + chorus + bridge + outro)
     return LyricDraft(
         title="",
         verse=verse,
@@ -283,7 +236,7 @@ def _rewrite_existing_lyrics(lines: list[str], emotion: EmotionProfile) -> Lyric
         hook=hook,
         song_form=song_form,
         full_song=full_song,
-        rhyme_scheme="selected lyric input excerpt; paired rhyme repair when needed",
+        rhyme_scheme=f"selected lyric input excerpt; preserves {detected_scheme} Vietnamese rhyme when present; repairs only weak sections",
     )
 
 
@@ -504,5 +457,5 @@ def rewrite_lyrics(text: str, emotion: EmotionProfile, harmony: HarmonyPlan) -> 
         hook=hook,
         song_form=song_form,
         full_song=full_song,
-        rhyme_scheme="paired A-A / B-B Vietnamese end rhymes",
+        rhyme_scheme="Vietnamese mixed rhyme: paired end rhymes, head-tail links, and luc-bat-aware detection",
     )

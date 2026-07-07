@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import json
-import re
 import tempfile
-import unicodedata
 from pathlib import Path
 from typing import Any
 
 from .pipeline import create_music_project
+from .rhyme import (
+    end_rhyme_key,
+    section_end_pair_rhyme_rate,
+    section_head_tail_rhyme_rate,
+    section_luc_bat_rhyme_rate,
+    section_vietnamese_rhyme_rate,
+    strip_accents,
+)
 from .schemas import MusicResult
 from .text_utils import tokenize_words
 
@@ -24,37 +30,6 @@ ROMANIZED_TEMPLATE_PHRASES = {
     "trai tim",
     "anh den",
 }
-VI_ONSETS = (
-    "ngh",
-    "ng",
-    "gh",
-    "gi",
-    "qu",
-    "kh",
-    "ch",
-    "ph",
-    "th",
-    "tr",
-    "nh",
-    "b",
-    "c",
-    "d",
-    "g",
-    "h",
-    "k",
-    "l",
-    "m",
-    "n",
-    "p",
-    "q",
-    "r",
-    "s",
-    "t",
-    "v",
-    "x",
-)
-
-
 def load_eval_dataset(path: str | Path = DEFAULT_EVAL_DATASET) -> list[dict[str, Any]]:
     dataset_path = Path(path)
     records: list[dict[str, Any]] = []
@@ -133,6 +108,9 @@ def evaluate_record(record: dict[str, Any], output_root: Path, *, duration_secon
         "no_title": int(result.lyrics.title == "" and not any(line.startswith("[Title]") for line in result.lyrics.full_song)),
         "diacritic_line_rate": _ratio(sum(1 for line in lyric_lines if _has_vietnamese_diacritic(line)), len(lyric_lines)),
         "rhyme_pair_rate": _section_rhyme_pair_rate(lyric_sections),
+        "head_tail_rhyme_rate": section_head_tail_rhyme_rate(lyric_sections),
+        "luc_bat_rhyme_rate": section_luc_bat_rhyme_rate(lyric_sections),
+        "vietnamese_rhyme_rate": section_vietnamese_rhyme_rate(lyric_sections),
         "melody_line_rate": _melody_line_rate(lyric_lines),
         "romanized_violation_count": len(romanized_violations),
         "vocal_recommendation_match": int(not expected_vocal_gender or result.vocal.gender == expected_vocal_gender),
@@ -146,7 +124,7 @@ def evaluate_record(record: dict[str, Any], output_root: Path, *, duration_secon
             metrics["scene_cue_density"],
             metrics["no_title"],
             metrics["diacritic_line_rate"],
-            metrics["rhyme_pair_rate"],
+            metrics["vietnamese_rhyme_rate"],
             metrics["melody_line_rate"],
             int(metrics["romanized_violation_count"] == 0),
             metrics["vocal_recommendation_match"],
@@ -202,13 +180,7 @@ def _content_lyric_sections(result: MusicResult) -> list[list[str]]:
 
 
 def _section_rhyme_pair_rate(sections: list[list[str]]) -> float:
-    pairs: list[tuple[str, str]] = []
-    for lines in sections:
-        pairs.extend((lines[index], lines[index + 1]) for index in range(0, len(lines) - 1, 2))
-    if not pairs:
-        return 1.0
-    hits = sum(1 for first, second in pairs if _line_rhyme_key(first) == _line_rhyme_key(second))
-    return _ratio(hits, len(pairs))
+    return section_end_pair_rhyme_rate(sections)
 
 
 def _rhyme_pair_rate(lines: list[str]) -> float:
@@ -227,14 +199,7 @@ def _melody_line_rate(lines: list[str]) -> float:
 
 
 def _line_rhyme_key(line: str) -> str:
-    words = tokenize_words(line)
-    if not words:
-        return ""
-    normalized = re.sub(r"[^a-z]", "", _strip_accents(words[-1]).lower())
-    for onset in VI_ONSETS:
-        if normalized.startswith(onset) and len(normalized) > len(onset):
-            return normalized[len(onset) :]
-    return normalized
+    return end_rhyme_key(line)
 
 
 def _match_count(expected: list[str], text: str) -> int:
@@ -243,9 +208,7 @@ def _match_count(expected: list[str], text: str) -> int:
 
 
 def _strip_accents(text: str) -> str:
-    decomposed = unicodedata.normalize("NFD", text)
-    stripped = "".join(char for char in decomposed if unicodedata.category(char) != "Mn")
-    return stripped.replace("đ", "d").replace("Đ", "D")
+    return strip_accents(text)
 
 
 def _has_vietnamese_diacritic(text: str) -> bool:
