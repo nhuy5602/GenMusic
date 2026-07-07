@@ -69,10 +69,12 @@ def evaluate_dataset(
 
 
 def evaluate_record(record: dict[str, Any], output_root: Path, *, duration_seconds: int) -> dict[str, Any]:
+    record_duration = int(record.get("duration_seconds") or duration_seconds)
     result = create_music_project(
         record["input_text"],
         output_root=output_root,
-        duration_seconds=duration_seconds,
+        duration_seconds=record_duration,
+        genre=record.get("genre") or None,
         render_audio=False,
     )
     lyric_text = "\n".join(result.lyrics.full_song)
@@ -119,11 +121,14 @@ def evaluate_record(record: dict[str, Any], output_root: Path, *, duration_secon
         "id": record.get("id", result.run_id),
         "length_bucket": record.get("length_bucket", "unknown"),
         "expected_emotion": sorted(expected_emotions)[0] if expected_emotions else "",
+        "expected_mood_text": record.get("expected_mood_text", ""),
         "expected": {
             "emotions": sorted(expected_emotions),
             "keywords": expected_keywords,
             "phrases": expected_phrases,
             "vocal_gender": expected_vocal_gender,
+            "duration_seconds": record_duration,
+            "genre": record.get("genre", ""),
         },
         "predicted": {
             "run_id": result.run_id,

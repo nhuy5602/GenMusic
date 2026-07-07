@@ -182,6 +182,34 @@ class PipelineTests(unittest.TestCase):
         summer_scene = build_scene_plan(summer_text, summer)
         self.assertNotIn("rain", summer_scene.labels)
 
+    def test_xlsx_mood_cases_are_covered_by_prompt_hints(self) -> None:
+        cases = [
+            (
+                "Tiếng trống vang lên giữa sân vận động. Chúng tôi không còn là những cá nhân riêng lẻ, mà là một đội cùng tiến về phía trước.",
+                "epic sports anthem, stadium drums, team spirit, heroic brass, powerful percussion",
+                {"hope", "joy"},
+            ),
+            (
+                "Mây đen kéo đến rất nhanh. Con đường phía trước mờ đi, còn trong lòng tôi là một linh cảm không lành.",
+                "cinematic suspense, dark clouds, approaching storm, low drones, tense strings",
+                {"fear"},
+            ),
+            (
+                "Trong khu rừng cổ, có một ánh sáng xanh le lói sau màn sương. Tôi biết mình đã bước vào một nơi không thuộc về thế giới này.",
+                "mysterious fantasy ambient orchestral, ancient forest, blue light, mist, magical atmosphere",
+                {"fear"},
+            ),
+            (
+                "Có một con hẻm nhỏ luôn sáng đèn vào mỗi tối. Ở đó, người ta kể cho nhau nghe những câu chuyện chưa từng được viết thành sách.",
+                "warm storytelling Vietnamese folk, small alley lights at night, acoustic guitar, soft flute",
+                {"calm", "romantic"},
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            for text, genre, expected in cases:
+                result = create_music_project(text, output_root=temp, duration_seconds=20, genre=genre, render_audio=False)
+                self.assertIn(result.emotion.label, expected)
+
     def test_slugify_keeps_kaggle_safe_slug(self) -> None:
         self.assertEqual(slugify("GenMusic Việt Nam Demo!!!", 50), "genmusic-viet-nam-demo")
 

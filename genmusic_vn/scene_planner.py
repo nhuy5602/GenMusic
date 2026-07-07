@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unicodedata
+import re
 
 from .schemas import EmotionProfile, ScenePlan
 
@@ -69,7 +70,8 @@ SCENE_RULES = [
     },
     {
         "label": "home_room",
-        "phrases": ["nha", "can phong", "mai hien", "cua so", "bep", "room", "home"],
+        "raw_phrases": ["nhà", "căn phòng", "mái hiên", "cửa sổ", "bếp"],
+        "phrases": ["can phong", "mai hien", "cua so", "room", "home"],
         "prompt_cues": ["close indoor intimacy", "quiet room", "personal memory"],
         "arrangement_cues": ["felt piano close mic", "soft pad", "minimal percussion"],
         "ambience_layers": ["room"],
@@ -77,7 +79,8 @@ SCENE_RULES = [
     },
     {
         "label": "love_promise",
-        "phrases": ["yeu", "thuong", "loi hua", "hen", "nho em", "nho anh", "trai tim", "heart", "love"],
+        "raw_phrases": ["yêu", "thương", "lời hứa", "nhớ em", "nhớ anh", "trái tim"],
+        "phrases": ["loi hua", "nho em", "nho anh", "trai tim", "heart", "love"],
         "prompt_cues": ["unspoken promise", "gentle longing", "romantic restraint"],
         "arrangement_cues": ["heartfelt piano voicing", "warm strings", "voice-like dan bau accent"],
         "ambience_layers": [],
@@ -92,6 +95,60 @@ SCENE_RULES = [
         "mix_cues": ["bright clean lift"],
     },
     {
+        "label": "epic_victory",
+        "raw_phrases": ["chiến thắng", "hào hùng", "sân vận động", "lá cờ", "chúng ta thắng", "đội"],
+        "phrases": ["chien thang", "hao hung", "san van dong", "la co", "chung ta thang", "team", "victory", "epic", "heroic", "anthem"],
+        "prompt_cues": ["heroic victory anthem", "team spirit", "triumphant lift"],
+        "arrangement_cues": ["big drums", "heroic brass", "uplifting strings", "wide chorus impact"],
+        "ambience_layers": ["air"],
+        "mix_cues": ["wide anthem scale without clipping"],
+    },
+    {
+        "label": "festival",
+        "raw_phrases": ["lễ hội", "pháo hoa", "quảng trường", "tiếng chuông", "cùng hát"],
+        "phrases": ["le hoi", "phao hoa", "quang truong", "tieng chuong", "cung hat", "festival", "celebration"],
+        "prompt_cues": ["festive community celebration", "bright crowd energy", "grand joyful lights"],
+        "arrangement_cues": ["light percussion", "bright brass accents", "big chorus lift"],
+        "ambience_layers": ["air"],
+        "mix_cues": ["wide celebratory stereo"],
+    },
+    {
+        "label": "fantasy_mystery",
+        "raw_phrases": ["huyền bí", "khu rừng cổ", "ánh sáng xanh", "màn sương", "thế giới này", "đồng hồ chạy ngược"],
+        "phrases": ["huyen bi", "khu rung co", "anh sang xanh", "man suong", "the gioi nay", "dong ho chay nguoc", "fantasy", "mystery", "magical", "surreal"],
+        "prompt_cues": ["magical mist", "surreal mystery", "quiet wonder"],
+        "arrangement_cues": ["harp-like arpeggios", "soft flute", "misty choir pad"],
+        "ambience_layers": ["air"],
+        "mix_cues": ["spacious mysterious shimmer"],
+    },
+    {
+        "label": "travel_freedom",
+        "raw_phrases": ["tự do", "ga tàu", "vali", "thành phố xa lạ", "biển hiệu", "chạy qua cánh đồng"],
+        "phrases": ["tu do", "ga tau", "vali", "thanh pho xa la", "bien hieu", "chay qua canh dong", "travel", "freedom", "adventure"],
+        "prompt_cues": ["open travel freedom", "forward motion", "curious new city"],
+        "arrangement_cues": ["driving acoustic rhythm", "light modern pulse", "open chorus"],
+        "ambience_layers": ["air", "street"],
+        "mix_cues": ["open stereo movement"],
+    },
+    {
+        "label": "focus_technology",
+        "raw_phrases": ["dòng code", "màn hình", "lỗi cuối cùng", "công nghệ", "mạch điện"],
+        "phrases": ["dong code", "man hinh", "loi cuoi cung", "cong nghe", "mach dien", "code", "technology", "focus", "electronic"],
+        "prompt_cues": ["focused modern technology", "precise nighttime concentration", "electronic city grid"],
+        "arrangement_cues": ["clean synth pulse", "minimal beat", "soft digital arpeggio"],
+        "ambience_layers": ["night"],
+        "mix_cues": ["clean modern stereo image"],
+    },
+    {
+        "label": "healing_survival",
+        "raw_phrases": ["chữa lành", "tha thứ", "cơn bão đã qua", "ngọn nến", "vẫn còn ở đây", "nghỉ ngơi"],
+        "phrases": ["chua lanh", "tha thu", "con bao da qua", "ngon nen", "van con o day", "nghi ngoi", "healing", "survival"],
+        "prompt_cues": ["gentle healing after hardship", "small warm light", "survival hope"],
+        "arrangement_cues": ["soft piano", "warm pad", "slow rising strings"],
+        "ambience_layers": ["room", "air"],
+        "mix_cues": ["warm supportive space"],
+    },
+    {
         "label": "conflict_fire",
         "phrases": ["gian", "bat cong", "lua", "chien", "dau tranh", "vo tan", "anger", "fight"],
         "prompt_cues": ["controlled tension", "dark urgent emotion", "restless pulse"],
@@ -101,8 +158,8 @@ SCENE_RULES = [
     },
     {
         "label": "fear_shadow",
-        "raw_phrases": ["sợ", "lo lắng", "run rẩy", "bóng tối"],
-        "phrases": ["lo lang", "run ray", "duong vang", "bong toi", "mat hut", "fear"],
+        "raw_phrases": ["sợ", "lo lắng", "run rẩy", "bóng tối", "linh cảm", "không lành"],
+        "phrases": ["lo lang", "run ray", "duong vang", "bong toi", "linh cam", "khong lanh", "mat hut", "fear"],
         "prompt_cues": ["shadowy suspense", "uncertain pulse", "cold distant space"],
         "arrangement_cues": ["low drone", "prepared piano", "thin strings"],
         "ambience_layers": ["night"],
@@ -166,7 +223,7 @@ def build_scene_plan(text: str, emotion: EmotionProfile) -> ScenePlan:
 
     for rule in SCENE_RULES:
         raw_phrases = rule.get("raw_phrases", [])
-        if any(phrase in lowered for phrase in raw_phrases) or any(phrase in folded for phrase in rule["phrases"]):
+        if any(_contains_phrase(lowered, phrase) for phrase in raw_phrases) or any(_contains_phrase(folded, phrase) for phrase in rule["phrases"]):
             labels.append(str(rule["label"]))
             prompt_cues.extend(rule["prompt_cues"])
             arrangement_cues.extend(rule["arrangement_cues"])
@@ -194,6 +251,15 @@ def _fold(text: str) -> str:
     decomposed = unicodedata.normalize("NFD", text.lower())
     stripped = "".join(char for char in decomposed if unicodedata.category(char) != "Mn")
     return stripped.replace("đ", "d").replace("Đ", "D")
+
+
+def _contains_phrase(text: str, phrase: str) -> bool:
+    cleaned = phrase.strip().lower()
+    if not cleaned:
+        return False
+    if " " in cleaned:
+        return cleaned in text
+    return re.search(rf"(?<![^\W\d_]){re.escape(cleaned)}(?![^\W\d_])", text, flags=re.UNICODE) is not None
 
 
 def _dedupe(items: list[str]) -> list[str]:

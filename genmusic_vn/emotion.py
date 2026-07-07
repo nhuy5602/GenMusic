@@ -98,6 +98,150 @@ WORD_LEXICON = {
     "nostalgic": {"xưa": 1.2, "cũ": 1.1, "ký": 0.7, "ức": 0.7, "nhớ": 1.1, "mùa": 0.7},
 }
 
+PHRASE_LEXICON["joy"].update(
+    {
+        "tiếng cười": 1.5,
+        "pháo hoa": 1.7,
+        "hân hoan": 1.8,
+        "lễ hội": 1.7,
+        "chúng ta thắng": 1.7,
+        "cheerful": 1.5,
+        "upbeat": 1.4,
+        "festival": 1.5,
+        "celebration": 1.6,
+    }
+)
+PHRASE_LEXICON["sadness"].update(
+    {
+        "bỏ lỡ": 1.6,
+        "không bao giờ quay lại": 1.8,
+        "nhớ nhà": 1.7,
+        "mất mát": 2.0,
+        "missed love": 1.5,
+        "sad vietnamese piano ballad": 2.4,
+        "sad piano ballad": 2.2,
+        "sad": 1.6,
+        "minimal piano": 1.0,
+        "melancholic": 1.5,
+    }
+)
+PHRASE_LEXICON["anger"].update(
+    {
+        "giận dữ": 2.0,
+        "hét lên": 1.7,
+        "phá tan": 1.8,
+        "rock cinematic": 1.2,
+        "breakthrough": 1.2,
+        "angry": 1.8,
+    }
+)
+PHRASE_LEXICON["fear"].update(
+    {
+        "linh cảm không lành": 2.1,
+        "mây đen": 1.3,
+        "bí mật": 1.2,
+        "sắp vỡ tung": 1.7,
+        "màn đêm": 1.0,
+        "chưa sẵn sàng đối mặt": 1.5,
+        "nửa đêm": 1.3,
+        "dòng sông đen": 1.7,
+        "đồng hồ đang chạy ngược": 2.0,
+        "cinematic suspense": 2.0,
+        "thriller": 1.8,
+        "mystery": 1.7,
+        "mysterious fantasy": 2.1,
+        "fantasy ambient": 1.9,
+        "magical atmosphere": 1.7,
+        "không thuộc về thế giới này": 2.0,
+        "surreal": 1.5,
+        "dark ambient": 1.7,
+        "ominous": 1.8,
+        "tense": 1.6,
+    }
+)
+PHRASE_LEXICON["calm"].update(
+    {
+        "ngồi yên": 1.7,
+        "cửa sổ": 0.9,
+        "trôi thật chậm": 1.6,
+        "pha một tách trà": 1.8,
+        "nghỉ ngơi": 1.6,
+        "tĩnh lặng": 1.6,
+        "mặt hồ": 1.2,
+        "thiền định": 2.0,
+        "tập trung": 1.5,
+        "lo-fi": 1.5,
+        "chill": 1.6,
+        "meditation": 1.8,
+        "focus": 1.2,
+        "healing": 1.4,
+        "warm storytelling": 2.0,
+        "small alley lights": 1.2,
+        "acoustic guitar": 0.9,
+        "soft flute": 0.9,
+        "gentle percussion": 0.8,
+        "intimate atmosphere": 1.0,
+    }
+)
+PHRASE_LEXICON["romantic"].update(
+    {
+        "mùa yêu thương": 1.5,
+        "nụ cười của em": 2.0,
+        "ngày đông": 0.9,
+        "bàn tay mẹ": 1.2,
+        "bố đặt tay": 1.2,
+        "lãng mạn": 2.0,
+        "romantic": 1.9,
+        "heartfelt": 1.4,
+        "emotional": 1.2,
+    }
+)
+PHRASE_LEXICON["hope"].update(
+    {
+        "bình minh": 1.7,
+        "tan ra": 1.2,
+        "tiến về phía trước": 1.8,
+        "một đội": 1.3,
+        "bầu trời mở ra": 1.8,
+        "đứng dậy": 1.8,
+        "lần nữa": 1.1,
+        "chiến thắng": 2.0,
+        "lá cờ": 1.5,
+        "vẫn còn ở đây": 1.8,
+        "tự do": 1.7,
+        "hoàn toàn tự do": 2.0,
+        "epic sports anthem": 2.1,
+        "victory": 2.0,
+        "heroic": 1.8,
+        "triumphant": 1.8,
+        "adventure": 1.4,
+        "hopeful": 1.8,
+        "inspiring": 1.5,
+        "modern": 0.9,
+    }
+)
+PHRASE_LEXICON["nostalgic"].update(
+    {
+        "bản nhạc cũ": 1.5,
+        "mái trường": 1.5,
+        "năm ấy": 1.7,
+        "hoài niệm": 2.0,
+        "old letter": 1.8,
+        "nostalgic": 1.9,
+    }
+)
+
+WORD_LEXICON["joy"].update({"cười": 1.2, "thắng": 1.4, "lễ": 0.7, "hội": 0.7, "upbeat": 1.2})
+WORD_LEXICON["sadness"].update({"mất": 1.0, "khép": 0.9, "lỡ": 1.0, "missed": 0.9})
+WORD_LEXICON["anger"].update({"trống": 0.15, "trận": 0.25, "hét": 1.3, "phá": 1.2, "giới": 0.2})
+WORD_LEXICON["fear"].update({"mờ": 0.8, "lành": 0.4, "bí": 0.7, "mật": 0.7, "đen": 0.9, "ngược": 1.0, "dark": 1.0, "suspense": 1.4, "mystery": 1.2})
+WORD_LEXICON["fear"]["tối"] = 0.2
+WORD_LEXICON["calm"].update({"chill": 1.2, "trà": 1.0, "sách": 0.7, "hồ": 0.8, "focus": 1.0, "thiền": 1.2})
+WORD_LEXICON["calm"].update({"warm": 1.0, "gentle": 0.8, "intimate": 0.8})
+WORD_LEXICON["romantic"].update({"mẹ": 0.7, "bố": 0.7, "em": 0.6, "romantic": 1.3, "heartfelt": 1.0})
+WORD_LEXICON["hope"].update({"đội": 1.0, "tiến": 1.0, "thắng": 1.3, "cờ": 0.9, "dậy": 1.1, "tự": 0.6, "do": 0.6, "epic": 1.1, "victory": 1.5, "heroic": 1.3, "adventure": 1.0, "modern": 0.7})
+WORD_LEXICON["nostalgic"].update({"trường": 0.7, "nostalgic": 1.4})
+
 NEGATORS = {"không", "chẳng", "chả", "chưa", "đừng", "khó"}
 INTENSIFIERS = {"rất": 1.35, "quá": 1.25, "thật": 1.15, "cực": 1.4, "lắm": 1.2}
 
