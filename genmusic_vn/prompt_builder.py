@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .controls import parse_control_context
 from .schemas import EmotionProfile, HarmonyPlan, LyricDraft, ScenePlan, VocalPlan
 from .stylebank import get_emotion_music, match_genre_template, stylebank_prompt_context
 
@@ -25,6 +26,7 @@ def build_music_prompt(
     source_keywords: list[str] | None = None,
     source_excerpt: str = "",
     genre: str | None = None,
+    negative_extra: str = "",
 ) -> tuple[str, str]:
     genre_text = genre or "Vietnamese cinematic pop text-to-song"
     chords = " - ".join(harmony.chord_progression)
@@ -43,6 +45,7 @@ def build_music_prompt(
     emotion_style = get_emotion_music(emotion.label)
     genre_style = match_genre_template(genre, emotion.label)
     genre_text = _vocalize_style_text(genre or genre_style.get("prompt_prefix") or genre_text)
+    style_identity = _style_identity_text(genre)
     stylebank_context = _vocalize_style_text(stylebank_prompt_context(
         emotion.label,
         list(emotion_style.get("vietnamese_instruments", [])),
@@ -50,7 +53,7 @@ def build_music_prompt(
     ))
 
     prompt = (
-        f"{genre_text}; {mood}; {traits}; {harmony.bpm} BPM; "
+        f"{genre_text}; style identity: {style_identity}; {mood}; {traits}; {harmony.bpm} BPM; "
         f"scene cues: {scene_cues}; "
         f"{harmony.time_signature}; key {harmony.key} {harmony.scale}; "
         f"chord progression {chords}; instruments: {instruments}; "
@@ -75,6 +78,8 @@ def build_music_prompt(
         "mono narrow mix, vocal-only intro, backing enters late, cheerful melody over sad text, "
         "copyrighted song imitation, low quality, robotic artifacts"
     )
+    if negative_extra:
+        negative = f"{negative}, {negative_extra}"
     return prompt, negative
 
 
@@ -92,3 +97,20 @@ def _vocalize_style_text(text: str) -> str:
     for old, new in replacements.items():
         cleaned = cleaned.replace(old, new)
     return cleaned
+
+
+def _style_identity_text(text: str | None) -> str:
+    controls = parse_control_context(text)
+    if not controls:
+        return (text or "Vietnamese text-to-song").strip()
+
+    parts: list[str] = []
+    for key in ("style", "genre", "mood", "secondary mood", "energy", "use case", "instruments"):
+        value = controls.get(key, "").strip()
+        if not value:
+            continue
+        if key == "genre" and "instrumental" in value.lower():
+            parts.append(f"{key} target: {value} interpreted as singer-ready song arrangement")
+        else:
+            parts.append(f"{key} target: {value}")
+    return "; ".join(parts) or "Vietnamese text-to-song"

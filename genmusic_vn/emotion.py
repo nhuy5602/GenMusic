@@ -100,6 +100,10 @@ WORD_LEXICON = {
 
 PHRASE_LEXICON["joy"].update(
     {
+        "mood: happy": 3.0,
+        "secondary mood: happy": 2.4,
+        "mood: playful": 2.4,
+        "playful": 1.8,
         "tiếng cười": 1.5,
         "pháo hoa": 1.7,
         "hân hoan": 1.8,
@@ -137,6 +141,18 @@ PHRASE_LEXICON["anger"].update(
 )
 PHRASE_LEXICON["fear"].update(
     {
+        "mood: scary": 3.0,
+        "mood: mysterious": 2.7,
+        "mood: tense": 2.4,
+        "mood: dark": 2.0,
+        "secondary mood: mysterious": 2.2,
+        "secondary mood: tense": 2.0,
+        "style: horror": 3.0,
+        "genre: horror": 2.8,
+        "horror_score": 2.8,
+        "horror": 2.4,
+        "scary": 2.2,
+        "mysterious": 1.8,
         "linh cảm không lành": 2.1,
         "mây đen": 1.3,
         "bí mật": 1.2,
@@ -161,6 +177,17 @@ PHRASE_LEXICON["fear"].update(
 )
 PHRASE_LEXICON["calm"].update(
     {
+        "mood: peaceful": 2.6,
+        "mood: professional": 2.0,
+        "mood: luxury": 1.8,
+        "secondary mood: peaceful": 2.0,
+        "secondary mood: professional": 1.8,
+        "style: corporate": 1.8,
+        "style: ambient": 1.5,
+        "style: meditation": 2.2,
+        "style: jazz": 1.2,
+        "luxury": 1.2,
+        "professional": 1.2,
         "ngồi yên": 1.7,
         "cửa sổ": 0.9,
         "trôi thật chậm": 1.6,
@@ -185,6 +212,8 @@ PHRASE_LEXICON["calm"].update(
 )
 PHRASE_LEXICON["romantic"].update(
     {
+        "mood: romantic": 3.0,
+        "secondary mood: romantic": 2.2,
         "mùa yêu thương": 1.5,
         "nụ cười của em": 2.0,
         "ngày đông": 0.9,
@@ -198,6 +227,17 @@ PHRASE_LEXICON["romantic"].update(
 )
 PHRASE_LEXICON["hope"].update(
     {
+        "mood: hopeful": 3.0,
+        "mood: inspiring": 2.8,
+        "mood: epic": 2.5,
+        "mood: adventurous": 2.2,
+        "secondary mood: hopeful": 2.4,
+        "secondary mood: inspiring": 2.2,
+        "secondary mood: epic": 2.0,
+        "secondary mood: adventurous": 1.8,
+        "style: orchestral": 1.8,
+        "genre: orchestral": 1.8,
+        "adventurous": 1.5,
         "bình minh": 1.7,
         "tan ra": 1.2,
         "tiến về phía trước": 1.8,

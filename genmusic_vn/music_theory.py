@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import re
 
+from .controls import parse_control_context, target_bpm_from_text
 from .schemas import EmotionProfile, HarmonyPlan, NoteEvent
 from .stylebank import get_emotion_music
 from .text_utils import tokenize_words
@@ -129,6 +130,58 @@ EMOTION_HARMONY = {
 
 GENRE_HARMONY_OVERRIDES = [
     (
+        ("horror", "scary", "horror score"),
+        {
+            "key": "F#",
+            "scale": "minor",
+            "bpm": 55,
+            "progression": ["F#m", "D", "Bm", "C#dim"],
+            "register": "low-mid",
+            "instruments": ["dark pads", "low strings", "distant hit", "sub drone", "prepared piano scrape"],
+            "arrangement": ["slow eerie fade-in", "sparse tension hits", "unresolved shadow ending"],
+            "traits": ["eerie horror ambience", "tense low drones", "cold suspense", "no cheerful melody"],
+        },
+    ),
+    (
+        ("game 8bit", "game 8 bit", "8bit", "8 bit", "chiptune"),
+        {
+            "key": "C",
+            "scale": "major",
+            "bpm": 135,
+            "progression": ["C", "G", "Am", "F"],
+            "register": "mid-high",
+            "instruments": ["chiptune synth", "8-bit drums", "square wave lead", "arpeggio bass", "pixel coin blips"],
+            "arrangement": ["instant loop intro", "retro adventure hook", "short game loop ending"],
+            "traits": ["retro chiptune adventure loop", "playful 8-bit pulse", "loopable game music"],
+        },
+    ),
+    (
+        ("orchestral", "trailer", "orchestral trailer"),
+        {
+            "key": "D",
+            "scale": "minor",
+            "bpm": 110,
+            "progression": ["Dm", "Bb", "F", "C"],
+            "register": "mid-high",
+            "instruments": ["strings", "brass", "timpani", "choir pad", "cinematic percussion"],
+            "arrangement": ["low string ostinato intro", "heroic build-up", "grand trailer chorus", "final orchestral hit"],
+            "traits": ["heroic orchestral build-up", "grand cinematic trailer", "epic brass lift"],
+        },
+    ),
+    (
+        ("film score", "film_score", "cinematic", "documentary"),
+        {
+            "key": "A",
+            "scale": "minor",
+            "bpm": 84,
+            "progression": ["Am", "F", "C", "G"],
+            "register": "mid",
+            "instruments": ["piano", "strings", "cinematic percussion", "low drone", "warm pad"],
+            "arrangement": ["cinematic piano intro", "emotional string lift", "subtle pulse under dialogue", "natural film ending"],
+            "traits": ["cinematic soundtrack", "dramatic atmosphere", "reflective film score", "chapter opening score"],
+        },
+    ),
+    (
         ("lo fi", "lofi", "chillhop"),
         {
             "key": "F",
@@ -139,6 +192,123 @@ GENRE_HARMONY_OVERRIDES = [
             "instruments": ["dusty electric piano", "vinyl tape noise", "muted guitar", "soft lo-fi drums", "warm bass"],
             "arrangement": ["filtered intro", "relaxed dusty loop", "memory-like refrain", "tape-wobble outro"],
             "traits": ["lo-fi dusty swing", "warm tape noise", "rounded transients", "nostalgic chillhop color"],
+        },
+    ),
+    (
+        ("corporate", "podcast", "presentation", "news intro", "banking", "professional"),
+        {
+            "key": "C",
+            "scale": "major",
+            "bpm": 98,
+            "progression": ["C", "G", "Am", "F"],
+            "register": "mid",
+            "instruments": ["piano", "light guitar", "soft beat", "muted synth pulse", "light percussion"],
+            "arrangement": ["clean concise intro", "professional steady bed", "short logo-like ending"],
+            "traits": ["clean inspiring podcast intro", "modern professional corporate background", "warm corporate feel"],
+        },
+    ),
+    (
+        ("jazz", "smooth jazz", "smooth_jazz", "luxury"),
+        {
+            "key": "C",
+            "scale": "major",
+            "bpm": 88,
+            "progression": ["Dm7", "G7", "Cmaj7", "A7"],
+            "register": "mid",
+            "instruments": ["piano", "saxophone", "brushed drums", "upright bass", "soft ride cymbal"],
+            "arrangement": ["smooth piano pickup", "luxury sax phrase", "brushed swing groove", "elegant tag ending"],
+            "traits": ["smooth luxury jazz", "premium brand video", "light romantic jazz comedy cue"],
+        },
+    ),
+    (
+        ("acoustic", "acoustic guitar", "acoustic_guitar"),
+        {
+            "key": "A",
+            "scale": "major",
+            "bpm": 82,
+            "progression": ["A", "E", "F#m", "D"],
+            "register": "mid",
+            "instruments": ["acoustic guitar", "soft piano", "light strings", "warm bass", "gentle shaker"],
+            "arrangement": ["fingerpicked guitar intro", "warm acoustic verse", "soft romantic refrain", "gentle ending"],
+            "traits": ["warm romantic acoustic", "peaceful wedding acoustic", "no electronic synth"],
+        },
+    ),
+    (
+        ("piano ballad", "piano_ballad", "solo piano", "piano"),
+        {
+            "key": "A",
+            "scale": "minor",
+            "bpm": 70,
+            "progression": ["Am", "F", "C", "G"],
+            "register": "mid",
+            "instruments": ["solo piano", "soft strings", "felt piano", "light string pad"],
+            "arrangement": ["minimal piano intro", "gentle emotional melody", "breathing pauses", "soft cadence ending"],
+            "traits": ["emotional piano melody", "minimal lonely solo piano", "poetic nostalgic piano"],
+        },
+    ),
+    (
+        ("traditional folk", "traditional_folk", "vietnamese folk", "vietnamese_folk", "traditional", "folk"),
+        {
+            "key": "D",
+            "scale": "major",
+            "bpm": 76,
+            "progression": ["D", "G", "A", "Bm"],
+            "register": "mid",
+            "instruments": ["dan tranh", "dan bau", "bamboo flute", "soft percussion", "temple bell"],
+            "arrangement": ["folk ornament intro", "peaceful countryside verse", "traditional refrain", "natural breath ending"],
+            "traits": ["Vietnamese traditional cinematic folk atmosphere", "peaceful nostalgic folk acoustic background", "temple bell ambience"],
+        },
+    ),
+    (
+        ("children", "children song", "children_song", "cute pet"),
+        {
+            "key": "C",
+            "scale": "major",
+            "bpm": 115,
+            "progression": ["C", "G", "Am", "F"],
+            "register": "mid-high",
+            "instruments": ["ukulele", "xylophone", "bells", "light drums", "toy piano"],
+            "arrangement": ["cute pickup intro", "playful bounce groove", "simple cheerful hook", "button ending"],
+            "traits": ["cute playful children background music", "pet video music", "light educational tone"],
+        },
+    ),
+    (
+        ("synthwave", "synthwave_retro", "cyberpunk", "retro night"),
+        {
+            "key": "C",
+            "scale": "minor",
+            "bpm": 118,
+            "progression": ["Cm", "Ab", "Bb", "G"],
+            "register": "mid",
+            "instruments": ["retro synth", "arpeggio", "electronic drums", "deep bass", "neon pad"],
+            "arrangement": ["retro arpeggio intro", "night drive groove", "dark cyberpunk lift", "glowing synth ending"],
+            "traits": ["retro night drive synthwave", "dark cyberpunk synthwave", "neon electronic pulse"],
+        },
+    ),
+    (
+        ("ambient soundscape", "ambient_soundscape", "ambient"),
+        {
+            "key": "D",
+            "scale": "major",
+            "bpm": 64,
+            "progression": ["D", "A", "Bm", "G"],
+            "register": "mid-low",
+            "instruments": ["soft pads", "drones", "soft texture", "distant bell", "subtle pulse"],
+            "arrangement": ["slow evolving pad intro", "minimal pulse", "wide atmospheric bed", "natural fade-out"],
+            "traits": ["ambient soundscape", "atmospheric", "space ambient sci-fi soundscape", "minimal tech ambient background"],
+        },
+    ),
+    (
+        ("pop instrumental", "pop_instrumental", "brand jingle", "travel vlog", "pop"),
+        {
+            "key": "G",
+            "scale": "major",
+            "bpm": 118,
+            "progression": ["G", "D", "Em", "C"],
+            "register": "mid-high",
+            "instruments": ["guitar", "piano", "clap", "light drums", "warm bass"],
+            "arrangement": ["catchy two-bar intro", "upbeat verse groove", "bright hook chorus", "short clean ending"],
+            "traits": ["modern pop instrumental", "catchy melody", "upbeat travel vlog pop", "short catchy brand jingle"],
         },
     ),
     (
@@ -294,6 +464,9 @@ def build_harmony(emotion: EmotionProfile, duration_seconds: int = 30, genre: st
         bpm += 6
     elif emotion.energy < 0.3:
         bpm -= 4
+    target_bpm = target_bpm_from_text(genre)
+    if target_bpm is not None:
+        bpm = target_bpm
 
     progression = list(preset["progression"])
     chord_map = {chord: chord_notes(chord) for chord in progression}
@@ -315,7 +488,21 @@ def build_harmony(emotion: EmotionProfile, duration_seconds: int = 30, genre: st
 def _genre_harmony_override(genre: str | None) -> dict | None:
     if not genre:
         return None
-    normalized = _normalize_genre(genre)
+    controls = parse_control_context(genre)
+    if controls:
+        primary_parts = [
+            value
+            for key in ("style", "genre", "use case")
+            if (value := controls.get(key, "")).lower() not in {"", "auto"}
+        ]
+        primary_override = _match_genre_override(" ".join(primary_parts))
+        if primary_override:
+            return primary_override
+    return _match_genre_override(genre)
+
+
+def _match_genre_override(genre: str | None) -> dict | None:
+    normalized = _normalize_genre(genre or "")
     for keywords, override in GENRE_HARMONY_OVERRIDES:
         if any(keyword in normalized for keyword in keywords):
             return override

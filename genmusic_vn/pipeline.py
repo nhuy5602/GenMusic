@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from hashlib import sha1
 from pathlib import Path
 
+from .controls import negative_control_text, positive_control_text
 from .emotion import analyze_emotion
 from .generators.base import GeneratorInput, MusicGenerator
 from .generators.guide_track import GuideTrackGenerator
@@ -49,9 +50,11 @@ def create_music_project(
 
     text_plan = build_text_plan(normalized, duration_seconds=duration_seconds)
     generation_text = text_plan.condensed_text or normalized
-    emotion_source = f"{normalized} {genre or ''}".strip()
+    positive_genre = positive_control_text(genre)
+    negative_extra = negative_control_text(genre)
+    emotion_source = f"{normalized} {positive_genre or ''}".strip()
     emotion = analyze_emotion(emotion_source)
-    harmony = build_harmony(emotion, duration_seconds, genre=genre)
+    harmony = build_harmony(emotion, duration_seconds, genre=positive_genre)
     melody = build_melody_events(generation_text, harmony, duration_seconds)
     lyrics = rewrite_lyrics(generation_text, emotion, harmony)
     vocal = build_vocal_plan(normalized, emotion, harmony)
@@ -64,7 +67,8 @@ def create_music_project(
         scene=scene,
         source_keywords=text_plan.keywords,
         source_excerpt=text_plan.condensed_text or normalized,
-        genre=genre,
+        genre=positive_genre,
+        negative_extra=negative_extra,
     )
 
     generator_input = GeneratorInput(
