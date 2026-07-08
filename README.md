@@ -18,11 +18,16 @@ Kaggle GPU
   Viết lại nội dung thành lời bài hát hoàn chỉnh
   Chọn key, scale, BPM, hợp âm, nhạc cụ và hướng giai điệu
   Sinh prompt cho MusicGen
-  Chạy MusicGen
+  Chạy MusicGen để sinh backing track
+  Chạy F5-TTS Vietnamese để synth vocal tiếng Việt
+  Nếu F5-TTS lỗi thì fallback sang MMS Vietnamese TTS
+  Mix vocal với backing track
   Chuyển WAV sang MP3
 ```
 
 Local không chạy mô hình AI nặng và không sinh nhạc. Local chỉ tạo job Kaggle từ raw text, upload dataset job, push Kaggle Kernel, theo dõi trạng thái, tải file `.mp3` về và phục vụ file cho giao diện web.
+
+TTS mặc định dùng model `hynt/F5-TTS-Vietnamese-ViVoice` trên Kaggle. Model này dùng một đoạn giọng tham chiếu tiếng Việt ngắn để tạo vocal; trường male/female trong project vẫn là khuyến nghị phối giọng, cao độ và profile hậu kỳ chứ không bảo đảm đổi hoàn toàn timbre ca sĩ. `facebook/mms-tts-vie` được giữ làm fallback để demo vẫn trả file MP3 có vocal khi F5-TTS lỗi.
 
 ## Dataset Kiến Thức Âm Nhạc Việt Nam
 

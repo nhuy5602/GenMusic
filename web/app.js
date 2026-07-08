@@ -14,6 +14,9 @@ const ctx = canvas.getContext("2d");
 let isGenerating = false;
 let activePollId = 0;
 let currentJob = null;
+const DEFAULT_TTS_MODEL = "hynt/F5-TTS-Vietnamese-ViVoice";
+const DEFAULT_MMS_TTS_MODEL = "facebook/mms-tts-vie";
+const DEFAULT_TTS_VOICE = "f5_vietnamese_vivoice_reference";
 
 duration.addEventListener("input", () => {
   durationValue.textContent = `${duration.value}s target`;
@@ -86,8 +89,9 @@ function renderJob(job) {
   const lines = [
     `Status: ${job.status}`,
     `Model: ${job.model}`,
-    `TTS: ${job.tts_model || "facebook/mms-tts-vie"}`,
-    `TTS voice: ${job.tts_voice_actual || "fixed_mms_vietnamese_voice"}`,
+    `TTS: ${job.tts_model || DEFAULT_TTS_MODEL}`,
+    `TTS fallback: ${job.mms_tts_model || DEFAULT_MMS_TTS_MODEL}`,
+    `TTS voice: ${job.tts_voice_actual || DEFAULT_TTS_VOICE}`,
     `Dataset: ${job.dataset_ref}`,
     `Kernel: ${job.kernel_ref}`,
     "",
@@ -199,16 +203,25 @@ function renderWarning(job) {
   }
 
   const backend = `${job.generation_backend || job.backend || ""}`;
+  const hasVocalMix = backend.includes("f5_tts_vocal_mix") || backend.includes("mms_tts_vocal_mix");
   const warnings = [];
   const musicgenFailed = Boolean(job.musicgen_failed || job.musicgen_error || backend.includes("guide_fallback"));
   const ttsFailed = Boolean(
     job.vocal_failed || job.tts_error || backend.includes("tts_failed") || backend.includes("tts_skipped"),
   );
+  const f5FallbackUsed = Boolean(job.f5_tts_error && backend.includes("f5_failed_mms"));
   if (musicgenFailed) {
     const detail = summarizeError(job.musicgen_error || job.last_error || "");
     warnings.push([
       "MusicGen bị lỗi trên Kaggle. MP3 hiện tại dùng guide fallback, chất lượng sẽ thấp hơn MusicGen.",
       detail ? `Chi tiết: ${detail}` : "",
+    ].filter(Boolean).join("\n"));
+  }
+  if (f5FallbackUsed) {
+    const detail = summarizeError(job.f5_tts_error || "");
+    warnings.push([
+      "F5-TTS bị lỗi trên Kaggle, hệ thống đã tự dùng MMS Vietnamese TTS fallback để vẫn có vocal.",
+      detail ? `Chi tiết F5: ${detail}` : "",
     ].filter(Boolean).join("\n"));
   }
   if (ttsFailed) {
@@ -224,7 +237,7 @@ function renderWarning(job) {
     return;
   }
 
-  if (job.mp3_url && job.lyrics_text && !job.vocal_url && backend && !backend.includes("mms_tts_vocal_mix")) {
+  if (job.mp3_url && job.lyrics_text && !job.vocal_url && backend && !hasVocalMix) {
     warningSlot.hidden = false;
     warningSlot.textContent = "Không nhận được file vocal WAV từ Kaggle. MP3 có thể chỉ là nhạc nền.";
     return;
@@ -271,12 +284,13 @@ function renderDownloads(job) {
 function canRetryTts(job) {
   if (!job || job.status !== "complete" || !job.mp3_url || job.vocal_url) return false;
   const backend = `${job.generation_backend || job.backend || ""}`;
+  const hasVocalMix = backend.includes("f5_tts_vocal_mix") || backend.includes("mms_tts_vocal_mix");
   return Boolean(
     job.vocal_failed ||
       job.tts_error ||
       backend.includes("tts_failed") ||
       backend.includes("tts_skipped") ||
-      (job.lyrics_text && !backend.includes("mms_tts_vocal_mix")),
+      (job.lyrics_text && !hasVocalMix),
   );
 }
 
@@ -296,7 +310,7 @@ function renderLyrics(job) {
   }
   if (Object.keys(vocal).length) {
     lines.push(`Recommended singer: ${formatVocalGender(vocal.gender)} ${vocal.register || ""}`.trim());
-    lines.push(`Actual TTS voice: ${job.tts_voice_actual || "fixed_mms_vietnamese_voice"}`);
+    lines.push(`Actual TTS voice: ${job.tts_voice_actual || DEFAULT_TTS_VOICE}`);
     if (job.tts_voice_note) lines.push(`TTS note: ${job.tts_voice_note}`);
     lines.push(`Pitch: ${vocal.pitch_center || "-"} | Range: ${vocal.range_low || "-"}-${vocal.range_high || "-"}`);
     if (vocal.delivery) lines.push(`Delivery: ${vocal.delivery}`);

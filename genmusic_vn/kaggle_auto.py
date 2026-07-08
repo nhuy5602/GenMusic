@@ -24,8 +24,10 @@ class KaggleAutoError(RuntimeError):
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MUSICGEN_MODEL = "facebook/musicgen-medium"
-DEFAULT_TTS_MODEL = "facebook/mms-tts-vie"
-DEFAULT_TTS_VOICE_NOTE = "MMS Vietnamese TTS is a fixed single-speaker voice; gender labels are singer recommendations only."
+DEFAULT_TTS_MODEL = "hynt/F5-TTS-Vietnamese-ViVoice"
+DEFAULT_MMS_TTS_MODEL = "facebook/mms-tts-vie"
+DEFAULT_TTS_VOICE_ACTUAL = "f5_vietnamese_vivoice_reference"
+DEFAULT_TTS_VOICE_NOTE = "F5-TTS Vietnamese uses a short Vietnamese reference voice; MMS Vietnamese is kept as fallback."
 
 
 @dataclass(frozen=True)
@@ -149,6 +151,7 @@ def stage_text_to_music_job(
         "genre": genre or "Vietnamese cinematic pop text-to-song",
         "model": config.model,
         "tts_model": DEFAULT_TTS_MODEL,
+        "mms_tts_model": DEFAULT_MMS_TTS_MODEL,
         "backend": "musicgen",
         "created_at": _now(),
     }
@@ -233,12 +236,14 @@ def stage_text_to_music_job(
         "musicgen_failed": False,
         "vocal_failed": False,
         "tts_model": DEFAULT_TTS_MODEL,
-        "tts_voice_actual": "fixed_mms_vietnamese_voice",
+        "mms_tts_model": DEFAULT_MMS_TTS_MODEL,
+        "tts_voice_actual": DEFAULT_TTS_VOICE_ACTUAL,
         "tts_voice_note": DEFAULT_TTS_VOICE_NOTE,
         "commands": commands,
         "messages": ["Kaggle MusicGen job files prepared."],
         "last_error": "",
         "musicgen_error": "",
+        "f5_tts_error": "",
         "tts_error": "",
         "history": [],
         "downloaded_files": [],
@@ -273,7 +278,13 @@ def stage_tts_retry_job(parent_state: dict[str, Any], *, config: KaggleJobConfig
     request["parent_run_id"] = parent_run_id
     request["backend"] = "tts_retry"
     request["model"] = parent_state.get("model") or request.get("model") or config.model
-    request["tts_model"] = request.get("tts_model") or DEFAULT_TTS_MODEL
+    previous_tts_model = request.get("tts_model")
+    if previous_tts_model == DEFAULT_MMS_TTS_MODEL:
+        request["mms_tts_model"] = request.get("mms_tts_model") or previous_tts_model
+        request["tts_model"] = DEFAULT_TTS_MODEL
+    else:
+        request["tts_model"] = previous_tts_model or DEFAULT_TTS_MODEL
+        request["mms_tts_model"] = request.get("mms_tts_model") or parent_state.get("mms_tts_model") or DEFAULT_MMS_TTS_MODEL
     if "target_duration_seconds" not in request and parent_state.get("target_duration_seconds"):
         request["target_duration_seconds"] = parent_state["target_duration_seconds"]
     if "duration_seconds" not in request and parent_state.get("target_duration_seconds"):
@@ -366,7 +377,8 @@ def stage_tts_retry_job(parent_state: dict[str, Any], *, config: KaggleJobConfig
         "musicgen_failed": bool(parent_state.get("musicgen_failed")),
         "vocal_failed": False,
         "tts_model": request.get("tts_model") or DEFAULT_TTS_MODEL,
-        "tts_voice_actual": "fixed_mms_vietnamese_voice",
+        "mms_tts_model": request.get("mms_tts_model") or DEFAULT_MMS_TTS_MODEL,
+        "tts_voice_actual": DEFAULT_TTS_VOICE_ACTUAL,
         "tts_voice_note": DEFAULT_TTS_VOICE_NOTE,
         "commands": commands,
         "messages": [
@@ -375,6 +387,7 @@ def stage_tts_retry_job(parent_state: dict[str, Any], *, config: KaggleJobConfig
         ],
         "last_error": "",
         "musicgen_error": parent_state.get("musicgen_error", ""),
+        "f5_tts_error": "",
         "tts_error": "",
         "history": [],
         "downloaded_files": [],
@@ -656,6 +669,7 @@ def _load_retry_request(parent_state: dict[str, Any]) -> dict[str, Any]:
         "genre": parent_state.get("genre") or "Vietnamese cinematic pop text-to-song",
         "model": parent_state.get("model") or DEFAULT_MUSICGEN_MODEL,
         "tts_model": parent_state.get("tts_model") or DEFAULT_TTS_MODEL,
+        "mms_tts_model": parent_state.get("mms_tts_model") or DEFAULT_MMS_TTS_MODEL,
         "backend": "tts_retry",
         "created_at": _now(),
     }
@@ -719,9 +733,16 @@ SOURCE_DIR = Path("/kaggle/working/genmusic_vn_source")
 PIPELINE_DIR = Path("/kaggle/working/pipeline_output")
 OUTPUT_DIR = Path("/kaggle/working/genmusic_vn")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-DEFAULT_TTS_MODEL = "facebook/mms-tts-vie"
-DEFAULT_TTS_VOICE_ACTUAL = "fixed_mms_vietnamese_voice"
-DEFAULT_TTS_VOICE_NOTE = "MMS Vietnamese TTS is a fixed single-speaker voice; gender labels are singer recommendations only."
+ASSET_DIR = Path("/kaggle/working/genmusic_vn_assets")
+ASSET_DIR.mkdir(parents=True, exist_ok=True)
+DEFAULT_TTS_MODEL = "hynt/F5-TTS-Vietnamese-ViVoice"
+DEFAULT_F5_TTS_MODEL = "hynt/F5-TTS-Vietnamese-ViVoice"
+DEFAULT_MMS_TTS_MODEL = "facebook/mms-tts-vie"
+DEFAULT_TTS_VOICE_ACTUAL = "f5_vietnamese_vivoice_reference"
+DEFAULT_TTS_VOICE_NOTE = "F5-TTS Vietnamese uses a short Vietnamese reference voice; MMS Vietnamese is kept as fallback."
+F5_REPO_URL = "https://github.com/nguyenthienhy/F5-TTS-Vietnamese.git"
+F5_REF_AUDIO_URL = "https://raw.githubusercontent.com/nguyenthienhy/F5-TTS-Vietnamese/main/ref.wav"
+F5_REF_TEXT = "cả hai bên hãy cố gắng hiểu cho nhau"
 
 
 def ensure(import_name: str, *pip_specs: str) -> None:
@@ -999,7 +1020,7 @@ def render_mms_tts_vocal(request: dict, result, duration_plan: dict) -> Path:
     from scipy.io import wavfile
     from transformers import AutoModelForTextToWaveform, AutoTokenizer
 
-    model_name = request.get("tts_model") or DEFAULT_TTS_MODEL
+    model_name = request.get("mms_tts_model") or DEFAULT_MMS_TTS_MODEL
     # Keep MMS TTS on CPU. On Kaggle, CUDA can be left in a bad state after MusicGen
     # generation, which makes the TTS model fail before it can render any vocal.
     device = "cpu"
@@ -1044,6 +1065,83 @@ def render_mms_tts_vocal(request: dict, result, duration_plan: dict) -> Path:
 
 def clean_tts_line(line: str) -> str:
     return " ".join(line.replace("|", " ").replace("/", " ").split()).strip(" ,.;:-")
+
+
+def f5_gen_text_from_lines(lines: list[str]) -> str:
+    cleaned = [clean_tts_line(line).lower() for line in lines if clean_tts_line(line)]
+    return ". ".join(cleaned).strip()
+
+
+def ensure_f5_tts_assets(request: dict) -> tuple[Path, Path, Path]:
+    ensure("huggingface_hub", "huggingface_hub")
+    import urllib.request
+    from huggingface_hub import snapshot_download
+
+    install_dir = ASSET_DIR / "f5_tts_vietnamese_repo"
+    if not install_dir.exists():
+        subprocess.check_call(["git", "clone", "--depth", "1", F5_REPO_URL, str(install_dir)])
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-e", str(install_dir)])
+
+    model_id = request.get("tts_model") or DEFAULT_F5_TTS_MODEL
+    model_dir = ASSET_DIR / "f5_tts_vietnamese_model"
+    snapshot_download(repo_id=model_id, local_dir=str(model_dir), local_dir_use_symlinks=False)
+
+    vocab_file = model_dir / "vocab.txt"
+    config_file = model_dir / "config.json"
+    if not vocab_file.exists() and config_file.exists():
+        shutil.copy2(config_file, vocab_file)
+    ckpt_file = model_dir / "model_last.pt"
+    if not ckpt_file.exists():
+        matches = sorted(model_dir.glob("*.pt")) + sorted(model_dir.glob("*.safetensors"))
+        if not matches:
+            raise FileNotFoundError(f"F5 checkpoint not found in {{model_dir}}")
+        ckpt_file = matches[0]
+
+    ref_audio = ASSET_DIR / "f5_ref.wav"
+    if not ref_audio.exists():
+        urllib.request.urlretrieve(F5_REF_AUDIO_URL, ref_audio)
+    return ref_audio, vocab_file, ckpt_file
+
+
+def render_f5_tts_vocal(request: dict, result, duration_plan: dict) -> Path:
+    ref_audio, vocab_file, ckpt_file = ensure_f5_tts_assets(request)
+    gen_text = f5_gen_text_from_lines(select_tts_lines_for_duration(result, duration_plan))
+    if not gen_text:
+        raise ValueError("No lyric text available for F5-TTS.")
+
+    output_file = f"{{request.get('run_id', 'genmusic_vn')}}_vocal_f5.wav"
+    command = [
+        "f5-tts_infer-cli",
+        "--model",
+        "F5TTS_Base",
+        "--ref_audio",
+        str(ref_audio),
+        "--ref_text",
+        F5_REF_TEXT,
+        "--gen_text",
+        gen_text,
+        "--speed",
+        "1.0",
+        "--vocoder_name",
+        "vocos",
+        "--vocab_file",
+        str(vocab_file),
+        "--ckpt_file",
+        str(ckpt_file),
+        "--output_dir",
+        str(OUTPUT_DIR),
+        "--output_file",
+        output_file,
+    ]
+    subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    vocal_path = OUTPUT_DIR / output_file
+    if not vocal_path.exists():
+        candidates = sorted(OUTPUT_DIR.rglob(output_file))
+        if candidates:
+            vocal_path = candidates[0]
+    if not vocal_path.exists():
+        raise FileNotFoundError(f"F5-TTS output was not found: {{vocal_path}}")
+    return vocal_path
 
 
 def postprocess_vocal_audio(audio_np):
@@ -1220,20 +1318,28 @@ def main() -> None:
         generation_backend = "guide_fallback"
 
     if musicgen_error:
-        tts_error = "Skipped MMS TTS because MusicGen failed in the same Kaggle kernel; CUDA may be unstable after the MusicGen error."
+        tts_error = "Skipped vocal TTS because MusicGen failed in the same Kaggle kernel; CUDA may be unstable after the MusicGen error."
         (OUTPUT_DIR / "tts_error.txt").write_text(tts_error, encoding="utf-8")
         mp3_path = backing_mp3_path
         generation_backend = generation_backend + "+tts_skipped_backing_only"
     else:
+        f5_tts_error = ""
         try:
-            vocal_path = render_mms_tts_vocal(request, result, duration_plan)
+            vocal_path = render_f5_tts_vocal(request, result, duration_plan)
             mp3_path = mix_vocal_with_backing(request, backing_mp3_path, vocal_path, duration_plan, scene_plan)
-            generation_backend = generation_backend + "+mms_tts_vocal_mix"
+            generation_backend = generation_backend + "+f5_tts_vocal_mix"
         except Exception as exc:
-            tts_error = "".join(traceback.format_exception(exc))[-4000:]
-            (OUTPUT_DIR / "tts_error.txt").write_text(tts_error, encoding="utf-8")
-            mp3_path = backing_mp3_path
-            generation_backend = generation_backend + "+tts_failed_backing_only"
+            f5_tts_error = "".join(traceback.format_exception(exc))[-4000:]
+            (OUTPUT_DIR / "f5_tts_error.txt").write_text(f5_tts_error, encoding="utf-8")
+            try:
+                vocal_path = render_mms_tts_vocal(request, result, duration_plan)
+                mp3_path = mix_vocal_with_backing(request, backing_mp3_path, vocal_path, duration_plan, scene_plan)
+                generation_backend = generation_backend + "+f5_failed_mms_tts_vocal_mix"
+            except Exception as mms_exc:
+                tts_error = "".join(traceback.format_exception(mms_exc))[-4000:]
+                (OUTPUT_DIR / "tts_error.txt").write_text(tts_error, encoding="utf-8")
+                mp3_path = backing_mp3_path
+                generation_backend = generation_backend + "+tts_failed_backing_only"
 
     lyrics_text = "\\n".join(result.lyrics.full_song)
     (OUTPUT_DIR / "lyrics.txt").write_text(lyrics_text, encoding="utf-8")
@@ -1254,6 +1360,7 @@ def main() -> None:
         "outro_tail_seconds": duration_plan["outro_tail_seconds"],
         "duration_plan": duration_plan,
         "tts_model": request.get("tts_model") or DEFAULT_TTS_MODEL,
+        "mms_tts_model": request.get("mms_tts_model") or DEFAULT_MMS_TTS_MODEL,
         "tts_voice_actual": DEFAULT_TTS_VOICE_ACTUAL,
         "tts_voice_note": DEFAULT_TTS_VOICE_NOTE,
         "mp3_path": str(mp3_path),
@@ -1262,6 +1369,7 @@ def main() -> None:
         "musicgen_failed": bool(musicgen_error),
         "vocal_failed": bool(tts_error),
         "musicgen_error": musicgen_error,
+        "f5_tts_error": f5_tts_error if 'f5_tts_error' in locals() else "",
         "tts_error": tts_error,
         "prompt": result.prompt,
         "negative_prompt": result.negative_prompt,
@@ -1273,6 +1381,7 @@ def main() -> None:
     }}
     (OUTPUT_DIR / "kaggle_result.json").write_text(json.dumps(final, ensure_ascii=False, indent=2), encoding="utf-8")
     (OUTPUT_DIR / "request.json").write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
+    shutil.rmtree(ASSET_DIR, ignore_errors=True)
     print(json.dumps({{"mp3_path": str(mp3_path), "prompt": result.prompt}}, ensure_ascii=False, indent=2))
 
 
@@ -1298,9 +1407,16 @@ SOURCE_DIR = Path("/kaggle/working/genmusic_vn_source")
 PIPELINE_DIR = Path("/kaggle/working/pipeline_output")
 OUTPUT_DIR = Path("/kaggle/working/genmusic_vn")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-DEFAULT_TTS_MODEL = "facebook/mms-tts-vie"
-DEFAULT_TTS_VOICE_ACTUAL = "fixed_mms_vietnamese_voice"
-DEFAULT_TTS_VOICE_NOTE = "MMS Vietnamese TTS is a fixed single-speaker voice; gender labels are singer recommendations only."
+ASSET_DIR = Path("/kaggle/working/genmusic_vn_assets")
+ASSET_DIR.mkdir(parents=True, exist_ok=True)
+DEFAULT_TTS_MODEL = "hynt/F5-TTS-Vietnamese-ViVoice"
+DEFAULT_F5_TTS_MODEL = "hynt/F5-TTS-Vietnamese-ViVoice"
+DEFAULT_MMS_TTS_MODEL = "facebook/mms-tts-vie"
+DEFAULT_TTS_VOICE_ACTUAL = "f5_vietnamese_vivoice_reference"
+DEFAULT_TTS_VOICE_NOTE = "F5-TTS Vietnamese uses a short Vietnamese reference voice; MMS Vietnamese is kept as fallback."
+F5_REPO_URL = "https://github.com/nguyenthienhy/F5-TTS-Vietnamese.git"
+F5_REF_AUDIO_URL = "https://raw.githubusercontent.com/nguyenthienhy/F5-TTS-Vietnamese/main/ref.wav"
+F5_REF_TEXT = "cả hai bên hãy cố gắng hiểu cho nhau"
 
 
 def ensure(import_name: str, *pip_specs: str) -> None:
@@ -1415,6 +1531,83 @@ def clean_tts_line(line: str) -> str:
     return " ".join(line.replace("|", " ").replace("/", " ").split()).strip(" ,.;:-")
 
 
+def f5_gen_text_from_lines(lines: list[str]) -> str:
+    cleaned = [clean_tts_line(line).lower() for line in lines if clean_tts_line(line)]
+    return ". ".join(cleaned).strip()
+
+
+def ensure_f5_tts_assets(request: dict) -> tuple[Path, Path, Path]:
+    ensure("huggingface_hub", "huggingface_hub")
+    import urllib.request
+    from huggingface_hub import snapshot_download
+
+    install_dir = ASSET_DIR / "f5_tts_vietnamese_repo"
+    if not install_dir.exists():
+        subprocess.check_call(["git", "clone", "--depth", "1", F5_REPO_URL, str(install_dir)])
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-e", str(install_dir)])
+
+    model_id = request.get("tts_model") or DEFAULT_F5_TTS_MODEL
+    model_dir = ASSET_DIR / "f5_tts_vietnamese_model"
+    snapshot_download(repo_id=model_id, local_dir=str(model_dir), local_dir_use_symlinks=False)
+
+    vocab_file = model_dir / "vocab.txt"
+    config_file = model_dir / "config.json"
+    if not vocab_file.exists() and config_file.exists():
+        shutil.copy2(config_file, vocab_file)
+    ckpt_file = model_dir / "model_last.pt"
+    if not ckpt_file.exists():
+        matches = sorted(model_dir.glob("*.pt")) + sorted(model_dir.glob("*.safetensors"))
+        if not matches:
+            raise FileNotFoundError(f"F5 checkpoint not found in {{model_dir}}")
+        ckpt_file = matches[0]
+
+    ref_audio = ASSET_DIR / "f5_ref.wav"
+    if not ref_audio.exists():
+        urllib.request.urlretrieve(F5_REF_AUDIO_URL, ref_audio)
+    return ref_audio, vocab_file, ckpt_file
+
+
+def render_f5_tts_vocal(request: dict, result, duration_plan: dict) -> Path:
+    ref_audio, vocab_file, ckpt_file = ensure_f5_tts_assets(request)
+    gen_text = f5_gen_text_from_lines(select_tts_lines_for_duration(result, duration_plan))
+    if not gen_text:
+        raise ValueError("No lyric text available for F5-TTS.")
+
+    output_file = f"{{request.get('run_id', 'genmusic_vn')}}_vocal_f5.wav"
+    command = [
+        "f5-tts_infer-cli",
+        "--model",
+        "F5TTS_Base",
+        "--ref_audio",
+        str(ref_audio),
+        "--ref_text",
+        F5_REF_TEXT,
+        "--gen_text",
+        gen_text,
+        "--speed",
+        "1.0",
+        "--vocoder_name",
+        "vocos",
+        "--vocab_file",
+        str(vocab_file),
+        "--ckpt_file",
+        str(ckpt_file),
+        "--output_dir",
+        str(OUTPUT_DIR),
+        "--output_file",
+        output_file,
+    ]
+    subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    vocal_path = OUTPUT_DIR / output_file
+    if not vocal_path.exists():
+        candidates = sorted(OUTPUT_DIR.rglob(output_file))
+        if candidates:
+            vocal_path = candidates[0]
+    if not vocal_path.exists():
+        raise FileNotFoundError(f"F5-TTS output was not found: {{vocal_path}}")
+    return vocal_path
+
+
 def postprocess_vocal_audio(audio_np):
     import numpy as np
     audio_np = audio_np.astype("float32")
@@ -1458,8 +1651,8 @@ def render_mms_tts_vocal(request: dict, result, duration_plan: dict) -> Path:
     from scipy.io import wavfile
     from transformers import AutoModelForTextToWaveform, AutoTokenizer
 
-    model_name = request.get("tts_model") or DEFAULT_TTS_MODEL
-    # TTS-only retry: keep MMS TTS on CPU so it is isolated from MusicGen CUDA failures.
+    model_name = request.get("mms_tts_model") or DEFAULT_MMS_TTS_MODEL
+    # TTS-only retry fallback: keep MMS TTS on CPU so it is isolated from GPU-side failures.
     device = "cpu"
     if torch.cuda.is_available():
         try:
@@ -1573,16 +1766,24 @@ def main() -> None:
     scene_plan = report.get("scene", {{}})
     duration_plan = build_duration_plan(request, result)
     tts_error = ""
+    f5_tts_error = ""
     vocal_path = None
     try:
-        vocal_path = render_mms_tts_vocal(request, result, duration_plan)
+        vocal_path = render_f5_tts_vocal(request, result, duration_plan)
         mp3_path = mix_vocal_with_backing(request, backing_mp3_path, vocal_path, duration_plan, scene_plan)
-        generation_backend = "tts_retry+mms_tts_vocal_mix"
+        generation_backend = "tts_retry+f5_tts_vocal_mix"
     except Exception as exc:
-        tts_error = "".join(traceback.format_exception(exc))[-4000:]
-        (OUTPUT_DIR / "tts_error.txt").write_text(tts_error, encoding="utf-8")
-        mp3_path = backing_mp3_path
-        generation_backend = "tts_retry+tts_failed_backing_only"
+        f5_tts_error = "".join(traceback.format_exception(exc))[-4000:]
+        (OUTPUT_DIR / "f5_tts_error.txt").write_text(f5_tts_error, encoding="utf-8")
+        try:
+            vocal_path = render_mms_tts_vocal(request, result, duration_plan)
+            mp3_path = mix_vocal_with_backing(request, backing_mp3_path, vocal_path, duration_plan, scene_plan)
+            generation_backend = "tts_retry+f5_failed_mms_tts_vocal_mix"
+        except Exception as mms_exc:
+            tts_error = "".join(traceback.format_exception(mms_exc))[-4000:]
+            (OUTPUT_DIR / "tts_error.txt").write_text(tts_error, encoding="utf-8")
+            mp3_path = backing_mp3_path
+            generation_backend = "tts_retry+tts_failed_backing_only"
 
     lyrics_text = "\\n".join(result.lyrics.full_song)
     (OUTPUT_DIR / "lyrics.txt").write_text(lyrics_text, encoding="utf-8")
@@ -1601,6 +1802,7 @@ def main() -> None:
         "estimated_vocal_duration_seconds": duration_plan["estimated_vocal_duration_seconds"],
         "outro_tail_seconds": duration_plan["outro_tail_seconds"],
         "tts_model": request.get("tts_model") or DEFAULT_TTS_MODEL,
+        "mms_tts_model": request.get("mms_tts_model") or DEFAULT_MMS_TTS_MODEL,
         "tts_voice_actual": DEFAULT_TTS_VOICE_ACTUAL,
         "tts_voice_note": DEFAULT_TTS_VOICE_NOTE,
         "mp3_path": str(mp3_path),
@@ -1609,6 +1811,7 @@ def main() -> None:
         "musicgen_failed": False,
         "vocal_failed": bool(tts_error),
         "musicgen_error": "",
+        "f5_tts_error": f5_tts_error,
         "tts_error": tts_error,
         "prompt": result.prompt,
         "negative_prompt": result.negative_prompt,
@@ -1620,6 +1823,7 @@ def main() -> None:
     }}
     (OUTPUT_DIR / "kaggle_result.json").write_text(json.dumps(final, ensure_ascii=False, indent=2), encoding="utf-8")
     (OUTPUT_DIR / "request.json").write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
+    shutil.rmtree(ASSET_DIR, ignore_errors=True)
     print(json.dumps({{"mode": "TTS-only retry", "mp3_path": str(mp3_path)}}, ensure_ascii=False, indent=2))
 
 
@@ -1729,7 +1933,7 @@ def _download_kernel_output(state: dict[str, Any], cli: list[str], *, expect_mp3
     mp3_files = [path for path in files if path.suffix.lower() == ".mp3"]
     lyrics_files = [path for path in files if path.name == "lyrics.txt"]
     backing_files = [path for path in mp3_files if path.name.endswith("_backing.mp3")]
-    vocal_files = [path for path in files if path.name.endswith("_vocal_mms.wav")]
+    vocal_files = [path for path in files if path.name.endswith(("_vocal_f5.wav", "_vocal_mms.wav"))]
     state["downloaded_files"] = [str(path) for path in files]
     _apply_kaggle_result_metadata(state, files)
     if backing_files:
@@ -1738,6 +1942,12 @@ def _download_kernel_output(state: dict[str, Any], cli: list[str], *, expect_mp3
     if vocal_files:
         state["vocal_path"] = str(vocal_files[0])
         state["vocal_url"] = _output_url(state, vocal_files[0])
+        if not state.get("generation_backend"):
+            prefix = "tts_retry" if state.get("job_kind") == "tts_retry" else "musicgen"
+            if vocal_files[0].name.endswith("_vocal_f5.wav"):
+                state["generation_backend"] = f"{prefix}+f5_tts_vocal_mix"
+            elif vocal_files[0].name.endswith("_vocal_mms.wav"):
+                state["generation_backend"] = f"{prefix}+mms_tts_vocal_mix"
     if lyrics_files:
         lyrics_path = lyrics_files[0]
         state["lyrics_path"] = str(lyrics_path)
@@ -1766,8 +1976,13 @@ def _download_kernel_output(state: dict[str, Any], cli: list[str], *, expect_mp3
         backend = state.get("generation_backend", "")
         if state.get("musicgen_failed") or "guide_fallback" in backend:
             _append_message_once(state, "MusicGen failed on Kaggle; fallback guide backing was downloaded.")
-        if "mms_tts_vocal_mix" in backend:
-            _append_message_once(state, "Backing track and MMS Vietnamese TTS vocal were mixed into the final MP3.")
+        if "f5_tts_vocal_mix" in backend:
+            _append_message_once(state, "Backing track and F5-TTS Vietnamese vocal were mixed into the final MP3.")
+        elif "mms_tts_vocal_mix" in backend:
+            if "f5_failed" in backend:
+                _append_message_once(state, "F5-TTS failed on Kaggle; MMS Vietnamese TTS fallback was mixed into the final MP3.")
+            else:
+                _append_message_once(state, "Backing track and MMS Vietnamese TTS vocal were mixed into the final MP3.")
         elif state.get("vocal_failed") or "tts_failed" in backend or "tts_skipped" in backend:
             _append_message_once(state, "TTS/Vocal failed; downloaded MP3 is backing track only.")
         else:
@@ -1799,6 +2014,9 @@ def _apply_kaggle_result_metadata(state: dict[str, Any], files: list[Path]) -> N
         tts_model = data.get("tts_model")
         if isinstance(tts_model, str):
             state["tts_model"] = tts_model
+        mms_tts_model = data.get("mms_tts_model")
+        if isinstance(mms_tts_model, str):
+            state["mms_tts_model"] = mms_tts_model
         tts_voice_actual = data.get("tts_voice_actual")
         if isinstance(tts_voice_actual, str):
             state["tts_voice_actual"] = tts_voice_actual
@@ -1858,6 +2076,9 @@ def _apply_kaggle_result_metadata(state: dict[str, Any], files: list[Path]) -> N
             state["tts_error"] = tts_error.strip()[-1000:]
             if not state.get("last_error"):
                 state["last_error"] = state["tts_error"]
+        f5_tts_error = data.get("f5_tts_error")
+        if isinstance(f5_tts_error, str) and f5_tts_error.strip():
+            state["f5_tts_error"] = f5_tts_error.strip()[-1000:]
         lyrics_text = data.get("lyrics_text")
         if isinstance(lyrics_text, str):
             state["lyrics_text"] = lyrics_text
