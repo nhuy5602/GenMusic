@@ -207,11 +207,26 @@ python -m genmusic_vn.cli evaluate --out outputs/evaluation
 python -m genmusic_vn.cli evaluate-xlsx --xlsx "C:\Users\ADMIN\Documents\GenMusic\vietnamese_musicgen_input_dataset.xlsx" --out outputs/evaluation_xlsx
 ```
 
+Đánh giá ablation chorus theo 2 nhánh `không truyền style` và `truyền style đúng`:
+
+```powershell
+python -m genmusic_vn.cli chorus-ablation --dataset datasets/evaluation/chorus_ablation_safe.jsonl --out outputs/chorus_ablation --duration 45
+```
+
+Dataset ablation dùng JSONL, mỗi dòng có dạng:
+
+```json
+{"id":"CASE01","chorus":"...","style":"Vietnamese pop ballad, piano, strings","expected_style_terms":["pop ballad","piano","strings"],"duration_seconds":45}
+```
+
+Lưu ý: không tự crawl nguyên lời chorus bài hit trên mạng. Nếu dùng lời bài hát có bản quyền trong báo cáo/demo, hãy chỉ dùng phần bạn có quyền sử dụng hoặc tự chuẩn bị file local.
+
 Report sẽ được ghi vào:
 
 ```text
 outputs/evaluation/evaluation_report.json
 outputs/evaluation_xlsx/evaluation_report.json
+outputs/chorus_ablation/chorus_ablation_report.json
 ```
 
 Các metric chính gồm `emotion_match`, `keyword_recall`, `prompt_keyword_recall`, `scene_cue_density`, `diacritic_line_rate`, `vietnamese_rhyme_rate`, `rhyme_pair_rate`, `head_tail_rhyme_rate`, `luc_bat_rhyme_rate`, `melody_line_rate` và `overall_score`.

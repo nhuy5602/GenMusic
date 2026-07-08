@@ -8,6 +8,7 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
+from genmusic_vn.chorus_ablation import evaluate_chorus_ablation_dataset
 from genmusic_vn.evaluation import _rhyme_pair_rate, evaluate_dataset, load_eval_dataset
 from genmusic_vn.emotion import analyze_emotion
 from genmusic_vn.kaggle_auto import (
@@ -470,6 +471,60 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(report["sample_count"], 6)
         self.assertIn("short", report["by_length"])
         self.assertGreaterEqual(report["summary"]["no_title"], 1.0)
+
+    def test_chorus_style_ablation_reports_two_variants(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            dataset = Path(temp) / "chorus.jsonl"
+            dataset.write_text(
+                json.dumps(
+                    {
+                        "id": "SAFE_TEST",
+                        "chorus": "Ánh đèn qua vai người\nMưa rơi trên phố dài\nNếu mai ta không trở lại\nXin giữ lời hát này",
+                        "style": "Vietnamese pop ballad, soft piano, warm strings",
+                        "expected_style_terms": ["pop ballad", "piano", "strings"],
+                        "duration_seconds": 36,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            report = evaluate_chorus_ablation_dataset(dataset, output_root=Path(temp) / "runs", duration_seconds=36)
+        self.assertEqual(report["pair_count"], 1)
+        self.assertEqual(report["case_count"], 2)
+        self.assertGreaterEqual(report["summary"]["input_kind_is_lyrics"], 1.0)
+        self.assertGreaterEqual(report["summary"]["lyric_preservation"], 0.8)
+        self.assertIn("style_on", report["variant_summary"])
+        self.assertGreaterEqual(report["variant_summary"]["style_on"]["style_prompt_recall"], 0.9)
+
+    def test_style_matcher_prefers_genre_over_supporting_instruments(self) -> None:
+        chorus = "Ly cà phê còn hơi ấm\nGiọng em trôi qua rất chậm\nPhố ngoài kia vừa tắt nắng\nTim nghe mềm hơn một lần"
+        with tempfile.TemporaryDirectory() as temp:
+            rnb = create_music_project(
+                chorus,
+                output_root=temp,
+                duration_seconds=36,
+                genre="Vietnamese smooth R&B, electric piano, soft bass, snap drums",
+                render_audio=False,
+            )
+            folk = create_music_project(
+                chorus,
+                output_root=temp,
+                duration_seconds=36,
+                genre="Vietnamese folk ballad, dan bau, bamboo flute, acoustic guitar",
+                render_audio=False,
+            )
+            ballad = create_music_project(
+                chorus,
+                output_root=temp,
+                duration_seconds=36,
+                genre="Vietnamese melancholic pop ballad, soft piano, warm strings, slow tempo",
+                render_audio=False,
+            )
+        self.assertIn("soft R&B drums", rnb.harmony.instruments)
+        self.assertIn("dan bau", folk.harmony.instruments)
+        self.assertIn("solo piano", ballad.harmony.instruments)
+        self.assertLessEqual(ballad.harmony.bpm, 76)
 
     def test_kaggle_api_tokens_can_be_read_from_environment(self) -> None:
         old_username = os.environ.get("KAGGLE_USERNAME")

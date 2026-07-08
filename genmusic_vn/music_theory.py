@@ -234,7 +234,7 @@ GENRE_HARMONY_OVERRIDES = [
         },
     ),
     (
-        ("piano ballad", "piano_ballad", "solo piano", "piano"),
+        ("pop ballad", "v-pop ballad", "vpop ballad", "ballad", "piano ballad", "piano_ballad", "solo piano", "piano"),
         {
             "key": "A",
             "scale": "minor",
@@ -404,6 +404,81 @@ GENRE_HARMONY_OVERRIDES = [
     ),
 ]
 
+GENRE_KEYWORD_WEIGHTS = {
+    "horror": 14,
+    "scary": 10,
+    "horror score": 16,
+    "game 8bit": 15,
+    "game 8 bit": 15,
+    "8bit": 12,
+    "8 bit": 12,
+    "chiptune": 14,
+    "orchestral": 12,
+    "trailer": 10,
+    "orchestral trailer": 16,
+    "film score": 12,
+    "cinematic": 10,
+    "documentary": 8,
+    "lo fi": 12,
+    "lofi": 12,
+    "chillhop": 12,
+    "jazz": 12,
+    "smooth jazz": 15,
+    "luxury": 7,
+    "acoustic": 5,
+    "acoustic guitar": 2,
+    "acoustic_guitar": 2,
+    "piano": 1,
+    "solo piano": 4,
+    "ballad": 10,
+    "pop ballad": 14,
+    "v-pop ballad": 14,
+    "vpop ballad": 14,
+    "piano ballad": 12,
+    "piano_ballad": 12,
+    "traditional": 8,
+    "folk": 12,
+    "traditional folk": 14,
+    "traditional_folk": 14,
+    "vietnamese folk": 14,
+    "vietnamese_folk": 14,
+    "pop": 8,
+    "pop instrumental": 11,
+    "pop_instrumental": 11,
+    "rap": 10,
+    "trap": 14,
+    "hip hop": 12,
+    "hip-hop": 12,
+    "edm": 14,
+    "dance pop": 12,
+    "house": 10,
+    "festival": 8,
+    "bolero": 14,
+    "rock": 14,
+    "anthem": 8,
+    "r&b": 14,
+    "rnb": 14,
+    "soul": 12,
+    "lullaby": 14,
+    "ru ngu": 12,
+    "sleep song": 12,
+    "meditation": 12,
+    "healing": 10,
+    "focus": 8,
+    "yoga": 10,
+    "sleep ambient": 12,
+    "ambient soundscape": 13,
+    "ambient_soundscape": 13,
+    "ambient": 10,
+    "children": 12,
+    "children song": 14,
+    "children_song": 14,
+    "synthwave": 14,
+    "synthwave_retro": 14,
+    "cyberpunk": 12,
+    "retro night": 12,
+}
+
 TONE_MARKS = {
     "sac": set("áắấéếíóốớúứý"),
     "huyen": set("àằầèềìòồờùừỳ"),
@@ -503,9 +578,18 @@ def _genre_harmony_override(genre: str | None) -> dict | None:
 
 def _match_genre_override(genre: str | None) -> dict | None:
     normalized = _normalize_genre(genre or "")
-    for keywords, override in GENRE_HARMONY_OVERRIDES:
-        if any(keyword in normalized for keyword in keywords):
-            return override
+    scored: list[tuple[int, int, int, int, dict]] = []
+    for index, (keywords, override) in enumerate(GENRE_HARMONY_OVERRIDES):
+        matches = [keyword for keyword in keywords if keyword in normalized]
+        if not matches:
+            continue
+        weight = sum(
+            GENRE_KEYWORD_WEIGHTS.get(keyword, min(8, max(1, len(keyword) // 2)))
+            for keyword in matches
+        )
+        scored.append((weight, len(matches), max(len(keyword) for keyword in matches), -index, override))
+    if scored:
+        return max(scored, key=lambda item: (item[0], item[1], item[2], item[3]))[4]
     return None
 
 

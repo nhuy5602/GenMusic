@@ -5,6 +5,11 @@ import json
 import sys
 from pathlib import Path
 
+from .chorus_ablation import (
+    DEFAULT_CHORUS_ABLATION_DATASET,
+    evaluate_chorus_ablation_dataset,
+    write_chorus_ablation_report,
+)
 from .evaluation import DEFAULT_EVAL_DATASET, evaluate_dataset
 from .kaggle_auto import (
     DEFAULT_MUSICGEN_MODEL,
@@ -43,6 +48,11 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--dataset", default=str(DEFAULT_EVAL_DATASET), help="JSONL evaluation dataset.")
     evaluate.add_argument("--out", default="outputs/evaluation", help="Output directory for evaluation artifacts.")
     evaluate.add_argument("--duration", type=int, default=12, help="Duration used for pipeline planning.")
+
+    chorus_ablation = sub.add_parser("chorus-ablation", help="Compare pasted chorus planning with and without the original style hint.")
+    chorus_ablation.add_argument("--dataset", default=str(DEFAULT_CHORUS_ABLATION_DATASET), help="JSONL dataset with chorus and style fields.")
+    chorus_ablation.add_argument("--out", default="outputs/chorus_ablation", help="Output directory for the ablation report.")
+    chorus_ablation.add_argument("--duration", type=int, default=45, help="Target duration used for planning.")
 
     import_xlsx = sub.add_parser("import-xlsx-dataset", help="Convert the Vietnamese XLSX benchmark into JSONL.")
     import_xlsx.add_argument("--xlsx", required=True, help="Workbook path.")
@@ -95,6 +105,15 @@ def main(argv: list[str] | None = None) -> int:
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report["report_path"] = str(report_path)
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "chorus-ablation":
+        report = evaluate_chorus_ablation_dataset(args.dataset, output_root=Path(args.out) / "runs", duration_seconds=args.duration)
+        json_path, md_path = write_chorus_ablation_report(report, args.out)
+        report["report_path"] = str(json_path)
+        report["markdown_path"] = str(md_path)
+        json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
 
