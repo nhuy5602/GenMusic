@@ -6,7 +6,13 @@ import sys
 from pathlib import Path
 
 from .evaluation import DEFAULT_EVAL_DATASET, evaluate_dataset
-from .kaggle_auto import KaggleAutoError, KaggleJobConfig, submit_text_to_music_job, sync_kaggle_artifact
+from .kaggle_auto import (
+    DEFAULT_MUSICGEN_MODEL,
+    KaggleAutoError,
+    KaggleJobConfig,
+    submit_text_to_music_job,
+    sync_kaggle_artifact,
+)
 from .synthetic_dataset import generate_synthetic_records, write_jsonl
 from .xlsx_dataset import records_from_xlsx, write_jsonl as write_xlsx_jsonl
 
@@ -20,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--duration", type=int, default=30, help="Target duration in seconds.")
     generate.add_argument("--out", default="outputs", help="Output directory.")
     generate.add_argument("--genre", default=None, help="Optional style/genre hint.")
-    generate.add_argument("--model", default="facebook/musicgen-small", help="MusicGen model on Kaggle.")
+    generate.add_argument("--model", default=DEFAULT_MUSICGEN_MODEL, help="MusicGen model on Kaggle.")
     generate.add_argument("--username", default=None, help="Kaggle username. Defaults to kaggle.json or KAGGLE_USERNAME.")
     generate.add_argument("--machine-shape", default="NvidiaTeslaT4")
     generate.add_argument("--no-submit", action="store_true", help="Only stage Kaggle files locally.")
@@ -49,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_xlsx = sub.add_parser("batch-generate-xlsx", help="Submit XLSX rows to Kaggle and generate MP3 files.")
     batch_xlsx.add_argument("--xlsx", required=True, help="Workbook path.")
     batch_xlsx.add_argument("--out", default="outputs/xlsx_batch", help="Output directory.")
-    batch_xlsx.add_argument("--model", default="facebook/musicgen-small", help="MusicGen model on Kaggle.")
+    batch_xlsx.add_argument("--model", default=DEFAULT_MUSICGEN_MODEL, help="MusicGen model on Kaggle.")
     batch_xlsx.add_argument("--username", default=None, help="Kaggle username. Defaults to kaggle.json or KAGGLE_USERNAME.")
     batch_xlsx.add_argument("--machine-shape", default="NvidiaTeslaT4")
     batch_xlsx.add_argument("--limit", type=int, default=0, help="Maximum rows to submit. 0 means all selected rows.")

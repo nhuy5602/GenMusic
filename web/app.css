@@ -363,7 +363,8 @@ pre {
   gap: 8px;
 }
 
-.downloads a {
+.downloads a,
+.download-action {
   display: inline-flex;
   min-height: 36px;
   align-items: center;
@@ -374,6 +375,14 @@ pre {
   background: #ffffff;
   text-decoration: none;
   font-weight: 750;
+  cursor: pointer;
+  font: inherit;
+}
+
+.download-action {
+  color: #7c3d12;
+  border-color: #d68c23;
+  background: #fff7ed;
 }
 
 @media (max-width: 880px) {

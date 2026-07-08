@@ -17,6 +17,7 @@ from genmusic_vn.kaggle_auto import (
     make_run_id,
     slugify,
     submit_text_to_music_job,
+    submit_tts_retry_job,
 )
 from genmusic_vn.music_theory import chord_notes
 from genmusic_vn.pipeline import create_music_project
@@ -294,6 +295,36 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("normalize=0", kernel_script)
             self.assertIn("anoisesrc", kernel_script)
             self.assertIn("aformat=channel_layouts=stereo", kernel_script)
+
+    def test_tts_retry_stages_backing_only_kernel_without_musicgen(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            job = submit_text_to_music_job(
+                text="Một đoạn văn yên bình để demo tự động hóa Kaggle.",
+                output_root=temp,
+                duration_seconds=12,
+                genre="Vietnamese cinematic pop",
+                config=KaggleJobConfig(username="demo-user", submit=False),
+            )
+            backing_path = Path(job["run_dir"]) / "previous_backing.mp3"
+            backing_path.write_bytes(b"fake mp3 bytes")
+            job["backing_path"] = str(backing_path)
+            Path(job["state_path"]).write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            retry = submit_tts_retry_job(
+                job["state_path"],
+                config=KaggleJobConfig(username="demo-user", submit=False),
+            )
+
+            self.assertEqual(retry["status"], "staged")
+            self.assertEqual(retry["job_kind"], "tts_retry")
+            self.assertEqual(retry["parent_run_id"], job["run_id"])
+            self.assertTrue((Path(retry["dataset_dir"]) / "backing_input.mp3").exists())
+            kernel_script = (Path(retry["kernel_dir"]) / "run_genmusic_vn_tts_retry.py").read_text(encoding="utf-8")
+            self.assertIn("TTS-only retry", kernel_script)
+            self.assertIn("render_mms_tts_vocal", kernel_script)
+            self.assertIn("mix_vocal_with_backing", kernel_script)
+            self.assertIn("backing_input.mp3", kernel_script)
+            self.assertNotIn("render_musicgen_backing_mp3", kernel_script)
 
     def test_scene_plan_handles_multiple_input_types(self) -> None:
         hopeful_text = "Sau thất bại, tôi đứng dậy đón bình minh và tin vào ngày mai."

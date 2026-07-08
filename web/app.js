@@ -13,6 +13,7 @@ const canvas = document.querySelector("#wave-canvas");
 const ctx = canvas.getContext("2d");
 let isGenerating = false;
 let activePollId = 0;
+let currentJob = null;
 
 duration.addEventListener("input", () => {
   durationValue.textContent = `${duration.value}s target`;
@@ -34,7 +35,7 @@ form.addEventListener("submit", async (event) => {
     text: document.querySelector("#text").value,
     duration_seconds: Number(duration.value),
     genre: document.querySelector("#genre").value,
-    model: "facebook/musicgen-small",
+    model: "facebook/musicgen-medium",
   };
 
   try {
@@ -61,6 +62,12 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
+downloads.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-retry-tts]");
+  if (!button || isGenerating) return;
+  await retryTts(button.getAttribute("data-retry-tts"));
+});
+
 function setGenerating(active, label = "Generate MP3") {
   isGenerating = active;
   generateButton.disabled = active;
@@ -70,6 +77,7 @@ function setGenerating(active, label = "Generate MP3") {
 }
 
 function renderJob(job) {
+  currentJob = job;
   const durationPlan = job.duration_plan || {};
   const targetDuration = job.target_duration_seconds || durationPlan.target_duration_seconds;
   const plannedBacking = job.planned_backing_duration_seconds || durationPlan.planned_backing_duration_seconds;
@@ -114,10 +122,37 @@ function renderJob(job) {
   drawWave(job.status);
 }
 
-async function pollKaggle(runId) {
+async function retryTts(runId) {
+  if (!runId) return;
+  setGenerating(true, "Retrying TTS...");
+  statusPill.textContent = "Retry TTS";
+  try {
+    const response = await fetch("/api/kaggle/retry-tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ run_id: runId, model: currentJob?.model || "facebook/musicgen-medium" }),
+    });
+    const job = await response.json();
+    if (!response.ok || job.error) {
+      throw new Error(job.error || "Could not submit TTS retry");
+    }
+    renderJob(job);
+    if (!["needs_setup", "failed", "complete"].includes(job.status)) {
+      pollKaggle(job.run_id, "Retrying TTS...");
+    } else {
+      setGenerating(false);
+    }
+  } catch (error) {
+    statusPill.textContent = "Error";
+    kaggleJobBox.textContent = error.message;
+    setGenerating(false);
+  }
+}
+
+async function pollKaggle(runId, label = "Generating...") {
   const pollId = activePollId + 1;
   activePollId = pollId;
-  setGenerating(true, "Generating...");
+  setGenerating(true, label);
   for (let i = 0; i < 120; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 15000));
     if (pollId !== activePollId) return;
@@ -164,14 +199,28 @@ function renderWarning(job) {
   }
 
   const backend = `${job.generation_backend || job.backend || ""}`;
-  const ttsFailed = Boolean(job.vocal_failed || job.tts_error || backend.includes("tts_failed"));
+  const warnings = [];
+  const musicgenFailed = Boolean(job.musicgen_failed || job.musicgen_error || backend.includes("guide_fallback"));
+  const ttsFailed = Boolean(
+    job.vocal_failed || job.tts_error || backend.includes("tts_failed") || backend.includes("tts_skipped"),
+  );
+  if (musicgenFailed) {
+    const detail = summarizeError(job.musicgen_error || job.last_error || "");
+    warnings.push([
+      "MusicGen bị lỗi trên Kaggle. MP3 hiện tại dùng guide fallback, chất lượng sẽ thấp hơn MusicGen.",
+      detail ? `Chi tiết: ${detail}` : "",
+    ].filter(Boolean).join("\n"));
+  }
   if (ttsFailed) {
     const detail = summarizeError(job.tts_error || job.last_error || "");
-    warningSlot.hidden = false;
-    warningSlot.textContent = [
+    warnings.push([
       "TTS/Vocal bị lỗi. MP3 hiện tại chỉ là nhạc nền, chưa có giọng hát.",
       detail ? `Chi tiết: ${detail}` : "",
-    ].filter(Boolean).join("\n");
+    ].filter(Boolean).join("\n"));
+  }
+  if (warnings.length) {
+    warningSlot.hidden = false;
+    warningSlot.textContent = warnings.join("\n\n");
     return;
   }
 
@@ -209,11 +258,26 @@ function renderDownloads(job) {
   if (job.backing_url) {
     links.push(`<a href="${job.backing_url}" download>Download Backing MP3</a>`);
   }
+  if (canRetryTts(job)) {
+    links.push(`<button type="button" class="download-action" data-retry-tts="${job.run_id}">Retry TTS</button>`);
+  }
   if (!links.length) {
     downloads.innerHTML = "";
     return;
   }
   downloads.innerHTML = links.join("");
+}
+
+function canRetryTts(job) {
+  if (!job || job.status !== "complete" || !job.mp3_url || job.vocal_url) return false;
+  const backend = `${job.generation_backend || job.backend || ""}`;
+  return Boolean(
+    job.vocal_failed ||
+      job.tts_error ||
+      backend.includes("tts_failed") ||
+      backend.includes("tts_skipped") ||
+      (job.lyrics_text && !backend.includes("mms_tts_vocal_mix")),
+  );
 }
 
 function renderLyrics(job) {

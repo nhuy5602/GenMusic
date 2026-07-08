@@ -9,7 +9,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .kaggle_auto import KaggleJobConfig, refresh_kaggle_job, submit_text_to_music_job
+from .kaggle_auto import (
+    DEFAULT_MUSICGEN_MODEL,
+    KaggleJobConfig,
+    refresh_kaggle_job,
+    submit_text_to_music_job,
+    submit_tts_retry_job,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -56,6 +62,9 @@ class GenMusicHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/kaggle/retry-tts":
+            self._handle_tts_retry()
+            return
         if parsed.path != "/api/generate":
             self._send_json({"error": "Not found."}, HTTPStatus.NOT_FOUND)
             return
@@ -76,7 +85,37 @@ class GenMusicHandler(BaseHTTPRequestHandler):
                 duration_seconds=int(payload.get("duration_seconds", 30)),
                 genre=payload.get("genre") or None,
                 config=KaggleJobConfig(
-                    model=payload.get("model") or "facebook/musicgen-small",
+                    model=payload.get("model") or DEFAULT_MUSICGEN_MODEL,
+                    submit=True,
+                    wait=False,
+                ),
+            )
+            self._send_json(job)
+        except Exception as exc:  # pragma: no cover - server boundary
+            self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        finally:
+            SUBMISSION_LOCK.release()
+
+    def _handle_tts_retry(self) -> None:
+        if not SUBMISSION_LOCK.acquire(blocking=False):
+            self._send_json(
+                {"error": "Another generation request is already being submitted. Please wait for it to finish."},
+                HTTPStatus.CONFLICT,
+            )
+            return
+
+        try:
+            length = int(self.headers.get("content-length", "0"))
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            run_id = str(payload.get("run_id", "")).strip()
+            state_path = OUTPUT_ROOT / run_id / "kaggle_job" / "job_state.json"
+            if not run_id or not state_path.exists():
+                self._send_json({"error": "Kaggle job not found."}, HTTPStatus.NOT_FOUND)
+                return
+            job = submit_tts_retry_job(
+                state_path,
+                config=KaggleJobConfig(
+                    model=payload.get("model") or DEFAULT_MUSICGEN_MODEL,
                     submit=True,
                     wait=False,
                 ),
