@@ -835,9 +835,13 @@ def build_duration_plan(request: dict, result) -> dict:
     lines = lyric_lines_for_duration(result)
     word_count = sum(len(line.split()) for line in lines)
     section_count = sum(1 for line in result.lyrics.full_song if line.strip().startswith("["))
-    estimated_vocal = word_count * 0.42 + max(0, len(lines) - 1) * 0.35 + section_count * 0.35
+    is_existing_lyrics = getattr(getattr(result, "text_plan", None), "input_kind", "") == "lyrics"
+    seconds_per_word = 0.56 if is_existing_lyrics else 0.42
+    line_pause = 0.48 if is_existing_lyrics else 0.35
+    section_pause = 0.45 if is_existing_lyrics else 0.35
+    estimated_vocal = word_count * seconds_per_word + max(0, len(lines) - 1) * line_pause + section_count * section_pause
     outro_tail = 2.5 if target <= 30 else 4.0
-    breathing_room = min(8.0, max(2.0, len(lines) * 0.25))
+    breathing_room = min(10.0, max(2.0, len(lines) * (0.35 if is_existing_lyrics else 0.25)))
     soft_overrun = max(2, min(8, int(round(target * 0.18))))
     duration_ceiling = min(180, target + soft_overrun)
     natural_needed = int(round(max(target, estimated_vocal + breathing_room + outro_tail)))
@@ -856,6 +860,8 @@ def build_duration_plan(request: dict, result) -> dict:
         "outro_tail_seconds": outro_tail,
         "lyric_line_count": len(lines),
         "lyric_word_count": word_count,
+        "tts_seconds_per_word": seconds_per_word,
+        "input_kind": getattr(getattr(result, "text_plan", None), "input_kind", ""),
     }}
 
 
@@ -993,7 +999,9 @@ def select_tts_lines_for_duration(result, duration_plan: dict) -> list[str]:
     if not all_lines:
         return []
     planned = max(6, int(duration_plan.get("planned_backing_duration_seconds", 30)))
-    word_budget = max(18, int(max(6, planned - 3) / 0.42))
+    is_existing_lyrics = getattr(getattr(result, "text_plan", None), "input_kind", "") == "lyrics"
+    seconds_per_word = float(duration_plan.get("tts_seconds_per_word") or (0.56 if is_existing_lyrics else 0.42))
+    word_budget = max(18, int(max(6, planned - 4) / seconds_per_word))
     selected: list[str] = []
     used_words = 0
     for line in all_lines:
@@ -1004,7 +1012,7 @@ def select_tts_lines_for_duration(result, duration_plan: dict) -> list[str]:
         used_words += line_words
         if len(selected) >= 18:
             break
-    if all_lines[-1] not in selected and len(selected) >= 2:
+    if not is_existing_lyrics and all_lines[-1] not in selected and len(selected) >= 2:
         selected[-1] = all_lines[-1]
     return selected or all_lines[:1]
 
@@ -1486,9 +1494,13 @@ def build_duration_plan(request: dict, result) -> dict:
     lines = lyric_lines_for_duration(result)
     word_count = sum(len(line.split()) for line in lines)
     section_count = sum(1 for line in result.lyrics.full_song if line.strip().startswith("["))
-    estimated_vocal = word_count * 0.42 + max(0, len(lines) - 1) * 0.35 + section_count * 0.35
+    is_existing_lyrics = getattr(getattr(result, "text_plan", None), "input_kind", "") == "lyrics"
+    seconds_per_word = 0.56 if is_existing_lyrics else 0.42
+    line_pause = 0.48 if is_existing_lyrics else 0.35
+    section_pause = 0.45 if is_existing_lyrics else 0.35
+    estimated_vocal = word_count * seconds_per_word + max(0, len(lines) - 1) * line_pause + section_count * section_pause
     outro_tail = 2.5 if target <= 30 else 4.0
-    breathing_room = min(8.0, max(2.0, len(lines) * 0.25))
+    breathing_room = min(10.0, max(2.0, len(lines) * (0.35 if is_existing_lyrics else 0.25)))
     soft_overrun = max(2, min(8, int(round(target * 0.18))))
     duration_ceiling = min(180, target + soft_overrun)
     natural_needed = int(round(max(target, estimated_vocal + breathing_room + outro_tail)))
@@ -1503,6 +1515,8 @@ def build_duration_plan(request: dict, result) -> dict:
         "outro_tail_seconds": outro_tail,
         "lyric_line_count": len(lines),
         "lyric_word_count": word_count,
+        "tts_seconds_per_word": seconds_per_word,
+        "input_kind": getattr(getattr(result, "text_plan", None), "input_kind", ""),
     }}
 
 
@@ -1511,7 +1525,9 @@ def select_tts_lines_for_duration(result, duration_plan: dict) -> list[str]:
     if not all_lines:
         return []
     planned = max(6, int(duration_plan.get("planned_backing_duration_seconds", 30)))
-    word_budget = max(18, int(max(6, planned - 3) / 0.42))
+    is_existing_lyrics = getattr(getattr(result, "text_plan", None), "input_kind", "") == "lyrics"
+    seconds_per_word = float(duration_plan.get("tts_seconds_per_word") or (0.56 if is_existing_lyrics else 0.42))
+    word_budget = max(18, int(max(6, planned - 4) / seconds_per_word))
     selected: list[str] = []
     used_words = 0
     for line in all_lines:
@@ -1522,7 +1538,7 @@ def select_tts_lines_for_duration(result, duration_plan: dict) -> list[str]:
         used_words += line_words
         if len(selected) >= 18:
             break
-    if all_lines[-1] not in selected and len(selected) >= 2:
+    if not is_existing_lyrics and all_lines[-1] not in selected and len(selected) >= 2:
         selected[-1] = all_lines[-1]
     return selected or all_lines[:1]
 

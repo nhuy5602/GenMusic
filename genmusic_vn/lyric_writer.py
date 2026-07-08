@@ -112,6 +112,7 @@ RHYME_ENDINGS = {
 }
 FALLBACK_RHYME_ENDINGS = ["trong tim", "sáng ngời", "bên thềm", "thật lâu"]
 CLAUSE_SPLIT_RE = re.compile(r"[,;]+")
+LYRIC_PHRASE_SPLIT_RE = re.compile(r"\s+(đến khi|dẫu|nếu|rồi|từ ngày|từ người)\s+", re.IGNORECASE)
 
 
 def _polish_line(line: str) -> str:
@@ -170,7 +171,66 @@ def _shape_lines_for_melody(
 
 
 def _existing_lyric_lines(text: str) -> list[str]:
-    return [_polish_line(line) for line in extract_lyric_lines(text) if _polish_line(line)]
+    lines: list[str] = []
+    for line in extract_lyric_lines(text):
+        for part in _split_existing_lyric_line(line):
+            polished = _polish_line(part)
+            if polished:
+                lines.append(polished)
+    return lines
+
+
+def _split_existing_lyric_line(line: str) -> list[str]:
+    cleaned = line.strip(" \t,;:-")
+    if not cleaned:
+        return []
+
+    parts = _split_on_outside_commas(cleaned)
+    expanded: list[str] = []
+    for part in parts:
+        expanded.extend(_split_long_lyric_phrase(part))
+    return [part.strip(" \t,;:-") for part in expanded if part.strip(" \t,;:-")]
+
+
+def _split_on_outside_commas(line: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    for char in line:
+        if char == "(":
+            depth += 1
+        elif char == ")" and depth > 0:
+            depth -= 1
+        if char in {",", ";"} and depth == 0:
+            part = "".join(current).strip()
+            if part:
+                parts.append(part)
+            current = []
+            continue
+        current.append(char)
+    part = "".join(current).strip()
+    if part:
+        parts.append(part)
+    return parts or [line]
+
+
+def _split_long_lyric_phrase(line: str, max_words: int = 10) -> list[str]:
+    words = tokenize_words(line)
+    if len(words) <= max_words:
+        return [line]
+
+    match = LYRIC_PHRASE_SPLIT_RE.search(line)
+    if not match:
+        return [line]
+
+    split_at = match.start()
+    first = line[:split_at].strip(" \t,;:-")
+    second = line[match.start() :].strip(" \t,;:-")
+    if not first or not second:
+        return [line]
+    if len(tokenize_words(first)) < 3 or len(tokenize_words(second)) < 3:
+        return [line]
+    return [first, second]
 
 
 def _looks_like_existing_lyrics(text: str) -> bool:
@@ -197,7 +257,7 @@ def _repair_section_if_needed(lines: list[str], emotion: EmotionProfile, *, star
 def _rewrite_existing_lyrics(lines: list[str], emotion: EmotionProfile) -> LyricDraft:
     cleaned = [_polish_line(line) for line in lines if _polish_line(line)]
     if len(cleaned) <= 4:
-        chorus = _repair_section_if_needed(cleaned, emotion, start_pair=0)
+        chorus = cleaned
         hook_words = tokenize_words(chorus[0])[:6]
         hook = " ".join(hook_words) if hook_words else chorus[0]
         detected_scheme = dominant_rhyme_scheme(chorus)
@@ -209,23 +269,19 @@ def _rewrite_existing_lyrics(lines: list[str], emotion: EmotionProfile) -> Lyric
             hook=hook,
             song_form=["Chorus"],
             full_song=["[Chorus]", *chorus],
-            rhyme_scheme=f"selected short chorus input; preserves {detected_scheme} Vietnamese rhyme when present; repairs only weak sections",
+            rhyme_scheme=f"selected short chorus input; preserves original user lyric and {detected_scheme} Vietnamese rhyme when present",
         )
 
-    verse = _repair_section_if_needed(cleaned[:4], emotion, start_pair=0)
+    verse = cleaned[:4]
     chorus_source = cleaned[4:8] if len(cleaned) >= 6 else []
-    chorus = _repair_section_if_needed(chorus_source, emotion, start_pair=2)
+    chorus = chorus_source
     if len(chorus) < 2:
-        chorus = _shape_lines_for_melody(
-            [SAFE_FALLBACK_MOTIFS.get(emotion.label, emotion.label_vi), "ở lại thêm một lần"],
-            emotion,
-            start_pair=2,
-        )
+        chorus = cleaned[4:6] if len(cleaned) > 4 else cleaned[:2]
 
     bridge_source = cleaned[8:10]
-    bridge = _repair_section_if_needed(bridge_source, emotion, start_pair=4) if bridge_source else []
+    bridge = bridge_source if bridge_source else []
     outro_source = cleaned[-2:] if len(cleaned) > 10 else []
-    outro = _repair_section_if_needed(outro_source, emotion, start_pair=5) if outro_source else []
+    outro = outro_source if outro_source else []
 
     song_form = ["Verse", "Chorus"]
     full_song = ["[Verse]", *verse, "", "[Chorus]", *chorus]
@@ -247,7 +303,7 @@ def _rewrite_existing_lyrics(lines: list[str], emotion: EmotionProfile) -> Lyric
         hook=hook,
         song_form=song_form,
         full_song=full_song,
-        rhyme_scheme=f"selected lyric input excerpt; preserves {detected_scheme} Vietnamese rhyme when present; repairs only weak sections",
+        rhyme_scheme=f"selected lyric input excerpt; preserves original user lyric and {detected_scheme} Vietnamese rhyme when present",
     )
 
 

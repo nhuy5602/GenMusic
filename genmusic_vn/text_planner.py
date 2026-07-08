@@ -79,7 +79,11 @@ def _looks_like_lyrics(text: str) -> bool:
     lines = _lyric_lines(text)
     if len(lines) < 2:
         return False
-    short_lines = sum(1 for line in lines if 2 <= len(tokenize_words(line)) <= 14)
+    lengths = [len(tokenize_words(line)) for line in lines]
+    short_lines = sum(1 for length in lengths if 2 <= length <= 14)
+    singable_lines = sum(1 for length in lengths if 2 <= length <= 18)
+    if "\n" in text and len(lines) >= 4 and singable_lines / len(lines) >= 0.6:
+        return True
     if len(lines) < 6:
         return ("\n" in text or len(lines) >= 4) and short_lines == len(lines)
     return short_lines / len(lines) >= 0.65

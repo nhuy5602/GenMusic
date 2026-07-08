@@ -204,6 +204,37 @@ class PipelineTests(unittest.TestCase):
         self.assertLessEqual(len(content_lines), 8)
         self.assertIn("selected lyric input excerpt", result.lyrics.rhyme_scheme)
 
+    def test_existing_lyrics_are_preserved_instead_of_forced_rhyme_rewrite(self) -> None:
+        lyric_text = "\n".join(
+            [
+                "Ánh chiều qua đôi bàn tay, tiếng đời rơi trong phút giây",
+                "Từ mùa thơ ấy còn mơ đến khi em lặng im",
+                "Lòng người anh đâu có hay, một ngày mây trắng bay",
+                "Từ lời yêu hóa thành mưa đến khi ta xa nhau",
+                "Thương em bờ vai nhỏ nhoi, đôi mắt hóa mây đêm",
+                "Thương sao mùi hoa đêm vương vấn mãi bên thềm",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            result = create_music_project(lyric_text, output_root=temp, duration_seconds=43, render_audio=False)
+
+        lyrics_text = "\n".join(result.lyrics.full_song)
+        content_lines = [
+            line
+            for line in result.lyrics.full_song
+            if line.strip() and not line.startswith("[")
+        ]
+        self.assertEqual(result.text_plan.input_kind, "lyrics")
+        self.assertIn("preserves original user lyric", result.lyrics.rhyme_scheme)
+        self.assertIn("ánh chiều qua đôi bàn tay", lyrics_text)
+        self.assertIn("tiếng đời rơi trong phút giây", lyrics_text)
+        self.assertIn("đến khi em lặng im", lyrics_text)
+        self.assertIn("một ngày mây trắng bay", lyrics_text)
+        self.assertIn("đến khi ta xa nhau", lyrics_text)
+        self.assertNotIn("ở lại thêm một lần", lyrics_text)
+        self.assertNotIn("ngày mới", lyrics_text)
+        self.assertGreaterEqual(len(content_lines), 8)
+
     def test_existing_long_lyrics_are_arranged_as_duration_limited_excerpt(self) -> None:
         lyric_text = "\n".join(
             [
