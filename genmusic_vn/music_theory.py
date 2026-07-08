@@ -127,6 +127,113 @@ EMOTION_HARMONY = {
     },
 }
 
+GENRE_HARMONY_OVERRIDES = [
+    (
+        ("lo fi", "lofi", "chillhop"),
+        {
+            "key": "F",
+            "scale": "major",
+            "bpm": 78,
+            "progression": ["Fmaj7", "C", "Dm", "Bb"],
+            "register": "mid",
+            "instruments": ["dusty electric piano", "vinyl tape noise", "muted guitar", "soft lo-fi drums", "warm bass"],
+            "arrangement": ["filtered intro", "relaxed dusty loop", "memory-like refrain", "tape-wobble outro"],
+            "traits": ["lo-fi dusty swing", "warm tape noise", "rounded transients", "nostalgic chillhop color"],
+        },
+    ),
+    (
+        ("rap", "trap", "hip hop", "hip-hop"),
+        {
+            "key": "C",
+            "scale": "minor",
+            "bpm": 96,
+            "progression": ["Cm", "Ab", "Bb", "G"],
+            "register": "mid-low",
+            "instruments": ["808 sub bass", "crisp trap hi-hats", "snare clap", "dark synth plucks", "dan tranh chop"],
+            "arrangement": ["hook intro", "verse-forward groove", "half-time trap bounce", "short dropout before hook"],
+            "traits": ["melodic rap cadence", "syncopated flow pockets", "tight low end", "percussive vocal phrasing"],
+        },
+    ),
+    (
+        ("edm", "dance pop", "house", "festival"),
+        {
+            "key": "G",
+            "scale": "major",
+            "bpm": 124,
+            "progression": ["G", "D", "Em", "C"],
+            "register": "mid-high",
+            "instruments": ["four-on-the-floor kick", "sidechain synth bass", "bright synth lead", "wide pads", "festival claps"],
+            "arrangement": ["short riser intro", "pre-drop lift", "controlled synth drop", "clean final chorus"],
+            "traits": ["danceable", "sidechained", "energetic synth hook", "wide festival mix"],
+        },
+    ),
+    (
+        ("bolero",),
+        {
+            "key": "A",
+            "scale": "minor",
+            "bpm": 72,
+            "progression": ["Am", "Dm", "E7", "Am"],
+            "register": "mid",
+            "instruments": ["tremolo acoustic guitar", "soft bolero percussion", "warm accordion pad", "nylon bass", "dan bau ornament"],
+            "arrangement": ["guitar pickup intro", "slow sentimental verse", "gentle refrain", "rubato ending"],
+            "traits": ["slow bolero rhythm", "sentimental", "old Vietnamese cabaret color", "swaying triplet feel"],
+        },
+    ),
+    (
+        ("rock", "anthem"),
+        {
+            "key": "E",
+            "scale": "minor",
+            "bpm": 126,
+            "progression": ["Em", "C", "G", "D"],
+            "register": "mid-high",
+            "instruments": ["electric guitar", "live drums", "bass guitar", "anthem backing pads", "crash cymbals"],
+            "arrangement": ["guitar riff intro", "driving verse", "big anthem chorus", "final hit ending"],
+            "traits": ["strong backbeat", "arena rock lift", "live band energy", "powerful chorus"],
+        },
+    ),
+    (
+        ("r&b", "rnb", "soul"),
+        {
+            "key": "C",
+            "scale": "major",
+            "bpm": 88,
+            "progression": ["Dm7", "G7", "Cmaj7", "A7"],
+            "register": "mid",
+            "instruments": ["warm electric piano", "smooth bass", "soft R&B drums", "clean guitar fills", "airy pad"],
+            "arrangement": ["two-bar keys intro", "laid-back groove", "stacked harmony chorus", "soft outro"],
+            "traits": ["smooth groove", "syncopated bass", "late-night R&B", "silky chord color"],
+        },
+    ),
+    (
+        ("lullaby", "ru ngu", "sleep song"),
+        {
+            "key": "C",
+            "scale": "major",
+            "bpm": 68,
+            "progression": ["C", "G", "Am", "F"],
+            "register": "mid",
+            "instruments": ["music box", "soft felt piano", "warm pad", "soft acoustic guitar", "gentle celesta"],
+            "arrangement": ["cradle-like intro", "slow swaying verse", "whisper-soft refrain", "fade-out ending"],
+            "traits": ["lullaby sway", "sleepy", "very soft transients", "gentle rocking pulse"],
+        },
+    ),
+    (
+        ("meditation", "healing", "focus", "yoga", "sleep ambient"),
+        {
+            "key": "D",
+            "scale": "major",
+            "bpm": 64,
+            "progression": ["D", "A", "Bm", "G"],
+            "register": "mid-low",
+            "instruments": ["warm drone pad", "soft flute", "felt piano droplets", "low airy texture", "subtle bell"],
+            "arrangement": ["slow fade-in", "minimal pulse", "long breathing phrases", "natural fade-out"],
+            "traits": ["meditative", "spacious", "healing ambient", "low rhythmic density"],
+        },
+    ),
+]
+
 TONE_MARKS = {
     "sac": set("áắấéếíóốớúứý"),
     "huyen": set("àằầèềìòồờùừỳ"),
@@ -175,8 +282,11 @@ def scale_notes(key: str, scale: str, octave: int = 4) -> list[str]:
     return [f"{note_name(root_pc + interval)}{octave + ((root_pc + interval) // 12)}" for interval in SCALE_INTERVALS[scale]]
 
 
-def build_harmony(emotion: EmotionProfile, duration_seconds: int = 30) -> HarmonyPlan:
+def build_harmony(emotion: EmotionProfile, duration_seconds: int = 30, genre: str | None = None) -> HarmonyPlan:
     preset = _stylebank_preset(emotion.label) or EMOTION_HARMONY.get(emotion.label, EMOTION_HARMONY["calm"])
+    genre_override = _genre_harmony_override(genre)
+    if genre_override:
+        preset = _merge_preset(preset, genre_override)
     bpm = preset["bpm"]
     if duration_seconds >= 45:
         bpm = max(64, bpm - 4)
@@ -200,6 +310,45 @@ def build_harmony(emotion: EmotionProfile, duration_seconds: int = 30) -> Harmon
         arrangement=list(preset["arrangement"]),
         music_traits=list(preset["traits"]),
     )
+
+
+def _genre_harmony_override(genre: str | None) -> dict | None:
+    if not genre:
+        return None
+    normalized = _normalize_genre(genre)
+    for keywords, override in GENRE_HARMONY_OVERRIDES:
+        if any(keyword in normalized for keyword in keywords):
+            return override
+    return None
+
+
+def _normalize_genre(genre: str) -> str:
+    return " ".join(genre.lower().replace("_", " ").replace("-", " ").split())
+
+
+def _merge_preset(base: dict, override: dict) -> dict:
+    merged = dict(base)
+    for key, value in override.items():
+        if key == "traits":
+            merged[key] = _dedupe(list(base.get(key, [])) + list(value))
+        elif key == "arrangement":
+            merged[key] = _dedupe(list(value) + list(base.get(key, []))[:2])
+        elif isinstance(value, list):
+            merged[key] = list(value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
 
 
 def _stylebank_preset(label: str) -> dict | None:

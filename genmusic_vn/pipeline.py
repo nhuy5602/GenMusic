@@ -51,7 +51,7 @@ def create_music_project(
     generation_text = text_plan.condensed_text or normalized
     emotion_source = f"{normalized} {genre or ''}".strip()
     emotion = analyze_emotion(emotion_source)
-    harmony = build_harmony(emotion, duration_seconds)
+    harmony = build_harmony(emotion, duration_seconds, genre=genre)
     melody = build_melody_events(generation_text, harmony, duration_seconds)
     lyrics = rewrite_lyrics(generation_text, emotion, harmony)
     vocal = build_vocal_plan(normalized, emotion, harmony)
