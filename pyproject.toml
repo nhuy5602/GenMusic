@@ -1,7 +1,7 @@
 [project]
 name = "genmusic-vn"
 version = "0.1.0"
-description = "Vietnamese text-to-MP3 local client with Kaggle MusicGen generation."
+description = "Vietnamese text-to-MP3 client with a custom composer and Kaggle TTS pipeline."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []

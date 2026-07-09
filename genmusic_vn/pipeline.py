@@ -16,6 +16,7 @@ from .scene_planner import build_scene_plan
 from .schemas import GeneratedFile, MusicResult, to_plain_data
 from .text_planner import build_text_plan
 from .text_utils import normalize_text
+from .trained_text_model import predict_text_model, trained_model_status
 from .vocal_planner import build_vocal_plan
 
 
@@ -26,7 +27,7 @@ def make_run_id(text: str) -> str:
 
 
 def get_generator(backend: str) -> MusicGenerator:
-    if backend == "guide":
+    if backend in {"custom", "guide"}:
         return GuideTrackGenerator()
     raise ValueError(f"Unsupported backend: {backend}")
 
@@ -34,7 +35,7 @@ def get_generator(backend: str) -> MusicGenerator:
 def create_music_project(
     text: str,
     output_root: str | Path = "outputs",
-    backend: str = "guide",
+    backend: str = "custom",
     duration_seconds: int = 30,
     genre: str | None = None,
     render_audio: bool = True,
@@ -52,6 +53,9 @@ def create_music_project(
     generation_text = text_plan.condensed_text or normalized
     positive_genre = positive_control_text(genre)
     negative_extra = negative_control_text(genre)
+    model_prediction = predict_text_model(normalized)
+    if not positive_genre and model_prediction and model_prediction.genre_confidence >= 0.34:
+        positive_genre = model_prediction.style_prompt
     emotion_source = f"{normalized} {positive_genre or ''}".strip()
     emotion = analyze_emotion(emotion_source)
     harmony = build_harmony(emotion, duration_seconds, genre=positive_genre)
@@ -146,4 +150,6 @@ def _prompt_pack(result: MusicResult) -> dict:
         "emotion": to_plain_data(result.emotion),
         "melody": to_plain_data(result.melody),
         "text_plan": to_plain_data(result.text_plan),
+        "trained_text_model": trained_model_status(),
+        "trained_text_prediction": to_plain_data(predict_text_model(result.input_text)),
     }

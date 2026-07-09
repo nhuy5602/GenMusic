@@ -10,12 +10,13 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .kaggle_auto import (
-    DEFAULT_MUSICGEN_MODEL,
+    DEFAULT_CUSTOM_MUSIC_MODEL,
     KaggleJobConfig,
     refresh_kaggle_job,
     submit_text_to_music_job,
     submit_tts_retry_job,
 )
+from .trained_text_model import trained_model_status
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -44,7 +45,7 @@ class GenMusicHandler(BaseHTTPRequestHandler):
             self._send_file(requested)
             return
         if path == "/api/health":
-            self._send_json({"status": "ok", "backend": "kaggle-musicgen"})
+            self._send_json({"status": "ok", "backend": "trained-text-model+custom-composer+tts", "text_model": trained_model_status()})
             return
         if path == "/api/kaggle/status":
             query = parse_qs(parsed.query)
@@ -85,7 +86,7 @@ class GenMusicHandler(BaseHTTPRequestHandler):
                 duration_seconds=int(payload.get("duration_seconds", 30)),
                 genre=payload.get("genre") or None,
                 config=KaggleJobConfig(
-                    model=payload.get("model") or DEFAULT_MUSICGEN_MODEL,
+                    model=payload.get("model") or DEFAULT_CUSTOM_MUSIC_MODEL,
                     submit=True,
                     wait=False,
                 ),
@@ -115,7 +116,7 @@ class GenMusicHandler(BaseHTTPRequestHandler):
             job = submit_tts_retry_job(
                 state_path,
                 config=KaggleJobConfig(
-                    model=payload.get("model") or DEFAULT_MUSICGEN_MODEL,
+                    model=payload.get("model") or DEFAULT_CUSTOM_MUSIC_MODEL,
                     submit=True,
                     wait=False,
                 ),

@@ -4,6 +4,7 @@ from collections import defaultdict
 
 from .schemas import EmotionProfile
 from .text_utils import extract_keywords, normalize_text, tokenize_words
+from .trained_text_model import predict_text_model
 
 
 LABELS = {
@@ -287,6 +288,38 @@ INTENSIFIERS = {"rất": 1.35, "quá": 1.25, "thật": 1.15, "cực": 1.4, "lắ
 
 
 def analyze_emotion(text: str) -> EmotionProfile:
+    rule_profile = _rule_analyze_emotion(text)
+    model_prediction = predict_text_model(text)
+    if model_prediction and model_prediction.emotion_confidence >= 0.38:
+        if (
+            rule_profile.label != model_prediction.emotion
+            and rule_profile.confidence >= 0.55
+            and _has_explicit_mood_or_style_hint(text)
+        ):
+            return rule_profile
+        return _profile_from_trained_model(text, model_prediction)
+    return rule_profile
+
+
+def _profile_from_trained_model(text: str, prediction) -> EmotionProfile:
+    total = sum(max(0.0, value) for value in prediction.emotion_scores.values()) or 1.0
+    valence = sum(LABELS[label][1] * max(0.0, value) for label, value in prediction.emotion_scores.items()) / total
+    energy = sum(LABELS[label][2] * max(0.0, value) for label, value in prediction.emotion_scores.items()) / total
+    return EmotionProfile(
+        label=prediction.emotion,
+        label_vi=LABELS[prediction.emotion][0],
+        valence=round(valence, 3),
+        energy=round(energy, 3),
+        confidence=round(prediction.emotion_confidence, 3),
+        keywords=extract_keywords(text),
+        scores={
+            **{label: round(score, 3) for label, score in prediction.emotion_scores.items()},
+            "trained_model": 1.0,
+        },
+    )
+
+
+def _rule_analyze_emotion(text: str) -> EmotionProfile:
     normalized = normalize_text(text).lower()
     tokens = tokenize_words(normalized)
     scores: dict[str, float] = defaultdict(float)
@@ -339,3 +372,33 @@ def analyze_emotion(text: str) -> EmotionProfile:
         keywords=extract_keywords(text),
         scores={label: round(score, 3) for label, score in sorted(scores.items())},
     )
+
+
+def _has_explicit_mood_or_style_hint(text: str) -> bool:
+    normalized = normalize_text(text).lower()
+    markers = (
+        "mood:",
+        "secondary mood:",
+        "style:",
+        "genre:",
+        "epic",
+        "heroic",
+        "sports anthem",
+        "suspense",
+        "mysterious",
+        "fantasy",
+        "ambient",
+        "orchestral",
+        "horror",
+        "romantic",
+        "peaceful",
+        "warm storytelling",
+        "folk",
+        "lo-fi",
+        "edm",
+        "trap",
+        "rock",
+        "r&b",
+        "bolero",
+    )
+    return any(marker in normalized for marker in markers)

@@ -17,6 +17,7 @@ let currentJob = null;
 const DEFAULT_TTS_MODEL = "hynt/F5-TTS-Vietnamese-ViVoice";
 const DEFAULT_MMS_TTS_MODEL = "facebook/mms-tts-vie";
 const DEFAULT_TTS_VOICE = "f5_vietnamese_vivoice_reference";
+const DEFAULT_CUSTOM_MUSIC_MODEL = "genmusic-vn/custom-symbolic-composer";
 
 duration.addEventListener("input", () => {
   durationValue.textContent = `${duration.value}s target`;
@@ -30,7 +31,7 @@ form.addEventListener("submit", async (event) => {
   statusPill.textContent = "Submitting";
   downloads.innerHTML = "";
   renderWarning(null);
-  audioSlot.textContent = "Waiting for Kaggle MusicGen output...";
+  audioSlot.textContent = "Waiting for Kaggle custom composer output...";
   lyricsOutput.textContent = "Preparing lyrics and vocal plan...";
   kaggleJobBox.textContent = "";
 
@@ -38,7 +39,7 @@ form.addEventListener("submit", async (event) => {
     text: document.querySelector("#text").value,
     duration_seconds: Number(duration.value),
     genre: document.querySelector("#genre").value,
-    model: "facebook/musicgen-medium",
+    model: DEFAULT_CUSTOM_MUSIC_MODEL,
   };
 
   try {
@@ -52,7 +53,7 @@ form.addEventListener("submit", async (event) => {
       throw new Error(job.error || "Could not submit job");
     }
     renderJob(job);
-    statusPill.textContent = job.status === "needs_setup" ? "Needs API" : "Kaggle";
+    statusPill.textContent = job.status === "needs_setup" ? "Needs Kaggle" : "Kaggle";
     if (!["needs_setup", "failed", "complete"].includes(job.status)) {
       pollKaggle(job.run_id);
     } else {
@@ -88,7 +89,7 @@ function renderJob(job) {
   const outroTail = job.outro_tail_seconds || durationPlan.outro_tail_seconds;
   const lines = [
     `Status: ${job.status}`,
-    `Model: ${job.model}`,
+    `Custom model: ${job.model || DEFAULT_CUSTOM_MUSIC_MODEL}`,
     `TTS: ${job.tts_model || DEFAULT_TTS_MODEL}`,
     `TTS fallback: ${job.mms_tts_model || DEFAULT_MMS_TTS_MODEL}`,
     `TTS voice: ${job.tts_voice_actual || DEFAULT_TTS_VOICE}`,
@@ -134,7 +135,7 @@ async function retryTts(runId) {
     const response = await fetch("/api/kaggle/retry-tts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ run_id: runId, model: currentJob?.model || "facebook/musicgen-medium" }),
+      body: JSON.stringify({ run_id: runId, model: currentJob?.model || DEFAULT_CUSTOM_MUSIC_MODEL }),
     });
     const job = await response.json();
     if (!response.ok || job.error) {
@@ -174,7 +175,7 @@ async function pollKaggle(runId, label = "Generating...") {
         return;
       }
       if (job.status === "failed" || job.status === "needs_setup") {
-        statusPill.textContent = job.status === "needs_setup" ? "Needs API" : "Error";
+        statusPill.textContent = job.status === "needs_setup" ? "Needs Kaggle" : "Error";
         setGenerating(false);
         return;
       }
@@ -205,15 +206,23 @@ function renderWarning(job) {
   const backend = `${job.generation_backend || job.backend || ""}`;
   const hasVocalMix = backend.includes("f5_tts_vocal_mix") || backend.includes("mms_tts_vocal_mix");
   const warnings = [];
+  const customFailed = Boolean(job.custom_model_failed || job.custom_model_error);
   const musicgenFailed = Boolean(job.musicgen_failed || job.musicgen_error || backend.includes("guide_fallback"));
   const ttsFailed = Boolean(
     job.vocal_failed || job.tts_error || backend.includes("tts_failed") || backend.includes("tts_skipped"),
   );
   const f5FallbackUsed = Boolean(job.f5_tts_error && backend.includes("f5_failed_mms"));
+  if (customFailed) {
+    const detail = summarizeError(job.custom_model_error || job.last_error || "");
+    warnings.push([
+      "Custom composer bị lỗi trên Kaggle. Chưa thể tạo backing track để mix vocal.",
+      detail ? `Chi tiết: ${detail}` : "",
+    ].filter(Boolean).join("\n"));
+  }
   if (musicgenFailed) {
     const detail = summarizeError(job.musicgen_error || job.last_error || "");
     warnings.push([
-      "MusicGen bị lỗi trên Kaggle. MP3 hiện tại dùng guide fallback, chất lượng sẽ thấp hơn MusicGen.",
+      "Job cũ dùng MusicGen bị lỗi. MP3 hiện tại có thể chỉ là fallback backing.",
       detail ? `Chi tiết: ${detail}` : "",
     ].filter(Boolean).join("\n"));
   }

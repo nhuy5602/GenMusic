@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import array
 import math
+import shutil
 import struct
+import subprocess
 import wave
 from pathlib import Path
 
@@ -13,18 +15,51 @@ from .base import GeneratorInput, MusicGenerator
 
 
 class GuideTrackGenerator(MusicGenerator):
-    backend_name = "guide"
+    backend_name = "custom"
 
     def generate(self, data: GeneratorInput, output_dir: Path) -> list[GeneratedFile]:
         output_dir.mkdir(parents=True, exist_ok=True)
-        wav_path = output_dir / "guide.wav"
-        midi_path = output_dir / "guide.mid"
+        wav_path = output_dir / "backing.wav"
+        midi_path = output_dir / "song.mid"
+        mp3_path = output_dir / "final.mp3"
         render_wav(data, wav_path)
         render_midi(data, midi_path)
-        return [
-            GeneratedFile(kind="audio", path=str(wav_path), description="Local guide track WAV"),
-            GeneratedFile(kind="midi", path=str(midi_path), description="Chord and melody MIDI sketch"),
+        files = [
+            GeneratedFile(kind="backing", path=str(wav_path), description="Custom composer backing WAV"),
+            GeneratedFile(kind="midi", path=str(midi_path), description="Custom composer chord, bass, drum and melody MIDI sketch"),
         ]
+        if _convert_to_mp3(wav_path, mp3_path):
+            files.insert(0, GeneratedFile(kind="audio", path=str(mp3_path), description="Custom composer final MP3"))
+        return files
+
+
+def _convert_to_mp3(wav_path: Path, mp3_path: Path) -> bool:
+    ffmpeg = _ffmpeg_path()
+    if not ffmpeg:
+        return False
+    try:
+        subprocess.run(
+            [ffmpeg, "-y", "-i", str(wav_path), "-codec:a", "libmp3lame", "-qscale:a", "2", str(mp3_path)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return mp3_path.exists()
+
+
+def _ffmpeg_path() -> str | None:
+    executable = shutil.which("ffmpeg")
+    if executable:
+        return executable
+    try:
+        import imageio_ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
 
 
 def render_wav(data: GeneratorInput, path: Path, sample_rate: int = 44100) -> None:
@@ -51,17 +86,30 @@ def render_wav(data: GeneratorInput, path: Path, sample_rate: int = 44100) -> No
     for event in data.melody:
         _add_tone(samples, sample_rate, event.start, event.duration, event.midi, melody_volume, harmonic=True)
 
+    half_beat_count = int(data.duration_seconds / (beat / 2.0))
     for beat_index in range(int(data.duration_seconds / beat)):
         start = beat_index * beat
         if beat_index % 4 == 0 or data.emotion.energy > 0.68:
             _add_kick(samples, sample_rate, start, drum_volume)
+        if beat_index % 4 == 2 and data.emotion.energy >= 0.42:
+            _add_snare(samples, sample_rate, start, drum_volume * 0.72)
+    for half_index in range(half_beat_count):
+        if data.emotion.energy >= 0.52:
+            _add_hat(samples, sample_rate, half_index * beat * 0.5, drum_volume * 0.35)
 
     peak = max(0.001, max(abs(sample) for sample in samples))
     scale = min(0.95 / peak, 1.0)
-    pcm = array.array("h", (int(max(-1.0, min(1.0, sample * scale)) * 32767) for sample in samples))
+    stereo_values = []
+    delay = int(0.006 * sample_rate)
+    for index, sample in enumerate(samples):
+        delayed = samples[index - delay] if index >= delay else 0.0
+        left = max(-1.0, min(1.0, sample * scale))
+        right = max(-1.0, min(1.0, (sample * 0.84 + delayed * 0.16) * scale))
+        stereo_values.extend([int(left * 32767), int(right * 32767)])
+    pcm = array.array("h", stereo_values)
 
     with wave.open(str(path), "wb") as wav:
-        wav.setnchannels(1)
+        wav.setnchannels(2)
         wav.setsampwidth(2)
         wav.setframerate(sample_rate)
         wav.writeframes(pcm.tobytes())
@@ -114,6 +162,33 @@ def _add_kick(samples: list[float], sample_rate: int, start_seconds: float, volu
         samples[sample_index] += math.sin(2.0 * math.pi * frequency * time) * envelope * volume
 
 
+def _add_snare(samples: list[float], sample_rate: int, start_seconds: float, volume: float) -> None:
+    start = int(start_seconds * sample_rate)
+    length = int(0.11 * sample_rate)
+    for offset in range(length):
+        sample_index = start + offset
+        if sample_index >= len(samples):
+            break
+        time = offset / sample_rate
+        envelope = math.exp(-time * 34.0)
+        tonal = math.sin(2.0 * math.pi * 185.0 * time) * 0.35
+        noise = ((offset * 1103515245 + 12345) & 0xFFFF) / 32768.0 - 1.0
+        samples[sample_index] += (tonal + noise * 0.65) * envelope * volume
+
+
+def _add_hat(samples: list[float], sample_rate: int, start_seconds: float, volume: float) -> None:
+    start = int(start_seconds * sample_rate)
+    length = int(0.045 * sample_rate)
+    for offset in range(length):
+        sample_index = start + offset
+        if sample_index >= len(samples):
+            break
+        time = offset / sample_rate
+        envelope = math.exp(-time * 85.0)
+        noise = ((offset * 1664525 + 1013904223) & 0xFFFF) / 32768.0 - 1.0
+        samples[sample_index] += noise * envelope * volume
+
+
 def render_midi(data: GeneratorInput, path: Path) -> None:
     ticks_per_quarter = 480
     beat = 60.0 / data.harmony.bpm
@@ -128,14 +203,32 @@ def render_midi(data: GeneratorInput, path: Path) -> None:
     events: list[tuple[int, int, bytes]] = []
     events.append((0, 1, bytes([0xC0, 0])))   # Acoustic grand piano
     events.append((0, 1, bytes([0xC1, 48])))  # String ensemble
+    events.append((0, 1, bytes([0xC2, 33])))  # Fingered bass
 
     for bar_index in range(max(1, math.ceil(data.duration_seconds / bar_seconds))):
         chord = data.harmony.chord_progression[bar_index % len(data.harmony.chord_progression)]
         start_tick = int(bar_index * 4 * ticks_per_quarter)
         end_tick = int((bar_index + 1) * 4 * ticks_per_quarter)
+        root = chord_midis(chord, 2)[0]
+        events.append((start_tick, 2, bytes([0x92, root, 64])))
+        events.append((end_tick, 0, bytes([0x82, root, 0])))
         for midi in chord_midis(chord, 3):
             events.append((start_tick, 2, bytes([0x91, midi, 52])))
             events.append((end_tick, 0, bytes([0x81, midi, 0])))
+
+    beat_count = int(data.duration_seconds / beat)
+    for beat_index in range(beat_count):
+        tick = int(beat_index * ticks_per_quarter)
+        if beat_index % 4 == 0 or data.emotion.energy > 0.68:
+            events.append((tick, 4, bytes([0x99, 36, 78])))
+            events.append((tick + int(ticks_per_quarter * 0.18), 0, bytes([0x89, 36, 0])))
+        if beat_index % 4 == 2 and data.emotion.energy >= 0.42:
+            events.append((tick, 4, bytes([0x99, 38, 58])))
+            events.append((tick + int(ticks_per_quarter * 0.14), 0, bytes([0x89, 38, 0])))
+        if data.emotion.energy >= 0.52:
+            hat_tick = tick + int(ticks_per_quarter * 0.5)
+            events.append((hat_tick, 4, bytes([0x99, 42, 42])))
+            events.append((hat_tick + int(ticks_per_quarter * 0.08), 0, bytes([0x89, 42, 0])))
 
     for event in data.melody:
         start_tick = int((event.start / beat) * ticks_per_quarter)
@@ -182,4 +275,3 @@ def _vlq(value: int) -> bytes:
         else:
             break
     return bytes(output)
-

@@ -26,6 +26,8 @@ from genmusic_vn.rhyme import head_tail_rhyme_rate, luc_bat_rhyme_rate, vietname
 from genmusic_vn.scene_planner import build_scene_plan
 from genmusic_vn.stylebank import get_emotion_music, load_stylebank
 from genmusic_vn.synthetic_dataset import generate_synthetic_records, write_jsonl
+from genmusic_vn.trained_text_model import predict_text_model, train_text_model, write_text_model
+from genmusic_vn.training_dataset import generate_training_records
 
 
 class PipelineTests(unittest.TestCase):
@@ -288,7 +290,8 @@ class PipelineTests(unittest.TestCase):
                 config=KaggleJobConfig(username="demo-user", submit=False),
             )
             self.assertEqual(job["status"], "staged")
-            self.assertEqual(job["backend"], "musicgen")
+            self.assertEqual(job["backend"], "custom")
+            self.assertEqual(job["model"], "genmusic-vn/custom-symbolic-composer")
             self.assertEqual(job["duration_policy"], "soft_target")
             self.assertEqual(job["target_duration_seconds"], 6)
             self.assertEqual(job["tts_voice_actual"], "f5_vietnamese_vivoice_reference")
@@ -320,15 +323,19 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("tts_failed_backing_only", kernel_script)
             self.assertIn('"vocal_failed": bool(tts_error)', kernel_script)
             self.assertIn("mix_vocal_with_backing", kernel_script)
+            self.assertIn("render_custom_backing_mp3", kernel_script)
             self.assertIn("_backing.mp3", kernel_script)
+            self.assertIn("_song.mid", kernel_script)
             self.assertIn("tts_voice_actual", kernel_script)
             self.assertIn("build_duration_plan", kernel_script)
             self.assertIn("planned_backing_duration_seconds", kernel_script)
+            self.assertIn("custom_render_duration_seconds", kernel_script)
             self.assertIn("duration_plan.json", kernel_script)
             self.assertIn("scene_plan", kernel_script)
             self.assertIn("select_tts_lines_for_duration", kernel_script)
             self.assertIn("duration_ceiling_seconds", kernel_script)
-            self.assertIn("enforce_audio_duration", kernel_script)
+            self.assertNotIn("MusicgenForConditionalGeneration", kernel_script)
+            self.assertNotIn("render_musicgen_backing_mp3", kernel_script)
             self.assertIn("duration=first", kernel_script)
             self.assertIn("normalize=0", kernel_script)
             self.assertIn("anoisesrc", kernel_script)
@@ -391,7 +398,8 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("conflict_fire", tense_scene.labels)
         with tempfile.TemporaryDirectory() as temp:
             tense_result = create_music_project(tense_text, output_root=temp, duration_seconds=12, render_audio=False)
-        self.assertIn("dark Vietnamese cinematic pop cue", tense_result.prompt)
+        self.assertIn("dark", tense_result.prompt)
+        self.assertIn("cinematic", tense_result.prompt)
 
         summer_text = "Mùa hè có tiếng cười và sân trường rực nắng."
         summer = analyze_emotion(summer_text)
@@ -525,6 +533,43 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("dan bau", folk.harmony.instruments)
         self.assertIn("solo piano", ballad.harmony.instruments)
         self.assertLessEqual(ballad.harmony.bpm, 76)
+
+    def test_trainable_text_model_predicts_anchor_style(self) -> None:
+        records = generate_training_records(80, seed=5602)
+        with tempfile.TemporaryDirectory() as temp:
+            model, report = train_text_model(records, seed=5602)
+            model_path = write_text_model(model, Path(temp) / "genmusic_text_model.json")
+            prediction = predict_text_model(
+                "Một chiều mưa, tôi nhớ về những con phố cũ. Có lời hứa chưa kịp nói, có ánh đèn vẫn chờ trong tim.",
+                path=model_path,
+            )
+        self.assertIsNotNone(prediction)
+        assert prediction is not None
+        self.assertEqual(prediction.emotion, "nostalgic")
+        self.assertEqual(prediction.genre_label, "pop_ballad")
+        self.assertGreaterEqual(report["emotion_accuracy"], 0.7)
+
+    def test_custom_backend_exports_song_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            result = create_music_project(
+                "Một chiều mưa, tôi nhớ về những con phố cũ.",
+                output_root=temp,
+                backend="custom",
+                duration_seconds=8,
+                render_audio=True,
+            )
+            kinds = {file.kind for file in result.files}
+            paths = [Path(file.path) for file in result.files]
+            self.assertEqual(result.backend, "custom")
+            self.assertIn("audio", kinds)
+            self.assertIn("backing", kinds)
+            self.assertIn("midi", kinds)
+            self.assertTrue(any(path.name == "backing.wav" and path.exists() for path in paths))
+            self.assertTrue(any(path.name == "song.mid" and path.exists() for path in paths))
+            self.assertTrue(any(path.name == "final.mp3" and path.exists() for path in paths))
+            midi_bytes = next(path.read_bytes() for path in paths if path.name == "song.mid")
+            self.assertIn(bytes([0x92]), midi_bytes)  # bass channel
+            self.assertIn(bytes([0x99]), midi_bytes)  # drum channel
 
     def test_kaggle_api_tokens_can_be_read_from_environment(self) -> None:
         old_username = os.environ.get("KAGGLE_USERNAME")

@@ -12,26 +12,30 @@ from .chorus_ablation import (
 )
 from .evaluation import DEFAULT_EVAL_DATASET, evaluate_dataset
 from .kaggle_auto import (
-    DEFAULT_MUSICGEN_MODEL,
+    DEFAULT_CUSTOM_MUSIC_MODEL,
     KaggleAutoError,
     KaggleJobConfig,
     submit_text_to_music_job,
     sync_kaggle_artifact,
 )
+from .pipeline import create_music_project
 from .synthetic_dataset import generate_synthetic_records, write_jsonl
+from .trained_text_model import DEFAULT_LOCAL_MODEL_PATH, trained_model_status, train_text_model, write_text_model
+from .training_auto import submit_text_model_training_job
+from .training_dataset import generate_training_records, load_training_records, write_training_jsonl
 from .xlsx_dataset import records_from_xlsx, write_jsonl as write_xlsx_jsonl
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="genmusic-vn", description="Vietnamese text-to-MP3 Kaggle MusicGen client.")
+    parser = argparse.ArgumentParser(prog="genmusic-vn", description="Vietnamese text-to-MP3 custom composer client.")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    generate = sub.add_parser("generate", help="Submit Vietnamese text to Kaggle MusicGen and return an MP3 artifact.")
+    generate = sub.add_parser("generate", help="Submit Vietnamese text to Kaggle custom composer and return an MP3 artifact.")
     generate.add_argument("--text", required=True, help="Vietnamese input text.")
     generate.add_argument("--duration", type=int, default=30, help="Target duration in seconds.")
     generate.add_argument("--out", default="outputs", help="Output directory.")
     generate.add_argument("--genre", default=None, help="Optional style/genre hint.")
-    generate.add_argument("--model", default=DEFAULT_MUSICGEN_MODEL, help="MusicGen model on Kaggle.")
+    generate.add_argument("--model", default=DEFAULT_CUSTOM_MUSIC_MODEL, help="Custom music model identifier.")
     generate.add_argument("--username", default=None, help="Kaggle username. Defaults to kaggle.json or KAGGLE_USERNAME.")
     generate.add_argument("--machine-shape", default="NvidiaTeslaT4")
     generate.add_argument("--no-submit", action="store_true", help="Only stage Kaggle files locally.")
@@ -39,10 +43,37 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--poll-seconds", type=int, default=60)
     generate.add_argument("--timeout-seconds", type=int, default=10_800)
 
+    generate_local = sub.add_parser("generate-local", help="Generate a local custom composer track.")
+    generate_local.add_argument("--text", required=True, help="Vietnamese input text.")
+    generate_local.add_argument("--duration", type=int, default=30, help="Target duration in seconds.")
+    generate_local.add_argument("--out", default="outputs/local", help="Output directory.")
+    generate_local.add_argument("--genre", default=None, help="Optional style/genre hint.")
+
     sync = sub.add_parser("sync-kaggle", help="Download a model/artifact from Kaggle to local storage.")
     sync.add_argument("--source", required=True, choices=["dataset", "kernel"], help="Download from a Kaggle dataset or kernel output.")
     sync.add_argument("--ref", required=True, help="Kaggle ref, e.g. username/dataset-slug or username/kernel-slug.")
     sync.add_argument("--out", default="models/current", help="Local target directory.")
+
+    model_status = sub.add_parser("model-status", help="Show the currently loaded trained text model artifact.")
+    model_status.add_argument("--model", default=None, help="Optional model JSON path.")
+
+    train_data = sub.add_parser("make-train-dataset", help="Generate a supervised Vietnamese text model training dataset.")
+    train_data.add_argument("--count", type=int, default=480, help="Number of generated training records.")
+    train_data.add_argument("--seed", type=int, default=42, help="Deterministic random seed.")
+    train_data.add_argument("--out", default="datasets/training/generated_text_model_train.jsonl", help="Output JSONL path.")
+
+    train_model = sub.add_parser("train-text-model", help="Train the local text emotion/style model. Defaults to Kaggle.")
+    train_model.add_argument("--samples", type=int, default=480, help="Synthetic records to generate before training.")
+    train_model.add_argument("--seed", type=int, default=42, help="Deterministic random seed.")
+    train_model.add_argument("--dataset", default="", help="Optional extra JSONL training dataset.")
+    train_model.add_argument("--out", default="outputs/model_training", help="Training job output directory.")
+    train_model.add_argument("--model-out", default=str(DEFAULT_LOCAL_MODEL_PATH), help="Local model artifact path.")
+    train_model.add_argument("--local", action="store_true", help="Train locally for smoke tests instead of submitting to Kaggle.")
+    train_model.add_argument("--username", default=None, help="Kaggle username. Defaults to kaggle.json or KAGGLE_USERNAME.")
+    train_model.add_argument("--no-submit", action="store_true", help="Only stage Kaggle files locally.")
+    train_model.add_argument("--wait", action="store_true", help="Wait for Kaggle training and download the model artifact.")
+    train_model.add_argument("--poll-seconds", type=int, default=60)
+    train_model.add_argument("--timeout-seconds", type=int, default=7200)
 
     evaluate = sub.add_parser("evaluate", help="Evaluate text-to-lyrics/vocal planning on the benchmark dataset.")
     evaluate.add_argument("--dataset", default=str(DEFAULT_EVAL_DATASET), help="JSONL evaluation dataset.")
@@ -65,7 +96,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_xlsx = sub.add_parser("batch-generate-xlsx", help="Submit XLSX rows to Kaggle and generate MP3 files.")
     batch_xlsx.add_argument("--xlsx", required=True, help="Workbook path.")
     batch_xlsx.add_argument("--out", default="outputs/xlsx_batch", help="Output directory.")
-    batch_xlsx.add_argument("--model", default=DEFAULT_MUSICGEN_MODEL, help="MusicGen model on Kaggle.")
+    batch_xlsx.add_argument("--model", default=DEFAULT_CUSTOM_MUSIC_MODEL, help="Custom music model identifier.")
     batch_xlsx.add_argument("--username", default=None, help="Kaggle username. Defaults to kaggle.json or KAGGLE_USERNAME.")
     batch_xlsx.add_argument("--machine-shape", default="NvidiaTeslaT4")
     batch_xlsx.add_argument("--limit", type=int, default=0, help="Maximum rows to submit. 0 means all selected rows.")
@@ -90,6 +121,10 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8")
 
     args = build_parser().parse_args(argv)
+    if args.command == "model-status":
+        print(json.dumps(trained_model_status(args.model), ensure_ascii=False, indent=2))
+        return 0
+
     if args.command == "sync-kaggle":
         try:
             manifest = sync_kaggle_artifact(source=args.source, ref=args.ref, output_dir=args.out)
@@ -97,6 +132,70 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"error": str(exc)}, ensure_ascii=False, indent=2))
             return 1
         print(json.dumps(manifest, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "make-train-dataset":
+        records = generate_training_records(args.count, seed=args.seed)
+        output_path = write_training_jsonl(records, args.out)
+        print(json.dumps({"path": str(output_path), "count": len(records), "seed": args.seed}, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "train-text-model":
+        extra_paths = [item.strip() for item in args.dataset.split(",") if item.strip()]
+        if args.local:
+            records = generate_training_records(args.samples, seed=args.seed) + load_training_records(extra_paths)
+            model, report = train_text_model(records, seed=args.seed)
+            model_path = write_text_model(model, args.model_out)
+            report_path = Path(args.out) / "local_training_report.json"
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            report_payload = {"model_path": str(model_path), **report}
+            report_path.write_text(json.dumps(report_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            print(json.dumps({"model_path": str(model_path), "report_path": str(report_path), "report": report}, ensure_ascii=False, indent=2))
+            return 0
+        job = submit_text_model_training_job(
+            output_root=args.out,
+            sample_count=args.samples,
+            seed=args.seed,
+            extra_datasets=extra_paths,
+            config=KaggleJobConfig(
+                username=args.username,
+                machine_shape="CPU",
+                submit=not args.no_submit,
+                wait=args.wait,
+                poll_seconds=args.poll_seconds,
+                timeout_seconds=args.timeout_seconds,
+            ),
+            local_model_path=args.model_out,
+        )
+        print(json.dumps(job, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "generate-local":
+        result = create_music_project(
+            args.text,
+            output_root=args.out,
+            backend="custom",
+            duration_seconds=args.duration,
+            genre=args.genre or None,
+            render_audio=True,
+        )
+        print(json.dumps(
+            {
+                "run_id": result.run_id,
+                "backend": result.backend,
+                "emotion": result.emotion.label,
+                "harmony": {
+                    "key": result.harmony.key,
+                    "scale": result.harmony.scale,
+                    "bpm": result.harmony.bpm,
+                    "progression": result.harmony.chord_progression,
+                },
+                "files": [file.__dict__ for file in result.files],
+                "prompt": result.prompt,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ))
         return 0
 
     if args.command == "evaluate":
