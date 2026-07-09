@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from genmusic_vn.chorus_ablation import evaluate_chorus_ablation_dataset
+from genmusic_vn.dataset_scale import write_large_diverse_dataset
 from genmusic_vn.evaluation import _rhyme_pair_rate, evaluate_dataset, load_eval_dataset
 from genmusic_vn.emotion import analyze_emotion
 from genmusic_vn.kaggle_auto import (
@@ -22,12 +23,15 @@ from genmusic_vn.kaggle_auto import (
 )
 from genmusic_vn.music_theory import chord_notes
 from genmusic_vn.pipeline import create_music_project
+from genmusic_vn.quality_checks import evaluate_music_result_quality
+from genmusic_vn.reference_dataset import generate_reference_eval_records, generate_reference_training_records
 from genmusic_vn.rhyme import head_tail_rhyme_rate, luc_bat_rhyme_rate, vietnamese_rhyme_profile
 from genmusic_vn.scene_planner import build_scene_plan
+from genmusic_vn.self_improve import run_self_improvement
 from genmusic_vn.stylebank import get_emotion_music, load_stylebank
 from genmusic_vn.synthetic_dataset import generate_synthetic_records, write_jsonl
 from genmusic_vn.trained_text_model import predict_text_model, train_text_model, write_text_model
-from genmusic_vn.training_dataset import generate_training_records
+from genmusic_vn.training_dataset import generate_diverse_training_records, generate_training_records
 
 
 class PipelineTests(unittest.TestCase):
@@ -299,6 +303,9 @@ class PipelineTests(unittest.TestCase):
             request_pack = json.loads((Path(job["dataset_dir"]) / "request.json").read_text(encoding="utf-8"))
             self.assertEqual(request_pack["duration_policy"], "soft_target")
             self.assertEqual(request_pack["target_duration_seconds"], 6)
+            metadata = json.loads((Path(job["dataset_dir"]) / "dataset-metadata.json").read_text(encoding="utf-8"))
+            self.assertGreaterEqual(len(metadata["subtitle"]), 20)
+            self.assertLessEqual(len(metadata["subtitle"]), 80)
             source_zip = Path(job["dataset_dir"]) / "genmusic_vn_source.zip"
             self.assertTrue(source_zip.exists())
             with zipfile.ZipFile(source_zip) as archive:
@@ -466,6 +473,11 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("vietnamese_rhyme_rate", report["summary"])
         self.assertIn("melody_line_rate", report["summary"])
         self.assertIn("romanized_violation_count", report["summary"])
+        self.assertEqual(report["plots"]["status"], "complete")
+        self.assertIn("duration_input_vs_processing_time", report["plots"]["files"])
+        self.assertIn("emotion_vs_bpm", report["plots"]["files"])
+        self.assertIn("user_rating", report["plots"]["files"])
+        self.assertIn("success_error_rate", report["plots"]["files"])
         self.assertIn("unknown", report["by_length"])
         self.assertIn("nostalgic", report["by_expected_emotion"])
 
@@ -479,6 +491,82 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(report["sample_count"], 6)
         self.assertIn("short", report["by_length"])
         self.assertGreaterEqual(report["summary"]["no_title"], 1.0)
+
+    def test_reference_datasets_feed_training_and_evaluation(self) -> None:
+        train_records = generate_reference_training_records(10, seed=5602)
+        eval_records = generate_reference_eval_records(8, seed=5602)
+        self.assertEqual(len(train_records), 10)
+        self.assertEqual(len(eval_records), 8)
+        self.assertTrue(all(record["emotion"] for record in train_records))
+        self.assertTrue(all(record["genre_label"] for record in train_records))
+        self.assertTrue(all(record["expected_keywords"] for record in eval_records))
+
+        model, report = train_text_model(train_records + generate_training_records(40, seed=5602), seed=5602)
+        self.assertIn("classifiers", model)
+        self.assertGreaterEqual(report["sample_count"], 8)
+
+    def test_diverse_training_generator_scales_without_duplicate_prompts(self) -> None:
+        records = generate_diverse_training_records(1200, seed=5602)
+        self.assertEqual(len(records), 1200)
+        self.assertEqual(len({record["input_text"] for record in records}), 1200)
+        self.assertGreaterEqual(len({record["genre_label"] for record in records}), 8)
+        self.assertGreaterEqual(len({record["emotion"] for record in records}), 6)
+        self.assertEqual(
+            {record["length_bucket"] for record in records},
+            {"short", "medium", "long"},
+        )
+
+    def test_large_dataset_writer_streams_shards_and_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = write_large_diverse_dataset(
+                Path(temp) / "large",
+                target_bytes=2_500_000,
+                shard_bytes=1_000_000,
+                batch_size=100,
+                seed=5602,
+            )
+            self.assertGreaterEqual(manifest["bytes_written"], 2_500_000)
+            self.assertGreater(manifest["records_written"], 100)
+            self.assertGreaterEqual(manifest["shard_count"], 2)
+            self.assertTrue(Path(manifest["manifest_path"]).exists())
+
+    def test_quality_checker_scores_pipeline_output_dimensions(self) -> None:
+        case = generate_reference_eval_records(1, seed=5602)[0]
+        with tempfile.TemporaryDirectory() as temp:
+            result = create_music_project(
+                case["input_text"],
+                output_root=temp,
+                duration_seconds=20,
+                genre=case["genre"],
+                render_audio=False,
+            )
+            quality = evaluate_music_result_quality(result, expected=case)
+        metrics = quality["metrics"]
+        self.assertIn("lyric_completeness", metrics)
+        self.assertIn("rhyme_score", metrics)
+        self.assertIn("beat_mood_score", metrics)
+        self.assertIn("vocal_presence_score", metrics)
+        self.assertGreaterEqual(metrics["overall_quality_score"], 0.5)
+
+    def test_self_improvement_loop_runs_one_small_iteration(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            temp_root = Path(temp)
+            with patch("genmusic_vn.self_improve.DEFAULT_LOCAL_MODEL_PATH", temp_root / "default_model.json"):
+                report = run_self_improvement(
+                    iterations=1,
+                    samples=40,
+                    eval_count=3,
+                    seed=5602,
+                    output_root=temp_root / "self_improve",
+                    model_out=temp_root / "model.json",
+                    duration_seconds=12,
+                    stop_score=1.0,
+                )
+        self.assertEqual(report["status"], "complete")
+        self.assertEqual(report["iterations_run"], 1)
+        self.assertTrue(report["history"])
+        self.assertIn("combined_score", report["history"][0]["summary"])
+        self.assertIn("selected_model_path", report["best_iteration"]["summary"])
 
     def test_chorus_style_ablation_reports_two_variants(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

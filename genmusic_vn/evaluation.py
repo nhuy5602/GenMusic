@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -56,7 +57,7 @@ def evaluate_dataset(
 
     try:
         items = [
-            evaluate_record(record, output_path, duration_seconds=duration_seconds)
+            evaluate_record_safe(record, output_path, duration_seconds=duration_seconds)
             for record in records
         ]
     finally:
@@ -64,7 +65,13 @@ def evaluate_dataset(
             temp_dir.cleanup()
 
     summary = _aggregate(items)
-    return {
+    success_count = sum(1 for item in items if item.get("success", True))
+    summary["success_rate"] = _ratio(success_count, len(items))
+    summary["error_rate"] = round(1.0 - summary["success_rate"], 4)
+    summary["processing_time_seconds_mean"] = _mean(
+        [float(item.get("processing_time_seconds", 0.0)) for item in items]
+    )
+    report = {
         "dataset": str(Path(dataset_path)),
         "sample_count": len(items),
         "summary": summary,
@@ -72,6 +79,38 @@ def evaluate_dataset(
         "by_expected_emotion": _aggregate_by(items, "expected_emotion"),
         "items": items,
     }
+    if temp_dir is None:
+        from .report_plots import generate_evaluation_plots
+
+        report["plots"] = generate_evaluation_plots(report, output_path / "plots")
+    else:
+        report["plots"] = {"status": "skipped", "reason": "evaluate_dataset received no persistent output_root"}
+    return report
+
+
+def evaluate_record_safe(record: dict[str, Any], output_root: Path, *, duration_seconds: int) -> dict[str, Any]:
+    started = time.perf_counter()
+    record_duration = int(record.get("duration_seconds") or duration_seconds)
+    try:
+        item = evaluate_record(record, output_root, duration_seconds=duration_seconds)
+    except Exception as exc:
+        elapsed = round(time.perf_counter() - started, 6)
+        return {
+            "id": record.get("id", "evaluation_error"),
+            "success": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "length_bucket": record.get("length_bucket", "unknown"),
+            "expected_emotion": (record.get("expected_emotions") or [""])[0],
+            "duration_seconds": record_duration,
+            "input_text_chars": len(str(record.get("input_text") or "")),
+            "processing_time_seconds": elapsed,
+            "metrics": {"overall_score": 0.0},
+        }
+    item["success"] = True
+    item["processing_time_seconds"] = round(time.perf_counter() - started, 6)
+    item["duration_seconds"] = record_duration
+    item["input_text_chars"] = len(str(record.get("input_text") or ""))
+    return item
 
 
 def evaluate_record(record: dict[str, Any], output_root: Path, *, duration_seconds: int) -> dict[str, Any]:
@@ -148,6 +187,7 @@ def evaluate_record(record: dict[str, Any], output_root: Path, *, duration_secon
             "run_id": result.run_id,
             "emotion": result.emotion.label,
             "vocal_gender": result.vocal.gender,
+            "bpm": result.harmony.bpm,
             "lyrics": result.lyrics.full_song,
             "prompt": result.prompt,
             "scene": result.scene.labels,
@@ -230,7 +270,7 @@ def _mean(values: list[float | int]) -> float:
 def _aggregate(items: list[dict[str, Any]]) -> dict[str, float]:
     metric_names = sorted({name for item in items for name in item["metrics"]})
     return {
-        name: _mean([item["metrics"][name] for item in items])
+        name: _mean([item.get("metrics", {}).get(name, 0.0) for item in items])
         for name in metric_names
     }
 

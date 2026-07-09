@@ -27,4 +27,22 @@ GenMusic VN - Huong dan nhanh
 8. Chay test:
    python -m unittest discover -s tests -v
 
+9. Tao dataset tham chieu an toan:
+   python -m genmusic_vn.cli make-reference-dataset --count 24 --seed 5602
+
+10. Tu train, gia lap user, danh gia va them case yeu:
+   python -m genmusic_vn.cli self-improve --iterations 3 --samples 640 --eval-count 24 --seed 5602
+
+11. Neu can dataset tong hop vai chuc nghin mau:
+   python -m genmusic_vn.cli make-train-dataset --count 30000 --profile diverse --seed 5602 --out datasets/training/diverse_30000_train.jsonl
+   python -m genmusic_vn.cli self-improve --iterations 2 --samples 8000 --eval-count 32 --extra-dataset datasets/training/diverse_30000_train.jsonl --out outputs/self_improve_30000
+
+12. Neu can dataset co size hang GB:
+   python -m genmusic_vn.cli make-large-dataset --target-gb 1 --out datasets/training/diverse_1gb --shard-mb 128 --batch-size 4000 --seed 5602
+   python -m genmusic_vn.cli self-improve --iterations 1 --samples 4000 --eval-count 24 --extra-dataset datasets/training/diverse_1gb --extra-dataset-limit 60000 --out outputs/self_improve_1gb
+
+Report self-improve co 4 plot PNG: duration vs processing time, emotion vs BPM, user rating proxy va success/error rate. Du lieu plot nam trong thu muc plots/.
+
+Neu co lyrics that, chi dua vao bang file JSONL local ma ban co quyen su dung, roi truyen qua --dataset hoac --extra-dataset. Project khong tu crawl nguyen loi bai hat co ban quyen.
+
 Xem README.md de biet day du kien truc va cach hoat dong.

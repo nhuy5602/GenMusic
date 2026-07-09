@@ -223,6 +223,183 @@ ANCHOR_TRAINING_RECORDS: list[dict[str, Any]] = [
 ]
 
 
+# These pools are deliberately independent from the small hand-written scene banks above.
+# Their combinations give the local classifier more linguistic coverage without copying
+# lyrics from the web.
+DIVERSE_CONTEXTS = [
+    "một sân thượng nhìn xuống thành phố lúc nửa đêm",
+    "ga tàu vắng sau chuyến cuối cùng",
+    "con hẻm nhỏ vừa tắt cơn mưa",
+    "bờ biển trước khi trời đổi sáng",
+    "căn phòng có ánh đèn xanh từ cửa sổ",
+    "một chuyến xe đi qua những cánh đồng",
+    "quán cà phê còn mở sau giờ đóng cửa",
+    "sân khấu ngoài trời trước lúc khán giả vào",
+    "con đường núi phủ sương đầu ngày",
+    "khu phố mới thức dậy sau một đêm dài",
+    "mái hiên cũ nhìn ra hàng cây",
+    "lối đi ven sông có tiếng chuông xa",
+    "phòng tập đầy dây đàn và micro",
+    "bến phà chờ chuyến nước rút",
+    "ngã tư đầy biển hiệu và xe đêm",
+    "khoảng sân sau một buổi lễ mùa hè",
+    "căn nhà quê nghe gió qua hàng tre",
+    "một căn phòng im lặng trước cơn bão",
+    "đường hầm có tiếng bước chân vọng lại",
+    "ban công nhìn xuống dòng người tan ca",
+    "một buổi chiều trên chuyến tàu trở về",
+    "khu vườn còn đọng sương sau bình minh",
+    "mặt hồ phẳng dưới mây xám",
+    "sàn nhảy sáng đèn giữa đêm lễ hội",
+]
+
+DIVERSE_ACTIONS = [
+    "nhặt lại một lời chưa kịp nói",
+    "bước tiếp sau một lần hụt chân",
+    "giữ nhịp thở giữa đám đông",
+    "gọi tên người đã đi xa",
+    "mở cánh cửa cho ngày mới",
+    "để ký ức trôi theo mặt nước",
+    "đứng trước nỗi sợ mà không lùi",
+    "chạm vào bàn tay đang chờ",
+    "gom ánh sáng từ những điều nhỏ bé",
+    "thả một câu hát vào khoảng không",
+    "đổi im lặng thành nhịp trống",
+    "đi qua thành phố bằng đôi chân mỏi",
+    "giữ một mùa cũ trong ánh mắt",
+    "lắng nghe tiếng nhà ở phía xa",
+    "đợi một dấu hiệu sau màn mưa",
+    "bật cười khi bình minh vừa đến",
+]
+
+DIVERSE_OPENERS = [
+    "Hãy tạo một bản nhạc kể về {context}, trong đó nhân vật muốn {action}.",
+    "Bản demo cần bắt đầu từ {context}; câu chuyện xoay quanh việc {action}.",
+    "Người dùng mô tả {context} và muốn lời hát dẫn đến khoảnh khắc {action}.",
+    "Viết ý tưởng ca khúc lấy {context} làm nền, với một nhân vật đang {action}.",
+    "Tạo một màn trình diễn có hình ảnh {context}, rồi đẩy cảm xúc về phía {action}.",
+    "Ca khúc nên mở ra từ {context}; phần hook cần gợi cảm giác {action}.",
+    "Hãy biến {context} thành một câu chuyện âm nhạc về việc {action}.",
+    "Prompt này cần một bài hát có điểm nhìn ở {context}, không khí dẫn tới việc {action}.",
+]
+
+DIVERSE_VOCAL_HINTS = [
+    "vocal chính phát âm rõ từng chữ",
+    "giọng hát gần microphone, không bị chìm trong beat",
+    "hook dễ hát lại và có khoảng thở hợp lý",
+    "vocal có cao trào nhưng vẫn giữ lời rõ",
+    "phần bè chỉ hỗ trợ, không che lead vocal",
+    "giữ phụ âm cuối đủ rõ để nghe được câu",
+    "để khoảng trống giữa các câu cho giọng hát",
+    "không để bản phối biến thành nhạc không lời",
+]
+
+DIVERSE_FLOW_HINTS = [
+    "flow đều và tự nhiên theo nhịp",
+    "flow nói gần, nhấn mạnh âm cuối câu",
+    "melody có câu ngắn nối với câu dài",
+    "nhịp chữ linh hoạt nhưng không dồn tiếng",
+    "hook lặp vừa đủ, verse có chuyển động",
+    "tránh nhồi quá nhiều âm tiết vào một ô nhịp",
+    "để câu rap bám kick và hi-hat rõ ràng",
+    "đường giai điệu đi lên ở cuối phần điệp khúc",
+]
+
+DIVERSE_MIX_HINTS = [
+    "âm lượng cân bằng, không clipping",
+    "giữ vocal sạch và tách khỏi nền",
+    "tránh tiếng rè, méo hoặc dội phòng",
+    "bass gọn để không lấn lời",
+    "treble đủ sáng nhưng không chói",
+    "để stereo rộng vừa phải và trung tâm rõ",
+    "đoạn chuyển không làm mất nhịp",
+    "kết bài không bị cắt đột ngột",
+]
+
+DIVERSE_RHYME_HINTS = [
+    "các câu cuối có vần gần nhau",
+    "ưu tiên vần lưng nhẹ và vần cuối rõ",
+    "giữ một mô-típ âm cuối cho hook",
+    "vần tự nhiên, không ép từ cho đủ vần",
+    "để hai câu liên tiếp có âm vang tương đồng",
+    "đổi vần ở verse nhưng giữ hook dễ nhớ",
+]
+
+
+def generate_diverse_training_records(
+    count: int,
+    *,
+    seed: int = 42,
+    genres: list[str] | None = None,
+    start_index: int = 1,
+) -> list[dict[str, Any]]:
+    """Generate high-cardinality original prompts with broad combinatorial variety."""
+    rng = random.Random(seed)
+    genre_pool = [label for label in (genres or list(GENRE_SCENES)) if label in GENRE_SCENES]
+    if not genre_pool:
+        genre_pool = list(GENRE_SCENES)
+    records: list[dict[str, Any]] = []
+
+    for offset in range(max(0, count)):
+        index = start_index + offset
+        genre_label = rng.choice(genre_pool)
+        genre = GENRE_SCENES[genre_label]
+        compatible_emotions = list(genre.get("emotions") or EMOTION_SCENES)
+        emotion = rng.choice(compatible_emotions)
+        emotion_scene = EMOTION_SCENES[emotion]
+        length_bucket = rng.choices(
+            ["short", "medium", "long"],
+            weights=[0.24, 0.51, 0.25],
+            k=1,
+        )[0]
+        clause_count = {
+            "short": rng.randint(2, 4),
+            "medium": rng.randint(4, 7),
+            "long": rng.randint(7, 11),
+        }[length_bucket]
+        context = rng.choice(DIVERSE_CONTEXTS)
+        action = rng.choice(DIVERSE_ACTIONS)
+        parts = [rng.choice(DIVERSE_OPENERS).format(context=context, action=action)]
+        parts.append(rng.choice(genre["sentences"]))
+        parts.append(rng.choice(emotion_scene["sentences"]))
+        while len(parts) < clause_count:
+            choice = rng.random()
+            if choice < 0.28:
+                parts.append(rng.choice(DIVERSE_ACTIONS).capitalize() + ".")
+            elif choice < 0.52:
+                parts.append(rng.choice(genre["sentences"]))
+            elif choice < 0.76:
+                parts.append(rng.choice(emotion_scene["sentences"]))
+            else:
+                parts.append(_variation(rng.choice(genre["sentences"] + emotion_scene["sentences"]), rng))
+
+        if rng.random() < 0.32:
+            parts.insert(1, rng.choice(["Mở đầu thật tiết chế rồi mở rộng dần.", "Verse đầu nên để nhiều khoảng thở.", "Đừng đẩy cao trào quá sớm."]))
+        parts.append(rng.choice(DIVERSE_VOCAL_HINTS) + ".")
+        parts.append(rng.choice(DIVERSE_FLOW_HINTS) + ".")
+        parts.append(rng.choice(DIVERSE_RHYME_HINTS) + ".")
+        parts.append(rng.choice(DIVERSE_MIX_HINTS) + ".")
+
+        genre_keywords = rng.sample(genre["keywords"], k=min(len(genre["keywords"]), rng.randint(2, 4)))
+        emotion_keywords = rng.sample(emotion_scene["keywords"], k=min(len(emotion_scene["keywords"]), rng.randint(2, 4)))
+        expected_keywords = _dedupe(genre_keywords + emotion_keywords + ["vocal", "flow", "vần"])
+        style_prompt = f"{genre['style_prompt']}, clear Vietnamese lead vocal, singable phrasing, controlled mix"
+        records.append(
+            {
+                "id": f"diverse_{index:06d}_{genre_label}_{emotion}_{length_bucket}",
+                "input_text": " ".join(parts),
+                "emotion": emotion,
+                "genre_label": genre_label,
+                "style_prompt": style_prompt,
+                "expected_keywords": expected_keywords,
+                "expected_vocal_gender": emotion_scene["vocal"],
+                "length_bucket": length_bucket,
+                "source": "generated_diverse_training_dataset",
+            }
+        )
+    return records
+
+
 def generate_training_records(
     count: int,
     *,
@@ -257,22 +434,42 @@ def generate_training_records(
     return records
 
 
-def load_training_records(paths: list[str | Path]) -> list[dict[str, Any]]:
+def load_training_records(
+    paths: list[str | Path],
+    *,
+    max_records: int | None = None,
+    seed: int = 42,
+) -> list[dict[str, Any]]:
+    rng = random.Random(seed)
     records: list[dict[str, Any]] = []
+    seen = 0
     for path_value in paths:
         path = Path(path_value)
         if not path.exists():
             continue
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                raw = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            normalized = normalize_training_record(raw)
-            if normalized:
-                records.append(normalized)
+        source_paths = sorted(path.glob("*.jsonl")) if path.is_dir() else [path]
+        for source_path in source_paths:
+            with source_path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        raw = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    normalized = normalize_training_record(raw)
+                    if not normalized:
+                        continue
+                    if max_records is None or max_records <= 0:
+                        records.append(normalized)
+                        continue
+                    seen += 1
+                    if len(records) < max_records:
+                        records.append(normalized)
+                    else:
+                        replacement = rng.randrange(seen)
+                        if replacement < max_records:
+                            records[replacement] = normalized
     return records
 
 

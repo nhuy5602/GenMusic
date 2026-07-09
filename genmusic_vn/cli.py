@@ -10,6 +10,7 @@ from .chorus_ablation import (
     evaluate_chorus_ablation_dataset,
     write_chorus_ablation_report,
 )
+from .dataset_scale import gigabytes_to_bytes, write_large_diverse_dataset
 from .evaluation import DEFAULT_EVAL_DATASET, evaluate_dataset
 from .kaggle_auto import (
     DEFAULT_CUSTOM_MUSIC_MODEL,
@@ -19,10 +20,12 @@ from .kaggle_auto import (
     sync_kaggle_artifact,
 )
 from .pipeline import create_music_project
+from .reference_dataset import write_reference_datasets
+from .self_improve import run_self_improvement
 from .synthetic_dataset import generate_synthetic_records, write_jsonl
 from .trained_text_model import DEFAULT_LOCAL_MODEL_PATH, trained_model_status, train_text_model, write_text_model
 from .training_auto import submit_text_model_training_job
-from .training_dataset import generate_training_records, load_training_records, write_training_jsonl
+from .training_dataset import generate_diverse_training_records, generate_training_records, load_training_records, write_training_jsonl
 from .xlsx_dataset import records_from_xlsx, write_jsonl as write_xlsx_jsonl
 
 
@@ -60,12 +63,28 @@ def build_parser() -> argparse.ArgumentParser:
     train_data = sub.add_parser("make-train-dataset", help="Generate a supervised Vietnamese text model training dataset.")
     train_data.add_argument("--count", type=int, default=480, help="Number of generated training records.")
     train_data.add_argument("--seed", type=int, default=42, help="Deterministic random seed.")
+    train_data.add_argument("--profile", choices=["standard", "diverse"], default="diverse", help="Generation profile; diverse combines independent context/style pools.")
     train_data.add_argument("--out", default="datasets/training/generated_text_model_train.jsonl", help="Output JSONL path.")
+
+    reference_data = sub.add_parser("make-reference-dataset", help="Generate safe reference train/eval datasets for self-improvement.")
+    reference_data.add_argument("--count", type=int, default=24, help="Number of reference-style records.")
+    reference_data.add_argument("--seed", type=int, default=5602, help="Deterministic random seed.")
+    reference_data.add_argument("--train-out", default="datasets/training/reference_song_train.jsonl", help="Training JSONL path.")
+    reference_data.add_argument("--eval-out", default="datasets/evaluation/reference_song_eval.jsonl", help="Evaluation JSONL path.")
+
+    large_data = sub.add_parser("make-large-dataset", help="Stream a large diverse synthetic dataset into JSONL shards.")
+    large_data.add_argument("--target-gb", type=float, default=1.0, help="Target decimal gigabytes on disk.")
+    large_data.add_argument("--out", default="datasets/training/diverse_1gb", help="Output shard directory.")
+    large_data.add_argument("--seed", type=int, default=5602, help="Deterministic random seed.")
+    large_data.add_argument("--shard-mb", type=int, default=128, help="Approximate shard size in MB.")
+    large_data.add_argument("--batch-size", type=int, default=2000, help="Records generated per streaming batch.")
+    large_data.add_argument("--max-records", type=int, default=0, help="Optional hard record cap; 0 means no cap.")
 
     train_model = sub.add_parser("train-text-model", help="Train the local text emotion/style model. Defaults to Kaggle.")
     train_model.add_argument("--samples", type=int, default=480, help="Synthetic records to generate before training.")
     train_model.add_argument("--seed", type=int, default=42, help="Deterministic random seed.")
     train_model.add_argument("--dataset", default="", help="Optional extra JSONL training dataset.")
+    train_model.add_argument("--dataset-limit", type=int, default=60000, help="Maximum records sampled from extra files/directories.")
     train_model.add_argument("--out", default="outputs/model_training", help="Training job output directory.")
     train_model.add_argument("--model-out", default=str(DEFAULT_LOCAL_MODEL_PATH), help="Local model artifact path.")
     train_model.add_argument("--local", action="store_true", help="Train locally for smoke tests instead of submitting to Kaggle.")
@@ -79,6 +98,19 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--dataset", default=str(DEFAULT_EVAL_DATASET), help="JSONL evaluation dataset.")
     evaluate.add_argument("--out", default="outputs/evaluation", help="Output directory for evaluation artifacts.")
     evaluate.add_argument("--duration", type=int, default=12, help="Duration used for pipeline planning.")
+
+    self_improve = sub.add_parser("self-improve", help="Iteratively train, simulate user prompts, evaluate quality, and add targeted records.")
+    self_improve.add_argument("--iterations", type=int, default=3, help="Maximum local self-improvement rounds.")
+    self_improve.add_argument("--samples", type=int, default=640, help="Base generated training samples per round.")
+    self_improve.add_argument("--eval-count", type=int, default=24, help="Synthetic evaluation samples per round.")
+    self_improve.add_argument("--seed", type=int, default=5602, help="Deterministic random seed.")
+    self_improve.add_argument("--out", default="outputs/self_improve", help="Output directory for loop reports.")
+    self_improve.add_argument("--model-out", default=str(DEFAULT_LOCAL_MODEL_PATH), help="Model artifact path to update.")
+    self_improve.add_argument("--extra-dataset", default="", help="Optional comma-separated local JSONL datasets you have permission to use.")
+    self_improve.add_argument("--extra-dataset-limit", type=int, default=60000, help="Maximum records sampled from extra files/directories.")
+    self_improve.add_argument("--duration", type=int, default=30, help="Duration used for simulated user prompts.")
+    self_improve.add_argument("--render-audio", action="store_true", help="Render local backing WAV/MP3 for clarity checks.")
+    self_improve.add_argument("--stop-score", type=float, default=0.88, help="Stop early when combined score reaches this value.")
 
     chorus_ablation = sub.add_parser("chorus-ablation", help="Compare pasted chorus planning with and without the original style hint.")
     chorus_ablation.add_argument("--dataset", default=str(DEFAULT_CHORUS_ABLATION_DATASET), help="JSONL dataset with chorus and style fields.")
@@ -135,15 +167,43 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "make-train-dataset":
-        records = generate_training_records(args.count, seed=args.seed)
+        generator = generate_diverse_training_records if args.profile == "diverse" else generate_training_records
+        records = generator(args.count, seed=args.seed)
         output_path = write_training_jsonl(records, args.out)
-        print(json.dumps({"path": str(output_path), "count": len(records), "seed": args.seed}, ensure_ascii=False, indent=2))
+        unique_inputs = len({str(record.get("input_text", "")) for record in records})
+        print(json.dumps({"path": str(output_path), "count": len(records), "unique_inputs": unique_inputs, "seed": args.seed, "profile": args.profile}, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "make-reference-dataset":
+        train_path, eval_path = write_reference_datasets(
+            train_out=args.train_out,
+            eval_out=args.eval_out,
+            count=args.count,
+            seed=args.seed,
+        )
+        print(json.dumps({"train_path": str(train_path), "eval_path": str(eval_path), "count": args.count, "seed": args.seed}, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "make-large-dataset":
+        manifest = write_large_diverse_dataset(
+            args.out,
+            target_bytes=gigabytes_to_bytes(args.target_gb),
+            seed=args.seed,
+            shard_bytes=max(1, args.shard_mb) * 1_000_000,
+            batch_size=args.batch_size,
+            max_records=args.max_records or None,
+        )
+        print(json.dumps(manifest, ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "train-text-model":
         extra_paths = [item.strip() for item in args.dataset.split(",") if item.strip()]
         if args.local:
-            records = generate_training_records(args.samples, seed=args.seed) + load_training_records(extra_paths)
+            records = generate_training_records(args.samples, seed=args.seed) + load_training_records(
+                extra_paths,
+                max_records=args.dataset_limit,
+                seed=args.seed,
+            )
             model, report = train_text_model(records, seed=args.seed)
             model_path = write_text_model(model, args.model_out)
             report_path = Path(args.out) / "local_training_report.json"
@@ -157,6 +217,7 @@ def main(argv: list[str] | None = None) -> int:
             sample_count=args.samples,
             seed=args.seed,
             extra_datasets=extra_paths,
+            extra_dataset_max_records=args.extra_dataset_limit,
             config=KaggleJobConfig(
                 username=args.username,
                 machine_shape="CPU",
@@ -204,6 +265,23 @@ def main(argv: list[str] | None = None) -> int:
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report["report_path"] = str(report_path)
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "self-improve":
+        extra_paths = [item.strip() for item in args.extra_dataset.split(",") if item.strip()]
+        report = run_self_improvement(
+            iterations=args.iterations,
+            samples=args.samples,
+            eval_count=args.eval_count,
+            seed=args.seed,
+            output_root=args.out,
+            model_out=args.model_out,
+            extra_datasets=extra_paths,
+            duration_seconds=args.duration,
+            render_audio=args.render_audio,
+            stop_score=args.stop_score,
+        )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
 

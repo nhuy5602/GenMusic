@@ -83,6 +83,34 @@ Tự tạo training dataset:
 python -m genmusic_vn.cli make-train-dataset --count 800 --seed 5602 --out datasets/training/generated_text_model_train.jsonl
 ```
 
+Sinh dataset tong hop lon voi nhieu to hop boi canh/style, khong lap lai prompt:
+
+```powershell
+python -m genmusic_vn.cli make-train-dataset --count 30000 --profile diverse --seed 5602 --out datasets/training/diverse_30000_train.jsonl
+```
+
+`--profile diverse` tao input goc moi cho tung record va phan bo theo 11 genre, 8 mood, 3 nhom do dai. Dataset nay la du lieu tu tao, khong phai loi bai hat crawl tu web.
+
+Neu can dataset co size hang GB, generator ghi streaming thanh shard, khong giu toan bo trong RAM:
+
+```powershell
+python -m genmusic_vn.cli make-large-dataset --target-gb 1 --out datasets/training/diverse_1gb --shard-mb 128 --batch-size 4000 --seed 5602
+```
+
+Khi train voi thu muc shard, loader mac dinh reservoir-sample toi da 60000 record (`--dataset-limit` hoac `--extra-dataset-limit`). Toan bo 1 GB van duoc giu lai de doi seed/sample cho cac lan sau.
+
+Tạo thêm dataset tham chiếu an toàn cho vòng tự cải thiện:
+
+```powershell
+python -m genmusic_vn.cli make-reference-dataset --count 24 --seed 5602 --train-out datasets/training/reference_song_train.jsonl --eval-out datasets/evaluation/reference_song_eval.jsonl
+```
+
+Dataset tham chiếu mặc định dùng lời tự tạo và mô tả "real-song inspired", không crawl nguyên lời bài hát có bản quyền. Nếu bạn có lời bài hát thật và có quyền sử dụng, chuẩn bị file JSONL local rồi truyền bằng `--dataset` khi train hoặc `--extra-dataset` khi chạy self-improve. Mỗi dòng nên có:
+
+```json
+{"id":"my_case_001","input_text":"...","emotion":"sadness","genre_label":"pop_ballad","style_prompt":"Vietnamese melancholic pop ballad, soft piano, warm strings","expected_keywords":["mưa","piano"],"expected_vocal_gender":"female","source":"user_licensed_lyrics"}
+```
+
 Train local nhanh để kiểm thử thuật toán:
 
 ```powershell
@@ -264,8 +292,13 @@ genmusic_vn/
   cli.py              # CLI local
   kaggle_auto.py      # tự động tạo Kaggle Dataset/Kernel bằng API token
   training_dataset.py # tự sinh supervised dataset tiếng Việt để train model
+  reference_dataset.py # dataset tham chiếu an toàn + import JSONL có quyền sử dụng
   trained_text_model.py # train/load/predict emotion + genre/style model
   training_auto.py    # tạo Kaggle job train text model
+  self_improve.py     # train -> giả lập user -> evaluate -> bổ sung case yếu
+  report_plots.py      # matplotlib dashboard: performance, BPM, rating, success/error
+  dataset_scale.py     # streaming/sharded dataset generator + GB manifest
+  quality_checks.py   # chấm đủ lời, vần, beat/mood, vocal, clarity, flow/style
   emotion.py          # phân tích cảm xúc tiếng Việt bằng trained model + fallback
   text_planner.py     # xử lý input dài, chạy trên Kaggle
   music_theory.py     # chọn key, scale, chord, melody, chạy trên Kaggle
@@ -319,6 +352,54 @@ outputs/chorus_ablation/chorus_ablation_report.json
 ```
 
 Các metric chính gồm `emotion_match`, `keyword_recall`, `prompt_keyword_recall`, `scene_cue_density`, `diacritic_line_rate`, `vietnamese_rhyme_rate`, `rhyme_pair_rate`, `head_tail_rhyme_rate`, `luc_bat_rhyme_rate`, `melody_line_rate` và `overall_score`.
+
+## Tự Cải Thiện Sau Mỗi Lần Train
+
+Chạy vòng local để tự tạo thêm data, train model, giả lập user nhập prompt, chấm output và sinh thêm record nhắm vào các case yếu:
+
+```powershell
+python -m genmusic_vn.cli self-improve --iterations 3 --samples 640 --eval-count 24 --seed 5602 --out outputs/self_improve --duration 30
+```
+
+Chay voi dataset vai chuc nghin mau:
+
+```powershell
+ python -m genmusic_vn.cli self-improve --iterations 2 --samples 8000 --eval-count 32 --seed 5602 --extra-dataset datasets/training/diverse_30000_train.jsonl --out outputs/self_improve_30000 --duration 30 --stop-score 0.96
+```
+
+Moi iteration luu model rieng, report danh gia va cac record nham vao loi yeu. Sau cung model duoc chon la model cua iteration co `combined_score` cao nhat.
+
+Report tu `evaluate` va `self-improve` co dashboard matplotlib (PNG + `plot_data.json`):
+
+- `duration_input_vs_processing_time.png`: duration input vs thoi gian xu ly.
+- `emotion_vs_bpm.png`: phan bo emotion vs BPM sinh ra.
+- `user_rating.png`: rating proxy 1-5 tu quality score; neu co rating that se ghi ro nguon.
+- `success_error_rate.png`: ty le thanh cong/loi cua tung evaluation run.
+
+Vi du voi dataset 1 GB:
+
+```powershell
+python -m genmusic_vn.cli self-improve --iterations 1 --samples 4000 --eval-count 24 --seed 5602 --extra-dataset datasets/training/diverse_1gb --extra-dataset-limit 60000 --out outputs/self_improve_1gb --duration 30 --stop-score 0.90
+```
+
+Artifact nam trong `outputs/self_improve_1gb/plots/` va duoc lien ket trong `self_improve_report.json`/`.md`.
+
+Nếu có dataset lyrics/text local bạn có quyền dùng:
+
+```powershell
+python -m genmusic_vn.cli self-improve --iterations 3 --samples 640 --eval-count 24 --extra-dataset datasets/training/my_licensed_lyrics.jsonl
+```
+
+Report chính:
+
+```text
+outputs/self_improve/self_improve_report.json
+outputs/self_improve/self_improve_report.md
+outputs/self_improve/iteration_*/evaluation_report.json
+outputs/self_improve/iteration_*/quality/quality_report.json
+```
+
+Quality report chấm các điểm gần với checklist nghe thử: đủ lời, lời có vần, beat/BPM hợp mood, có kế hoạch vocal hoặc vocal artifact, WAV có bị quá nhỏ/clipping không, flow có hợp style không. Local composer chỉ xác minh backing và planning; vocal hát thật vẫn cần Kaggle F5-TTS/MMS TTS.
 
 Nếu muốn vừa submit các dòng trong Excel lên Kaggle để sinh MP3 thật, dùng:
 
