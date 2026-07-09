@@ -8,7 +8,9 @@ from typing import Any
 
 from .pipeline import create_music_project
 from .rhyme import (
+    natural_rhyme_score,
     section_end_pair_rhyme_rate,
+    section_assonance_rate,
     section_head_tail_rhyme_rate,
     section_luc_bat_rhyme_rate,
     section_vietnamese_rhyme_rate,
@@ -53,7 +55,7 @@ def evaluate_music_result_quality(
         "luc_bat": section_luc_bat_rhyme_rate(sections),
         "vietnamese": section_vietnamese_rhyme_rate(sections),
     }
-    rhyme_score = max(rhyme_profile.values()) if rhyme_profile else 0.0
+    rhyme_score = natural_rhyme_score(lines)
 
     beat_mood_score, beat_note = _beat_mood_score(result.emotion.label, result.harmony.bpm)
     vocal_score, vocal_note = _vocal_score(result, audio_required=audio_required)
@@ -68,6 +70,7 @@ def evaluate_music_result_quality(
         "singable_line_rate": round(singable_line_rate, 4),
         "rhyme_score": round(rhyme_score, 4),
         "rhyme_pair_rate": round(rhyme_pair_rate, 4),
+        "rhyme_assonance_rate": round(section_assonance_rate(sections), 4),
         "beat_mood_score": round(beat_mood_score, 4),
         "vocal_presence_score": round(vocal_score, 4),
         "audio_clarity_score": round(clarity["score"], 4),
@@ -97,7 +100,7 @@ def evaluate_music_result_quality(
         user_rating = round(supplied_rating, 2)
         user_rating_source = "user_supplied"
     else:
-        user_rating = round(1.0 + 4.0 * metrics["overall_quality_score"], 2)
+        user_rating = _quality_score_to_rating(metrics["overall_quality_score"])
         user_rating_source = "objective_quality_proxy"
 
     issues = _quality_issues(metrics, audio_required=audio_required)
@@ -119,6 +122,11 @@ def evaluate_music_result_quality(
             "vocal": vocal_note,
         },
         "issues": issues,
+        "rating_note": (
+            "Calibrated objective proxy; collect real user ratings for product decisions."
+            if user_rating_source == "objective_quality_proxy"
+            else "Rating supplied by the user."
+        ),
     }
 
 
@@ -158,6 +166,10 @@ def evaluate_simulated_cases(
         "summary": _aggregate_metrics(items),
         "user_rating": {
             "mean": round(_mean([float(item.get("user_rating", 0.0)) for item in items]), 2),
+            "median": _median_rating(items),
+            "min": _min_rating(items),
+            "max": _max_rating(items),
+            "distribution": _rating_distribution(items),
             "source": "user_supplied_or_objective_quality_proxy",
         },
         "items": items,
@@ -344,3 +356,47 @@ def _mean(values: list[float | int | bool]) -> float:
 
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
     return max(low, min(high, value))
+
+
+def _quality_score_to_rating(score: float) -> float:
+    """Calibrate objective quality so uncertainty and weak outputs are visible in the plot."""
+    calibrated = _clamp((float(score) - 0.35) / 0.65)
+    return round(1.0 + 4.0 * calibrated, 2)
+
+
+def _rating_values(items: list[dict[str, Any]]) -> list[float]:
+    values: list[float] = []
+    for item in items:
+        try:
+            values.append(float(item.get("user_rating", 0.0)))
+        except (TypeError, ValueError):
+            continue
+    return values
+
+
+def _median_rating(items: list[dict[str, Any]]) -> float:
+    values = sorted(_rating_values(items))
+    if not values:
+        return 0.0
+    middle = len(values) // 2
+    if len(values) % 2:
+        return round(values[middle], 2)
+    return round((values[middle - 1] + values[middle]) / 2.0, 2)
+
+
+def _min_rating(items: list[dict[str, Any]]) -> float:
+    values = _rating_values(items)
+    return round(min(values), 2) if values else 0.0
+
+
+def _max_rating(items: list[dict[str, Any]]) -> float:
+    values = _rating_values(items)
+    return round(max(values), 2) if values else 0.0
+
+
+def _rating_distribution(items: list[dict[str, Any]]) -> dict[str, int]:
+    distribution = {str(rating): 0 for rating in range(1, 6)}
+    for value in _rating_values(items):
+        bucket = min(5, max(1, int(value + 0.5)))
+        distribution[str(bucket)] += 1
+    return distribution

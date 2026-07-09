@@ -16,6 +16,7 @@ from .kaggle_auto import (
     submit_text_to_music_job,
     submit_tts_retry_job,
 )
+from .project_metrics import build_project_report
 from .trained_text_model import trained_model_status
 
 
@@ -56,6 +57,12 @@ class GenMusicHandler(BaseHTTPRequestHandler):
                 return
             try:
                 self._send_json(refresh_kaggle_job(state_path))
+            except Exception as exc:  # pragma: no cover - server boundary
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        if path == "/api/project/report":
+            try:
+                self._send_json(build_project_report(OUTPUT_ROOT, output_root=OUTPUT_ROOT / "project_report"))
             except Exception as exc:  # pragma: no cover - server boundary
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return

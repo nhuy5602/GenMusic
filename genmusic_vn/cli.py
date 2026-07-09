@@ -19,7 +19,13 @@ from .kaggle_auto import (
     submit_text_to_music_job,
     sync_kaggle_artifact,
 )
+from .licensed_lyric_crawler import (
+    build_rhyme_profile,
+    crawl_licensed_sources,
+    load_source_specs,
+)
 from .pipeline import create_music_project
+from .project_metrics import build_project_report
 from .reference_dataset import write_reference_datasets
 from .self_improve import run_self_improvement
 from .synthetic_dataset import generate_synthetic_records, write_jsonl
@@ -72,9 +78,19 @@ def build_parser() -> argparse.ArgumentParser:
     reference_data.add_argument("--train-out", default="datasets/training/reference_song_train.jsonl", help="Training JSONL path.")
     reference_data.add_argument("--eval-out", default="datasets/evaluation/reference_song_eval.jsonl", help="Evaluation JSONL path.")
 
+    crawl_lyrics = sub.add_parser("crawl-licensed-lyrics", help="Collect whole licensed verse/chorus sections with provenance.")
+    crawl_lyrics.add_argument("--sources", required=True, help="JSON/JSONL source manifest with approved URLs and license fields.")
+    crawl_lyrics.add_argument("--out", default="datasets/training/licensed_lyric_sections.jsonl", help="Output JSONL path.")
+    crawl_lyrics.add_argument("--max-sources", type=int, default=0, help="Maximum approved sources; 0 means all.")
+    crawl_lyrics.add_argument("--max-sections", type=int, default=12, help="Maximum whole sections per source.")
+
+    rhyme_profile = sub.add_parser("train-rhyme-profile", help="Learn a compact rhyme/assonance profile from licensed sections.")
+    rhyme_profile.add_argument("--dataset", required=True, help="Licensed section JSONL produced by crawl-licensed-lyrics.")
+    rhyme_profile.add_argument("--out", default="models/rhyme_profile.json", help="Output profile path.")
+
     large_data = sub.add_parser("make-large-dataset", help="Stream a large diverse synthetic dataset into JSONL shards.")
-    large_data.add_argument("--target-gb", type=float, default=1.0, help="Target decimal gigabytes on disk.")
-    large_data.add_argument("--out", default="datasets/training/diverse_1gb", help="Output shard directory.")
+    large_data.add_argument("--target-gb", type=float, default=5.0, help="Target decimal gigabytes on disk.")
+    large_data.add_argument("--out", default="datasets/training/diverse_5gb", help="Output shard directory.")
     large_data.add_argument("--seed", type=int, default=5602, help="Deterministic random seed.")
     large_data.add_argument("--shard-mb", type=int, default=128, help="Approximate shard size in MB.")
     large_data.add_argument("--batch-size", type=int, default=2000, help="Records generated per streaming batch.")
@@ -98,6 +114,10 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--dataset", default=str(DEFAULT_EVAL_DATASET), help="JSONL evaluation dataset.")
     evaluate.add_argument("--out", default="outputs/evaluation", help="Output directory for evaluation artifacts.")
     evaluate.add_argument("--duration", type=int, default=12, help="Duration used for pipeline planning.")
+
+    project_report = sub.add_parser("project-report", help="Build real project latency/retry/error plots from Kaggle job states.")
+    project_report.add_argument("--source", default="outputs", help="Root directory containing job_state.json files.")
+    project_report.add_argument("--out", default="outputs/project_report", help="Output directory for project telemetry report.")
 
     self_improve = sub.add_parser("self-improve", help="Iteratively train, simulate user prompts, evaluate quality, and add targeted records.")
     self_improve.add_argument("--iterations", type=int, default=3, help="Maximum local self-improvement rounds.")
@@ -184,6 +204,22 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"train_path": str(train_path), "eval_path": str(eval_path), "count": args.count, "seed": args.seed}, ensure_ascii=False, indent=2))
         return 0
 
+    if args.command == "crawl-licensed-lyrics":
+        specs = load_source_specs(args.sources)
+        report = crawl_licensed_sources(
+            specs,
+            args.out,
+            max_sources=args.max_sources or None,
+            max_sections_per_source=args.max_sections,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "train-rhyme-profile":
+        profile = build_rhyme_profile(args.dataset, args.out)
+        print(json.dumps(profile, ensure_ascii=False, indent=2))
+        return 0
+
     if args.command == "make-large-dataset":
         manifest = write_large_diverse_dataset(
             args.out,
@@ -265,6 +301,11 @@ def main(argv: list[str] | None = None) -> int:
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report["report_path"] = str(report_path)
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "project-report":
+        report = build_project_report(args.source, output_root=args.out)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
 

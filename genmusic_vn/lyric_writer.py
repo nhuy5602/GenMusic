@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import re
 
-from .rhyme import dominant_rhyme_scheme, end_pair_rhyme_rate, end_rhyme_key, vietnamese_rhyme_rate
+from .rhyme import (
+    assonance_key_word,
+    dominant_rhyme_scheme,
+    end_pair_rhyme_rate,
+    end_rhyme_key,
+    learned_assonance_families,
+    vietnamese_rhyme_rate,
+)
 from .schemas import EmotionProfile, HarmonyPlan, LyricDraft
 from .stylebank import get_lyric_pattern
 from .text_utils import compact_line, extract_keywords, extract_lyric_lines, split_sentences, tokenize_words
@@ -124,13 +131,26 @@ def _rhyme_key(line: str) -> str:
 
 
 def _rhyme_endings(emotion: EmotionProfile) -> list[str]:
+    endings: list[str]
     if emotion.label in RHYME_ENDINGS:
-        return RHYME_ENDINGS[emotion.label]
-    if emotion.valence < -0.15:
-        return RHYME_ENDINGS["sadness"]
-    if emotion.valence > 0.35:
-        return RHYME_ENDINGS["hope"]
-    return FALLBACK_RHYME_ENDINGS
+        endings = RHYME_ENDINGS[emotion.label]
+    elif emotion.valence < -0.15:
+        endings = RHYME_ENDINGS["sadness"]
+    elif emotion.valence > 0.35:
+        endings = RHYME_ENDINGS["hope"]
+    else:
+        endings = FALLBACK_RHYME_ENDINGS
+    learned = set(learned_assonance_families())
+    if learned:
+        filtered = [
+            ending
+            for ending in endings
+            if tokenize_words(ending)
+            and assonance_key_word(tokenize_words(ending)[-1]) in learned
+        ]
+        if filtered:
+            return filtered
+    return endings
 
 
 def _ensure_rhyme_ending(line: str, ending: str, max_words: int = 12) -> str:
@@ -157,9 +177,12 @@ def _shape_lines_for_melody(
     *,
     start_pair: int = 0,
     max_words: int = 12,
+    enforce_pair_rhyme: bool = False,
 ) -> list[str]:
-    endings = _rhyme_endings(emotion)
     shaped = [_polish_line(line) for line in lines if _polish_line(line)]
+    if not enforce_pair_rhyme:
+        return shaped
+    endings = _rhyme_endings(emotion)
     for index, line in enumerate(shaped):
         if len(shaped) % 2 == 1 and index == len(shaped) - 1 and index > 0:
             pair_index = start_pair + ((index - 1) // 2)
@@ -429,12 +452,22 @@ def _make_chorus(text: str, emotion: EmotionProfile) -> list[str]:
     motif = _select_motif(text, emotion, 10)
     pattern = get_lyric_pattern(emotion.label)
     template = pattern.get("chorus") or DEFAULT_CHORUS.get(emotion.label, DEFAULT_CHORUS["calm"])
+    anchor = _compact_hook_phrase(motif)
+    if not anchor:
+        anchor = SAFE_FALLBACK_MOTIFS.get(emotion.label, emotion.label_vi)
     return [
+        _polish_line(f"{anchor} ơi, ở lại thêm một lần"),
         _polish_line(template[0]),
-        _polish_line(f"{motif} ơi, ở lại thêm một lần"),
+        _polish_line(f"{anchor} ơi, gọi tên nhau"),
         _polish_line(template[1]),
-        _polish_line("cho câu hát tìm thấy đường về"),
     ]
+
+
+def _compact_hook_phrase(motif: str) -> str:
+    words = [word for word in tokenize_words(motif) if word not in MOTIF_STOPWORDS]
+    if not words:
+        words = tokenize_words(motif)
+    return " ".join(words[:3])
 
 
 def _make_outro(chorus: list[str], emotion: EmotionProfile) -> list[str]:
@@ -482,7 +515,7 @@ def _build_full_song(
 
 def _build_short_song(verse: list[str], chorus: list[str], outro: list[str]) -> tuple[list[str], list[str]]:
     short_verse = verse[:4]
-    short_chorus = chorus[:2]
+    short_chorus = chorus[:4]
     song_form = ["Verse", "Chorus", "Outro"]
     full_song = [
         "[Verse]",
@@ -497,7 +530,12 @@ def _build_short_song(verse: list[str], chorus: list[str], outro: list[str]) -> 
     return song_form, full_song
 
 
-def rewrite_lyrics(text: str, emotion: EmotionProfile, harmony: HarmonyPlan) -> LyricDraft:
+def rewrite_lyrics(
+    text: str,
+    emotion: EmotionProfile,
+    harmony: HarmonyPlan,
+    duration_seconds: int | None = None,
+) -> LyricDraft:
     if _looks_like_existing_lyrics(text):
         return _rewrite_existing_lyrics(_existing_lyric_lines(text), emotion)
 
@@ -509,9 +547,14 @@ def rewrite_lyrics(text: str, emotion: EmotionProfile, harmony: HarmonyPlan) -> 
     chorus = _shape_lines_for_melody(_make_chorus(text, emotion), emotion, start_pair=2)
     bridge = _shape_lines_for_melody(_make_bridge(text, emotion, harmony), emotion, start_pair=4)
     outro = _shape_lines_for_melody(_make_outro(chorus, emotion), emotion, start_pair=2)
-    hook_words = tokenize_words(chorus[1])[:6]
-    hook = " ".join(hook_words) if hook_words else chorus[1]
-    if sentence_count <= 2 and word_count <= 40:
+    hook_words = tokenize_words(chorus[0])[:3]
+    hook = " ".join(hook_words) if hook_words else chorus[0]
+    use_short_form = (
+        sentence_count <= 2
+        and word_count <= 40
+        and (duration_seconds is None or int(duration_seconds) < 24)
+    )
+    if use_short_form:
         song_form, full_song = _build_short_song(verse1, chorus, outro)
     else:
         song_form, full_song = _build_full_song(verse1, pre_chorus, chorus, verse2, bridge, outro)
@@ -524,5 +567,5 @@ def rewrite_lyrics(text: str, emotion: EmotionProfile, harmony: HarmonyPlan) -> 
         hook=hook,
         song_form=song_form,
         full_song=full_song,
-        rhyme_scheme="Vietnamese mixed rhyme: paired end rhymes, head-tail links, and luc-bat-aware detection",
+        rhyme_scheme="Vietnamese mixed rhyme with natural assonance: varied cadences and no mandatory adjacent pair rhyme",
     )

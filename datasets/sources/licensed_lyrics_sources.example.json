@@ -1,0 +1,11 @@
+[
+  {
+    "title": "Replace with a source you are allowed to use",
+    "url": "https://replace-with-an-approved-source.example/lyrics-page",
+    "license": "CC BY 4.0",
+    "approved": false,
+    "emotion": "nostalgic",
+    "genre_label": "pop_ballad",
+    "max_section_chars": 2400
+  }
+]

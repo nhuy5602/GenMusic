@@ -38,11 +38,24 @@ GenMusic VN - Huong dan nhanh
    python -m genmusic_vn.cli self-improve --iterations 2 --samples 8000 --eval-count 32 --extra-dataset datasets/training/diverse_30000_train.jsonl --out outputs/self_improve_30000
 
 12. Neu can dataset co size hang GB:
-   python -m genmusic_vn.cli make-large-dataset --target-gb 1 --out datasets/training/diverse_1gb --shard-mb 128 --batch-size 4000 --seed 5602
-   python -m genmusic_vn.cli self-improve --iterations 1 --samples 4000 --eval-count 24 --extra-dataset datasets/training/diverse_1gb --extra-dataset-limit 60000 --out outputs/self_improve_1gb
+   python -m genmusic_vn.cli make-large-dataset --target-gb 5 --out datasets/training/diverse_5gb --shard-mb 128 --batch-size 4000 --seed 5602
+   python -m genmusic_vn.cli self-improve --iterations 1 --samples 4000 --eval-count 24 --extra-dataset datasets/training/diverse_5gb --extra-dataset-limit 60000 --out outputs/self_improve_5gb
 
 Report self-improve co 4 plot PNG: duration vs processing time, emotion vs BPM, user rating proxy va success/error rate. Du lieu plot nam trong thu muc plots/.
 
 Neu co lyrics that, chi dua vao bang file JSONL local ma ban co quyen su dung, roi truyen qua --dataset hoac --extra-dataset. Project khong tu crawl nguyen loi bai hat co ban quyen.
 
 Xem README.md de biet day du kien truc va cach hoat dong.
+
+Crawler section loi co license (khong tu y dung nguon ban quyen):
+   python -m genmusic_vn.cli crawl-licensed-lyrics --sources datasets/sources/licensed_lyrics_sources.example.json --out datasets/training/licensed_lyric_sections.jsonl --max-sections 12
+   python -m genmusic_vn.cli train-rhyme-profile --dataset datasets/training/licensed_lyric_sections.jsonl --out models/rhyme_profile.json
+
+Moi record la mot verse/chorus day du co nhan section, URL va license; gioi han 24 dong/2.400 ky tu, khong ghep thanh ca bai.
+
+Bao cao telemetry cua ca project:
+   python -m genmusic_vn.cli project-report --source outputs --out outputs/project_report
+   http://127.0.0.1:8000/api/project/report
+
+Dataset tong hop mac dinh 5 GB:
+   python -m genmusic_vn.cli make-large-dataset --target-gb 5 --out datasets/training/diverse_5gb --shard-mb 128 --batch-size 4000 --seed 5602

@@ -94,10 +94,10 @@ python -m genmusic_vn.cli make-train-dataset --count 30000 --profile diverse --s
 Neu can dataset co size hang GB, generator ghi streaming thanh shard, khong giu toan bo trong RAM:
 
 ```powershell
-python -m genmusic_vn.cli make-large-dataset --target-gb 1 --out datasets/training/diverse_1gb --shard-mb 128 --batch-size 4000 --seed 5602
+python -m genmusic_vn.cli make-large-dataset --target-gb 5 --out datasets/training/diverse_5gb --shard-mb 128 --batch-size 4000 --seed 5602
 ```
 
-Khi train voi thu muc shard, loader mac dinh reservoir-sample toi da 60000 record (`--dataset-limit` hoac `--extra-dataset-limit`). Toan bo 1 GB van duoc giu lai de doi seed/sample cho cac lan sau.
+Khi train voi thu muc shard, loader mac dinh reservoir-sample toi da 60000 record (`--dataset-limit` hoac `--extra-dataset-limit`). Toan bo 5 GB van duoc giu lai de doi seed/sample cho cac lan sau.
 
 Tạo thêm dataset tham chiếu an toàn cho vòng tự cải thiện:
 
@@ -376,13 +376,13 @@ Report tu `evaluate` va `self-improve` co dashboard matplotlib (PNG + `plot_data
 - `user_rating.png`: rating proxy 1-5 tu quality score; neu co rating that se ghi ro nguon.
 - `success_error_rate.png`: ty le thanh cong/loi cua tung evaluation run.
 
-Vi du voi dataset 1 GB:
+Vi du voi dataset 5 GB:
 
 ```powershell
-python -m genmusic_vn.cli self-improve --iterations 1 --samples 4000 --eval-count 24 --seed 5602 --extra-dataset datasets/training/diverse_1gb --extra-dataset-limit 60000 --out outputs/self_improve_1gb --duration 30 --stop-score 0.90
+python -m genmusic_vn.cli self-improve --iterations 1 --samples 4000 --eval-count 24 --seed 5602 --extra-dataset datasets/training/diverse_5gb --extra-dataset-limit 60000 --out outputs/self_improve_5gb --duration 30 --stop-score 0.90
 ```
 
-Artifact nam trong `outputs/self_improve_1gb/plots/` va duoc lien ket trong `self_improve_report.json`/`.md`.
+Artifact nam trong `outputs/self_improve_5gb/plots/` va duoc lien ket trong `self_improve_report.json`/`.md`.
 
 Nếu có dataset lyrics/text local bạn có quyền dùng:
 
@@ -417,3 +417,30 @@ python -m unittest discover -s tests -v
 
 - Kaggle API docs: https://www.kaggle.com/docs/api
 - Kaggle API docs: https://www.kaggle.com/docs/api
+
+## Licensed Lyric Sections
+
+The optional crawler collects whole labeled sections, such as one verse or one chorus, from sources that you explicitly approve and whose manifest contains a public-domain, Creative Commons, or user-owned permission marker. It respects `robots.txt`, keeps the source URL and license in every record, limits each section to 24 lines/2,400 characters, and never reconstructs a full song.
+
+Start from the manifest template and replace the placeholder with a source you are legally allowed to use:
+
+```powershell
+python -m genmusic_vn.cli crawl-licensed-lyrics --sources datasets/sources/licensed_lyrics_sources.example.json --out datasets/training/licensed_lyric_sections.jsonl --max-sections 12
+python -m genmusic_vn.cli train-rhyme-profile --dataset datasets/training/licensed_lyric_sections.jsonl --out models/rhyme_profile.json
+```
+
+The crawler output is suitable for `--extra-dataset` when its emotion/style labels are valid, and its `rhyme_features` are used to learn section-level exact endings and vowel assonance. A learned profile is a prior, not a command to force a rhyme when the sentence becomes unnatural.
+
+## Project Telemetry
+
+Evaluation plots describe the model/planning loop. For real app and Kaggle performance, scan `job_state.json` files after jobs finish:
+
+```powershell
+python -m genmusic_vn.cli project-report --source outputs --out outputs/project_report
+```
+
+This creates `project_report.json`/`.md` and plots for real input-to-MP3 latency, Kaggle retry/error/success rates, Kaggle stage timing, and project outcome counts. The web app also exposes the same report at `/api/project/report`.
+
+The lyric planner now uses a repeated short chorus anchor, a full chorus for 24-30 second requests, selective vowel assonance, and varied verse cadences. It does not require lines 1-2, 3-4, 5-6, and so on to share an exact final rhyme.
+
+The user-supplied `Sóng Gió` analysis is stored only as structural/audio features in `datasets/evaluation/reference_song_patterns.jsonl`; the source MP3 and full lyric text remain outside the repository.

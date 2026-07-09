@@ -15,3 +15,4 @@ kaggle/input/
 *.egg-info/
 datasets/training/diverse_30000_train.jsonl
 datasets/training/diverse_1gb/
+datasets/training/diverse_5gb/

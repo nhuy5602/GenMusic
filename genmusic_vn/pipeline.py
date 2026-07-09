@@ -60,7 +60,7 @@ def create_music_project(
     emotion = analyze_emotion(emotion_source)
     harmony = build_harmony(emotion, duration_seconds, genre=positive_genre)
     melody = build_melody_events(generation_text, harmony, duration_seconds)
-    lyrics = rewrite_lyrics(generation_text, emotion, harmony)
+    lyrics = rewrite_lyrics(generation_text, emotion, harmony, duration_seconds=duration_seconds)
     vocal = build_vocal_plan(normalized, emotion, harmony)
     scene = build_scene_plan(emotion_source, emotion)
     prompt, negative_prompt = build_music_prompt(

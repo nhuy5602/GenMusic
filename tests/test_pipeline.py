@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from genmusic_vn.chorus_ablation import evaluate_chorus_ablation_dataset
 from genmusic_vn.dataset_scale import write_large_diverse_dataset
-from genmusic_vn.evaluation import _rhyme_pair_rate, evaluate_dataset, load_eval_dataset
+from genmusic_vn.evaluation import evaluate_dataset, load_eval_dataset
 from genmusic_vn.emotion import analyze_emotion
 from genmusic_vn.kaggle_auto import (
     KaggleJobConfig,
@@ -21,8 +21,14 @@ from genmusic_vn.kaggle_auto import (
     submit_text_to_music_job,
     submit_tts_retry_job,
 )
+from genmusic_vn.licensed_lyric_crawler import (
+    build_rhyme_profile,
+    crawl_licensed_sources,
+    extract_lyric_sections,
+)
 from genmusic_vn.music_theory import chord_notes
 from genmusic_vn.pipeline import create_music_project
+from genmusic_vn.project_metrics import build_project_report
 from genmusic_vn.quality_checks import evaluate_music_result_quality
 from genmusic_vn.reference_dataset import generate_reference_eval_records, generate_reference_training_records
 from genmusic_vn.rhyme import head_tail_rhyme_rate, luc_bat_rhyme_rate, vietnamese_rhyme_profile
@@ -124,7 +130,7 @@ class PipelineTests(unittest.TestCase):
             self.assertTrue(result.vocal.pitch_center)
             self.assertIn(result.vocal.gender, {"female", "male", "duet"})
 
-    def test_non_rhyming_input_is_shaped_into_singable_rhymed_lines(self) -> None:
+    def test_non_rhyming_input_preserves_singable_natural_cadence(self) -> None:
         text = (
             "Tôi mở cửa đi qua thành phố. "
             "Chiếc xe dừng lại dưới ánh đèn. "
@@ -140,8 +146,10 @@ class PipelineTests(unittest.TestCase):
             if line.strip() and not line.startswith("[")
         ]
         self.assertIn("Vietnamese mixed rhyme", result.lyrics.rhyme_scheme)
-        self.assertGreaterEqual(_rhyme_pair_rate(content_lines), 0.75)
         self.assertTrue(all(4 <= len(line.split()) <= 12 for line in content_lines))
+        profile = vietnamese_rhyme_profile(content_lines)
+        self.assertIn("assonance", profile)
+        self.assertGreaterEqual(profile["assonance"], 0.0)
         self.assertIn("lyric rhyme scheme:", result.prompt)
 
     def test_vietnamese_rhyme_schemes_detect_luc_bat_and_head_tail(self) -> None:
@@ -298,6 +306,8 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(job["model"], "genmusic-vn/custom-symbolic-composer")
             self.assertEqual(job["duration_policy"], "soft_target")
             self.assertEqual(job["target_duration_seconds"], 6)
+            self.assertTrue(job["input_received_at"])
+            self.assertEqual(job["retry_count"], 0)
             self.assertEqual(job["tts_voice_actual"], "f5_vietnamese_vivoice_reference")
             self.assertIn("F5-TTS", job["tts_voice_note"])
             request_pack = json.loads((Path(job["dataset_dir"]) / "request.json").read_text(encoding="utf-8"))
@@ -347,6 +357,99 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("normalize=0", kernel_script)
             self.assertIn("anoisesrc", kernel_script)
             self.assertIn("aformat=channel_layouts=stereo", kernel_script)
+
+    def test_project_report_aggregates_input_to_mp3_and_retry_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            first = root / "first" / "kaggle_job"
+            first.mkdir(parents=True)
+            mp3 = first / "first.mp3"
+            mp3.write_bytes(b"fake mp3")
+            (first / "job_state.json").write_text(
+                json.dumps(
+                    {
+                        "run_id": "first",
+                        "status": "complete",
+                        "created_at": "2026-07-10T00:00:00+00:00",
+                        "input_received_at": "2026-07-10T00:00:00+00:00",
+                        "submitted_at": "2026-07-10T00:00:10+00:00",
+                        "mp3_ready_at": "2026-07-10T00:01:00+00:00",
+                        "terminal_at": "2026-07-10T00:01:00+00:00",
+                        "mp3_path": str(mp3),
+                        "dataset_upload_started_at": "2026-07-10T00:00:01+00:00",
+                        "dataset_uploaded_at": "2026-07-10T00:00:05+00:00",
+                        "dataset_ready_at": "2026-07-10T00:00:08+00:00",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            retry = root / "retry" / "kaggle_job"
+            retry.mkdir(parents=True)
+            retry_mp3 = retry / "retry.mp3"
+            retry_mp3.write_bytes(b"fake retry mp3")
+            (retry / "job_state.json").write_text(
+                json.dumps(
+                    {
+                        "run_id": "retry",
+                        "parent_run_id": "first",
+                        "job_kind": "tts_retry",
+                        "retry_count": 1,
+                        "status": "complete",
+                        "input_received_at": "2026-07-10T00:02:00+00:00",
+                        "mp3_ready_at": "2026-07-10T00:02:30+00:00",
+                        "terminal_at": "2026-07-10T00:02:30+00:00",
+                        "mp3_path": str(retry_mp3),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            report = build_project_report(root, output_root=root / "report")
+            self.assertEqual(report["summary"]["requests_needing_retry"], 1)
+            self.assertEqual(report["summary"]["retry_rate"], 1.0)
+            self.assertEqual(report["summary"]["attempt_error_rate"], 0.0)
+            self.assertEqual(report["summary"]["input_to_mp3_seconds_mean"], 60.0)
+            self.assertTrue((root / "report" / "plots" / "input_to_mp3_processing_time.png").exists())
+
+    def test_calibrated_rating_proxy_has_visible_low_and_high_range(self) -> None:
+        from genmusic_vn.quality_checks import _quality_score_to_rating
+
+        self.assertLess(_quality_score_to_rating(0.50), 3.0)
+        self.assertGreater(_quality_score_to_rating(0.90), 4.0)
+
+    def test_licensed_crawler_keeps_whole_labeled_sections_and_provenance(self) -> None:
+        html = """
+        <h2>Verse 1</h2><p>Mưa nghiêng qua khung cửa nhỏ<br>lời chưa nói ngủ trong tim<br>phố quen xa dần trong gió<br>em gọi tên anh lặng im</p>
+        <h2>Chorus</h2><p>Giữ lại câu ca trong tim<br>để ngày mai sáng trên môi</p>
+        """
+        sections = extract_lyric_sections(html)
+        self.assertEqual([item["section_type"] for item in sections], ["verse", "chorus"])
+        self.assertEqual(len(sections[0]["text"].splitlines()), 4)
+        with tempfile.TemporaryDirectory() as temp:
+            dataset_path = Path(temp) / "licensed.jsonl"
+            report = crawl_licensed_sources(
+                [{
+                    "url": "https://example.com/lyrics",
+                    "license": "CC BY 4.0",
+                    "approved": False,
+                }],
+                dataset_path,
+            )
+            self.assertEqual(report["section_count"], 0)
+            self.assertEqual(report["source_results"][0]["status"], "skipped")
+            dataset_path.write_text(
+                json.dumps({
+                    "rhyme_features": {
+                        "end_rhyme_keys": ["im", "oi"],
+                        "assonance_keys": ["im", "oi"],
+                    }
+                }) + "\n",
+                encoding="utf-8",
+            )
+            profile = build_rhyme_profile(dataset_path, Path(temp) / "rhyme_profile.json")
+            self.assertEqual(profile["record_count"], 1)
+            self.assertTrue((Path(temp) / "rhyme_profile.json").exists())
 
     def test_tts_retry_stages_backing_only_kernel_without_musicgen(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -407,6 +510,19 @@ class PipelineTests(unittest.TestCase):
             tense_result = create_music_project(tense_text, output_root=temp, duration_seconds=12, render_audio=False)
         self.assertIn("dark", tense_result.prompt)
         self.assertIn("cinematic", tense_result.prompt)
+
+    def test_longer_generation_uses_repeated_memorable_chorus_without_pair_forcing(self) -> None:
+        result = create_music_project(
+            "Một chiều mưa, tôi nhớ về những con phố cũ và lời hứa chưa kịp nói.",
+            output_root=tempfile.mkdtemp(),
+            duration_seconds=30,
+            render_audio=False,
+        )
+        self.assertIn("Final Chorus", result.lyrics.song_form)
+        self.assertEqual(len(result.lyrics.chorus), 4)
+        self.assertGreaterEqual(result.lyrics.full_song.count(result.lyrics.chorus[0]), 2)
+        self.assertIn("assonance", vietnamese_rhyme_profile(result.lyrics.chorus))
+        self.assertIn("no mandatory adjacent pair rhyme", result.lyrics.rhyme_scheme)
 
         summer_text = "Mùa hè có tiếng cười và sân trường rực nắng."
         summer = analyze_emotion(summer_text)

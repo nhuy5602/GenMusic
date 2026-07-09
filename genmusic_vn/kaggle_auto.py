@@ -51,12 +51,14 @@ def submit_text_to_music_job(
     config: KaggleJobConfig | None = None,
 ) -> dict[str, Any]:
     config = config or KaggleJobConfig()
+    input_received_at = _now()
     state = stage_text_to_music_job(
         text=text,
         output_root=output_root,
         duration_seconds=duration_seconds,
         genre=genre,
         config=config,
+        input_received_at=input_received_at,
     )
     if not config.submit:
         state["status"] = "staged"
@@ -121,6 +123,7 @@ def stage_text_to_music_job(
     duration_seconds: int,
     genre: str | None,
     config: KaggleJobConfig,
+    input_received_at: str | None = None,
 ) -> dict[str, Any]:
     normalized = _normalize_request_text(text)
     if not normalized:
@@ -143,6 +146,7 @@ def stage_text_to_music_job(
     dataset_ref = f"{username}/{dataset_slug}"
     kernel_ref = f"{username}/{kernel_slug}"
 
+    input_received_at = input_received_at or _now()
     request = {
         "run_id": run_id,
         "text": normalized,
@@ -154,7 +158,8 @@ def stage_text_to_music_job(
         "tts_model": DEFAULT_TTS_MODEL,
         "mms_tts_model": DEFAULT_MMS_TTS_MODEL,
         "backend": "custom",
-        "created_at": _now(),
+        "created_at": input_received_at,
+        "input_received_at": input_received_at,
     }
     (run_dir / "request.json").write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
     (dataset_dir / "request.json").write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -203,8 +208,10 @@ def stage_text_to_music_job(
 
     state = {
         "run_id": run_id,
+        "job_kind": "music_generation",
         "status": "staged",
         "created_at": _now(),
+        "input_received_at": input_received_at,
         "kaggle_ready": False,
         "backend": "custom",
         "model": config.model,
@@ -241,6 +248,7 @@ def stage_text_to_music_job(
         "mms_tts_model": DEFAULT_MMS_TTS_MODEL,
         "tts_voice_actual": DEFAULT_TTS_VOICE_ACTUAL,
         "tts_voice_note": DEFAULT_TTS_VOICE_NOTE,
+        "retry_count": 0,
         "commands": commands,
         "messages": ["Kaggle custom composer job files prepared."],
         "last_error": "",
@@ -258,6 +266,7 @@ def stage_text_to_music_job(
 def stage_tts_retry_job(parent_state: dict[str, Any], *, config: KaggleJobConfig) -> dict[str, Any]:
     backing_source = _find_retry_backing_path(parent_state)
     request = _load_retry_request(parent_state)
+    retry_started_at = _now()
     parent_run_id = str(parent_state.get("run_id") or request.get("run_id") or "genmusic-vn")
     retry_run_id = make_retry_run_id(parent_run_id)
     username = resolve_kaggle_username(config.username) or "YOUR_KAGGLE_USERNAME"
@@ -280,6 +289,8 @@ def stage_tts_retry_job(parent_state: dict[str, Any], *, config: KaggleJobConfig
     request["run_id"] = retry_run_id
     request["parent_run_id"] = parent_run_id
     request["backend"] = "tts_retry"
+    request["input_received_at"] = retry_started_at
+    request["retry_requested_at"] = retry_started_at
     request["model"] = parent_state.get("model") or request.get("model") or config.model
     previous_tts_model = request.get("tts_model")
     if previous_tts_model == DEFAULT_MMS_TTS_MODEL:
@@ -348,6 +359,9 @@ def stage_tts_retry_job(parent_state: dict[str, Any], *, config: KaggleJobConfig
         "job_kind": "tts_retry",
         "status": "staged",
         "created_at": _now(),
+        "input_received_at": retry_started_at,
+        "retry_requested_at": retry_started_at,
+        "retry_count": int(parent_state.get("retry_count") or 0) + 1,
         "kaggle_ready": False,
         "backend": "tts_retry",
         "model": request.get("model") or config.model,
@@ -398,6 +412,12 @@ def stage_tts_retry_job(parent_state: dict[str, Any], *, config: KaggleJobConfig
         "downloaded_files": [],
     }
     _write_state(state)
+    parent_state["retry_count"] = max(
+        int(parent_state.get("retry_count") or 0), state["retry_count"]
+    )
+    parent_state["retry_requested_at"] = retry_started_at
+    parent_state["retry_run_id"] = retry_run_id
+    _write_state(parent_state)
     return state
 
 
@@ -415,15 +435,18 @@ def submit_kaggle_job(
         _write_state(state)
         return state
 
+    _set_timestamp(state, "dataset_upload_started_at")
     dataset = _run(cli + ["datasets", "create", "-p", state["dataset_dir"], "-r", "zip"], timeout=600)
     state["history"].append(_history_item("datasets create", dataset))
     if dataset["returncode"] != 0:
         state["status"] = "failed"
         state["last_error"] = _summarize_cli_error(dataset)
         state["messages"].append("Dataset upload failed.")
+        _mark_terminal(state, "failed")
         _write_state(state)
         return state
 
+    _set_timestamp(state, "dataset_uploaded_at")
     state["status"] = "dataset_uploaded"
     state["messages"].append("Raw text request and source uploaded to Kaggle.")
     _write_state(state)
@@ -432,12 +455,14 @@ def submit_kaggle_job(
         _write_state(state)
         return state
 
+    _set_timestamp(state, "kernel_submit_started_at")
     pushed = _run(cli + ["kernels", "push", "-p", state["kernel_dir"]], timeout=600)
     state["history"].append(_history_item("kernels push", pushed))
     if pushed["returncode"] != 0:
         state["status"] = "failed"
         state["last_error"] = _summarize_cli_error(pushed)
         state["messages"].append("Kernel submit failed.")
+        _mark_terminal(state, "failed")
         _write_state(state)
         return state
 
@@ -458,6 +483,7 @@ def submit_kaggle_job(
             time.sleep(max(5, poll_seconds))
         state["status"] = "timeout"
         state["messages"].append("Timed out while waiting for Kaggle job.")
+        _mark_terminal(state, "timeout")
         _write_state(state)
     return state
 
@@ -483,6 +509,7 @@ def refresh_kaggle_job(state_or_path: dict[str, Any] | str | Path) -> dict[str, 
         state["status"] = "failed"
         state["last_error"] = _summarize_cli_error(status)
         state["messages"].append("Could not read Kaggle kernel status.")
+        _mark_terminal(state, "failed")
         _write_state(state)
         return state
 
@@ -494,6 +521,7 @@ def refresh_kaggle_job(state_or_path: dict[str, Any] | str | Path) -> dict[str, 
         _download_kernel_output(state, cli, expect_mp3=False)
         if not state.get("last_error"):
             state["last_error"] = state.get("last_status_output", "")
+        _mark_terminal(state, "failed")
     elif "running" in text:
         state["status"] = "running"
     else:
@@ -840,8 +868,8 @@ def build_duration_plan(request: dict, result) -> dict:
     word_count = sum(len(line.split()) for line in lines)
     section_count = sum(1 for line in result.lyrics.full_song if line.strip().startswith("["))
     is_existing_lyrics = getattr(getattr(result, "text_plan", None), "input_kind", "") == "lyrics"
-    seconds_per_word = 0.56 if is_existing_lyrics else 0.42
-    line_pause = 0.48 if is_existing_lyrics else 0.35
+    seconds_per_word = 0.34 if is_existing_lyrics else 0.27
+    line_pause = 0.52 if is_existing_lyrics else 0.42
     section_pause = 0.45 if is_existing_lyrics else 0.35
     estimated_vocal = word_count * seconds_per_word + max(0, len(lines) - 1) * line_pause + section_count * section_pause
     outro_tail = 2.5 if target <= 30 else 4.0
@@ -932,7 +960,7 @@ def select_tts_lines_for_duration(result, duration_plan: dict) -> list[str]:
         return []
     planned = max(6, int(duration_plan.get("planned_backing_duration_seconds", 30)))
     is_existing_lyrics = getattr(getattr(result, "text_plan", None), "input_kind", "") == "lyrics"
-    seconds_per_word = float(duration_plan.get("tts_seconds_per_word") or (0.56 if is_existing_lyrics else 0.42))
+    seconds_per_word = float(duration_plan.get("tts_seconds_per_word") or (0.34 if is_existing_lyrics else 0.27))
     word_budget = max(18, int(max(6, planned - 4) / seconds_per_word))
     selected: list[str] = []
     used_words = 0
@@ -1060,7 +1088,7 @@ def render_f5_tts_vocal(request: dict, result, duration_plan: dict) -> Path:
         "--gen_text",
         gen_text,
         "--speed",
-        "1.0",
+        "0.86",
         "--vocoder_name",
         "vocos",
         "--vocab_file",
@@ -1431,8 +1459,8 @@ def build_duration_plan(request: dict, result) -> dict:
     word_count = sum(len(line.split()) for line in lines)
     section_count = sum(1 for line in result.lyrics.full_song if line.strip().startswith("["))
     is_existing_lyrics = getattr(getattr(result, "text_plan", None), "input_kind", "") == "lyrics"
-    seconds_per_word = 0.56 if is_existing_lyrics else 0.42
-    line_pause = 0.48 if is_existing_lyrics else 0.35
+    seconds_per_word = 0.34 if is_existing_lyrics else 0.27
+    line_pause = 0.52 if is_existing_lyrics else 0.42
     section_pause = 0.45 if is_existing_lyrics else 0.35
     estimated_vocal = word_count * seconds_per_word + max(0, len(lines) - 1) * line_pause + section_count * section_pause
     outro_tail = 2.5 if target <= 30 else 4.0
@@ -1462,7 +1490,7 @@ def select_tts_lines_for_duration(result, duration_plan: dict) -> list[str]:
         return []
     planned = max(6, int(duration_plan.get("planned_backing_duration_seconds", 30)))
     is_existing_lyrics = getattr(getattr(result, "text_plan", None), "input_kind", "") == "lyrics"
-    seconds_per_word = float(duration_plan.get("tts_seconds_per_word") or (0.56 if is_existing_lyrics else 0.42))
+    seconds_per_word = float(duration_plan.get("tts_seconds_per_word") or (0.34 if is_existing_lyrics else 0.27))
     word_budget = max(18, int(max(6, planned - 4) / seconds_per_word))
     selected: list[str] = []
     used_words = 0
@@ -1537,7 +1565,7 @@ def render_f5_tts_vocal(request: dict, result, duration_plan: dict) -> Path:
         "--gen_text",
         gen_text,
         "--speed",
-        "1.0",
+        "0.86",
         "--vocoder_name",
         "vocos",
         "--vocab_file",
@@ -1829,6 +1857,7 @@ def _wait_for_dataset_ready(
             error = _summarize_cli_error(result)
             if "403" in error or "GetDatasetStatus" in error:
                 state["status"] = "dataset_ready"
+                _set_timestamp(state, "dataset_ready_at")
                 state["dataset_status_warning"] = error
                 _append_message_once(
                     state,
@@ -1845,6 +1874,7 @@ def _wait_for_dataset_ready(
         state["last_dataset_status"] = status_text
         if status_text in {"ready", "complete", "completed"}:
             state["status"] = "dataset_ready"
+            _set_timestamp(state, "dataset_ready_at")
             _append_message_once(state, "Kaggle dataset is ready.")
             _write_state(state)
             return True
@@ -1852,6 +1882,7 @@ def _wait_for_dataset_ready(
             state["status"] = "failed"
             state["last_error"] = result["stdout"] or "Kaggle dataset processing failed."
             _append_message_once(state, "Kaggle dataset processing failed.")
+            _mark_terminal(state, "failed")
             return False
 
         _write_state(state)
@@ -1860,6 +1891,7 @@ def _wait_for_dataset_ready(
     state["status"] = "timeout"
     state["last_error"] = "Timed out while waiting for Kaggle dataset to become ready."
     _append_message_once(state, state["last_error"])
+    _mark_terminal(state, "timeout")
     return False
 
 
@@ -1912,6 +1944,7 @@ def _download_kernel_output(state: dict[str, Any], cli: list[str], *, expect_mp3
     if output_error and not files:
         state["last_error"] = output_error
         _append_message_once(state, "Kaggle output download failed.")
+        _mark_terminal(state, "failed")
         return
     if not state.get("last_error") and not mp3_files:
         state["last_error"] = _summarize_downloaded_logs(files)
@@ -1925,6 +1958,11 @@ def _download_kernel_output(state: dict[str, Any], cli: list[str], *, expect_mp3
         mp3_path = preferred[0] if preferred else mp3_files[0]
         state["mp3_path"] = str(mp3_path)
         state["mp3_url"] = _output_url(state, mp3_path)
+        _set_timestamp(state, "mp3_ready_at")
+        _mark_terminal(state, "complete")
+        state["input_to_mp3_seconds"] = _elapsed_seconds(
+            state.get("input_received_at"), state.get("mp3_ready_at")
+        )
         backend = state.get("generation_backend", "")
         if state.get("custom_model_failed"):
             _append_message_once(state, "Custom composer failed on Kaggle; see custom_model_error.txt.")
@@ -1946,10 +1984,12 @@ def _download_kernel_output(state: dict[str, Any], cli: list[str], *, expect_mp3
         if output_error and not state.get("last_error"):
             state["last_error"] = output_error
         _append_message_once(state, "Kaggle output downloaded, but no MP3 file was found.")
+        _mark_terminal(state, "failed")
     else:
         if output_error and not state.get("last_error"):
             state["last_error"] = output_error
         _append_message_once(state, "Kaggle error log downloaded.")
+        _mark_terminal(state, "failed")
 
 
 def _apply_kaggle_result_metadata(state: dict[str, Any], files: list[Path]) -> None:
@@ -2167,3 +2207,34 @@ def _summarize_cli_error(result: dict[str, Any]) -> str:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _set_timestamp(state: dict[str, Any], key: str) -> str:
+    value = str(state.get(key) or _now())
+    state[key] = value
+    return value
+
+
+def _mark_terminal(state: dict[str, Any], status: str) -> None:
+    now = _now()
+    state["terminal_status"] = status
+    state["terminal_at"] = state.get("terminal_at") or now
+    if status == "complete":
+        state["completed_at"] = state.get("completed_at") or now
+    else:
+        state["failed_at"] = state.get("failed_at") or now
+
+
+def _elapsed_seconds(start: Any, end: Any) -> float | None:
+    if not start or not end:
+        return None
+    try:
+        start_dt = datetime.fromisoformat(str(start).replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(str(end).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=timezone.utc)
+    if end_dt.tzinfo is None:
+        end_dt = end_dt.replace(tzinfo=timezone.utc)
+    return round(max(0.0, (end_dt - start_dt).total_seconds()), 6)
