@@ -38,7 +38,7 @@ VI_ONSETS = (
     "x",
 )
 VIETNAMESE_VOWELS = frozenset("aeiouy")
-DEFAULT_RHYME_PROFILE_PATH = Path(__file__).resolve().parents[1] / "models" / "rhyme_profile.json"
+DEFAULT_RHYME_PROFILE_PATH = Path(__file__).resolve().parents[2] / "models" / "rhyme_profile.json"
 
 
 def strip_accents(text: str) -> str:

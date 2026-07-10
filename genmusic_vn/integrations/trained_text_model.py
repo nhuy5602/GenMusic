@@ -10,11 +10,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .text_utils import extract_keywords, normalize_text, tokenize_words
-from .training_dataset import GENRE_SCENES, style_prompt_for_genre
+from ..core.text_utils import extract_keywords, normalize_text, tokenize_words
+from ..data.training_dataset import GENRE_SCENES, style_prompt_for_genre
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LOCAL_MODEL_PATH = PROJECT_ROOT / "models" / "current" / "genmusic_text_model.json"
 DEFAULT_BOOTSTRAP_MODEL_PATH = PROJECT_ROOT / "datasets" / "trained_models" / "genmusic_text_model.json"
 MODEL_CANDIDATES = [DEFAULT_LOCAL_MODEL_PATH, DEFAULT_BOOTSTRAP_MODEL_PATH]
@@ -46,7 +46,7 @@ def train_text_model(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     usable = [record for record in records if _record_text(record) and record.get("emotion") and record.get("genre_label")]
     if len(usable) < 8:
-        raise ValueError("Need at least 8 labeled training records.")
+        raise ValueError("Cần ít nhất 8 record huấn luyện có nhãn.")
 
     rng = random.Random(seed)
     shuffled = list(usable)

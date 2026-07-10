@@ -6,12 +6,12 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .pipeline import create_music_project
-from .rhyme import section_vietnamese_rhyme_rate, strip_accents
-from .text_utils import extract_lyric_lines, tokenize_words
+from ..core.pipeline import create_music_project
+from ..core.rhyme import section_vietnamese_rhyme_rate, strip_accents
+from ..core.text_utils import extract_lyric_lines, tokenize_words
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CHORUS_ABLATION_DATASET = PROJECT_ROOT / "datasets" / "evaluation" / "chorus_ablation_safe.jsonl"
 GENERATED_PHRASE_GUARDS = {
     "ở lại thêm một lần",

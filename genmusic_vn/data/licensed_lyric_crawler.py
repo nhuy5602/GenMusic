@@ -10,9 +10,9 @@ from typing import Any
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from .rhyme import assonance_key_word, end_pair_assonance_rate, end_pair_rhyme_rate, end_rhyme_key
+from ..core.rhyme import assonance_key_word, end_pair_assonance_rate, end_pair_rhyme_rate, end_rhyme_key
 from .training_dataset import GENRE_SCENES
-from .text_utils import tokenize_words
+from ..core.text_utils import tokenize_words
 
 
 MAX_SECTION_CHARS = 2_400

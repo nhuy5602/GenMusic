@@ -4,7 +4,7 @@ from collections import defaultdict
 
 from .schemas import EmotionProfile
 from .text_utils import extract_keywords, normalize_text, tokenize_words
-from .trained_text_model import predict_text_model
+from ..integrations.trained_text_model import predict_text_model
 
 
 LABELS = {

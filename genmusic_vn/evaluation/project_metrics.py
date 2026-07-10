@@ -137,17 +137,17 @@ def _markdown_report(report: dict[str, Any]) -> str:
     summary = report["summary"]
     plots = report.get("plots", {}).get("files", {})
     lines = [
-        "# GenMusic VN project report",
+        "# Báo cáo project GenMusic VN",
         "",
-        f"- Jobs scanned: `{report['job_count']}`",
-        f"- Requests needing Kaggle retry: `{summary['requests_needing_retry']}`",
-        f"- Retry rate: `{summary['retry_rate']:.2%}`",
-        f"- Attempt error rate: `{summary['attempt_error_rate']:.2%}`",
-        f"- MP3 success rate: `{summary['mp3_success_rate']:.2%}`",
-        f"- Mean input-to-MP3 time: `{summary['input_to_mp3_seconds_mean']:.2f}s`",
-        f"- Median input-to-MP3 time: `{summary['input_to_mp3_seconds_median']:.2f}s`",
+        f"- Số job đã quét: `{report['job_count']}`",
+        f"- Request cần retry Kaggle: `{summary['requests_needing_retry']}`",
+        f"- Tỷ lệ retry: `{summary['retry_rate']:.2%}`",
+        f"- Tỷ lệ lỗi mỗi lần chạy: `{summary['attempt_error_rate']:.2%}`",
+        f"- Tỷ lệ MP3 thành công: `{summary['mp3_success_rate']:.2%}`",
+        f"- Thời gian input tới MP3 trung bình: `{summary['input_to_mp3_seconds_mean']:.2f}s`",
+        f"- Thời gian input tới MP3 trung vị: `{summary['input_to_mp3_seconds_median']:.2f}s`",
         "",
-        "## Plots",
+        "## Biểu đồ",
         "",
     ]
     for name, path in plots.items():

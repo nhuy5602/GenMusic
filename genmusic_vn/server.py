@@ -9,15 +9,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .kaggle_auto import (
+from .integrations.kaggle_auto import (
     DEFAULT_CUSTOM_MUSIC_MODEL,
     KaggleJobConfig,
     refresh_kaggle_job,
     submit_text_to_music_job,
     submit_tts_retry_job,
 )
-from .project_metrics import build_project_report
-from .trained_text_model import trained_model_status
+from .evaluation.project_metrics import build_project_report
+from .integrations.trained_text_model import trained_model_status
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -41,7 +41,7 @@ class GenMusicHandler(BaseHTTPRequestHandler):
         if path.startswith("/outputs/"):
             requested = (OUTPUT_ROOT / unquote(path.removeprefix("/outputs/"))).resolve()
             if not _is_relative_to(requested, OUTPUT_ROOT.resolve()):
-                self._send_json({"error": "Invalid output path."}, HTTPStatus.BAD_REQUEST)
+                self._send_json({"error": "Đường dẫn output không hợp lệ."}, HTTPStatus.BAD_REQUEST)
                 return
             self._send_file(requested)
             return
@@ -53,7 +53,7 @@ class GenMusicHandler(BaseHTTPRequestHandler):
             run_id = (query.get("run_id") or [""])[0]
             state_path = OUTPUT_ROOT / run_id / "kaggle_job" / "job_state.json"
             if not run_id or not state_path.exists():
-                self._send_json({"error": "Kaggle job not found."}, HTTPStatus.NOT_FOUND)
+                self._send_json({"error": "Không tìm thấy job Kaggle."}, HTTPStatus.NOT_FOUND)
                 return
             try:
                 self._send_json(refresh_kaggle_job(state_path))
@@ -66,7 +66,7 @@ class GenMusicHandler(BaseHTTPRequestHandler):
             except Exception as exc:  # pragma: no cover - server boundary
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
-        self._send_json({"error": "Not found."}, HTTPStatus.NOT_FOUND)
+        self._send_json({"error": "Không tìm thấy tài nguyên."}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
@@ -74,12 +74,12 @@ class GenMusicHandler(BaseHTTPRequestHandler):
             self._handle_tts_retry()
             return
         if parsed.path != "/api/generate":
-            self._send_json({"error": "Not found."}, HTTPStatus.NOT_FOUND)
+            self._send_json({"error": "Không tìm thấy tài nguyên."}, HTTPStatus.NOT_FOUND)
             return
 
         if not SUBMISSION_LOCK.acquire(blocking=False):
             self._send_json(
-                {"error": "Another generation request is already being submitted. Please wait for it to finish."},
+                {"error": "Một yêu cầu tạo nhạc khác đang được gửi. Vui lòng chờ hoàn tất."},
                 HTTPStatus.CONFLICT,
             )
             return
@@ -107,7 +107,7 @@ class GenMusicHandler(BaseHTTPRequestHandler):
     def _handle_tts_retry(self) -> None:
         if not SUBMISSION_LOCK.acquire(blocking=False):
             self._send_json(
-                {"error": "Another generation request is already being submitted. Please wait for it to finish."},
+                {"error": "Một yêu cầu tạo nhạc khác đang được gửi. Vui lòng chờ hoàn tất."},
                 HTTPStatus.CONFLICT,
             )
             return
@@ -118,7 +118,7 @@ class GenMusicHandler(BaseHTTPRequestHandler):
             run_id = str(payload.get("run_id", "")).strip()
             state_path = OUTPUT_ROOT / run_id / "kaggle_job" / "job_state.json"
             if not run_id or not state_path.exists():
-                self._send_json({"error": "Kaggle job not found."}, HTTPStatus.NOT_FOUND)
+                self._send_json({"error": "Không tìm thấy job Kaggle."}, HTTPStatus.NOT_FOUND)
                 return
             job = submit_tts_retry_job(
                 state_path,
@@ -147,7 +147,7 @@ class GenMusicHandler(BaseHTTPRequestHandler):
 
     def _send_file(self, path: Path) -> None:
         if not path.exists() or not path.is_file():
-            self._send_json({"error": "File not found."}, HTTPStatus.NOT_FOUND)
+            self._send_json({"error": "Không tìm thấy file."}, HTTPStatus.NOT_FOUND)
             return
         content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
         body = path.read_bytes()
@@ -167,18 +167,18 @@ def _is_relative_to(path: Path, root: Path) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run the GenMusic VN local MP3 client.")
+    parser = argparse.ArgumentParser(description="Chạy web app MP3 local của GenMusic VN.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args(argv)
 
     OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer((args.host, args.port), GenMusicHandler)
-    print(f"GenMusic VN running at http://{args.host}:{args.port}")
+    print(f"GenMusic VN đang chạy tại http://{args.host}:{args.port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("Stopping server.")
+        print("Đã dừng server.")
     finally:
         server.server_close()
     return 0

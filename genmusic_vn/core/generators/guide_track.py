@@ -8,8 +8,8 @@ import subprocess
 import wave
 from pathlib import Path
 
-from genmusic_vn.music_theory import chord_midis, midi_frequency
-from genmusic_vn.schemas import GeneratedFile
+from genmusic_vn.core.music_theory import chord_midis, midi_frequency
+from genmusic_vn.core.schemas import GeneratedFile
 
 from .base import GeneratorInput, MusicGenerator
 
@@ -25,11 +25,11 @@ class GuideTrackGenerator(MusicGenerator):
         render_wav(data, wav_path)
         render_midi(data, midi_path)
         files = [
-            GeneratedFile(kind="backing", path=str(wav_path), description="Custom composer backing WAV"),
-            GeneratedFile(kind="midi", path=str(midi_path), description="Custom composer chord, bass, drum and melody MIDI sketch"),
+            GeneratedFile(kind="backing", path=str(wav_path), description="WAV nhạc nền từ custom composer"),
+            GeneratedFile(kind="midi", path=str(midi_path), description="Phác thảo MIDI chord, bass, drum và melody từ custom composer"),
         ]
         if _convert_to_mp3(wav_path, mp3_path):
-            files.insert(0, GeneratedFile(kind="audio", path=str(mp3_path), description="Custom composer final MP3"))
+            files.insert(0, GeneratedFile(kind="audio", path=str(mp3_path), description="MP3 cuối từ custom composer"))
         return files
 
 

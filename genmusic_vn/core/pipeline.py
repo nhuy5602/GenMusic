@@ -16,7 +16,7 @@ from .scene_planner import build_scene_plan
 from .schemas import GeneratedFile, MusicResult, to_plain_data
 from .text_planner import build_text_plan
 from .text_utils import normalize_text
-from .trained_text_model import predict_text_model, trained_model_status
+from ..integrations.trained_text_model import predict_text_model, trained_model_status
 from .vocal_planner import build_vocal_plan
 
 
@@ -29,7 +29,7 @@ def make_run_id(text: str) -> str:
 def get_generator(backend: str) -> MusicGenerator:
     if backend in {"custom", "guide"}:
         return GuideTrackGenerator()
-    raise ValueError(f"Unsupported backend: {backend}")
+    raise ValueError(f"Backend không được hỗ trợ: {backend}")
 
 
 def create_music_project(
@@ -42,7 +42,7 @@ def create_music_project(
 ) -> MusicResult:
     normalized = normalize_text(text)
     if not normalized:
-        raise ValueError("Input text is empty.")
+        raise ValueError("Văn bản input đang trống.")
     duration_seconds = max(6, min(180, int(duration_seconds)))
 
     run_id = make_run_id(normalized)
@@ -111,11 +111,11 @@ def create_music_project(
 
     prompt_pack_path = run_dir / "prompt_pack.json"
     prompt_pack_path.write_text(json.dumps(_prompt_pack(result), ensure_ascii=False, indent=2), encoding="utf-8")
-    files.append(GeneratedFile(kind="prompt_pack", path=str(prompt_pack_path), description="Kaggle prompt pack"))
+    files.append(GeneratedFile(kind="prompt_pack", path=str(prompt_pack_path), description="Gói prompt Kaggle"))
 
     report_path = run_dir / "report.json"
     report_path.write_text(json.dumps(to_plain_data(result), ensure_ascii=False, indent=2), encoding="utf-8")
-    files.append(GeneratedFile(kind="report", path=str(report_path), description="Full pipeline report"))
+    files.append(GeneratedFile(kind="report", path=str(report_path), description="Báo cáo đầy đủ của pipeline"))
 
     final_result = MusicResult(
         run_id=result.run_id,

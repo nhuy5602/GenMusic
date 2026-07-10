@@ -6,8 +6,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .pipeline import create_music_project
-from .rhyme import (
+from ..core.pipeline import create_music_project
+from ..core.rhyme import (
     end_rhyme_key,
     section_end_pair_rhyme_rate,
     section_head_tail_rhyme_rate,
@@ -15,11 +15,11 @@ from .rhyme import (
     section_vietnamese_rhyme_rate,
     strip_accents,
 )
-from .schemas import MusicResult
-from .text_utils import tokenize_words
+from ..core.schemas import MusicResult
+from ..core.text_utils import tokenize_words
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_EVAL_DATASET = PROJECT_ROOT / "datasets" / "evaluation" / "vi_text_to_music_eval.jsonl"
 ROMANIZED_TEMPLATE_PHRASES = {
     "ngay xua",

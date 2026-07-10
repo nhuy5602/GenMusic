@@ -195,9 +195,9 @@ def _duration_plot(plt: Any, rows: list[dict[str, Any]], output_path: Path, titl
     processing = [float(row.get("processing_time_seconds", 0.0)) for row in rows]
     success = [bool(row.get("success", True)) for row in rows]
     axis.scatter(durations, processing, c=["#2e8b57" if ok else "#c0392b" for ok in success], alpha=0.8)
-    axis.set_title(f"{title_prefix}: input duration vs processing time")
-    axis.set_xlabel("Input duration (seconds)")
-    axis.set_ylabel("Processing time (seconds)")
+    axis.set_title(f"{title_prefix}: thời lượng input và thời gian xử lý")
+    axis.set_xlabel("Thời lượng input (giây)")
+    axis.set_ylabel("Thời gian xử lý (giây)")
     axis.grid(alpha=0.25)
     return _save_plot(plt, figure, output_path / "duration_input_vs_processing_time.png")
 
@@ -212,7 +212,7 @@ def _emotion_bpm_plot(plt: Any, rows: list[dict[str, Any]], output_path: Path, t
             continue
     labels = sorted(grouped)
     if not labels:
-        axis.text(0.5, 0.5, "No BPM data", ha="center", va="center", transform=axis.transAxes)
+        axis.text(0.5, 0.5, "Chưa có dữ liệu BPM", ha="center", va="center", transform=axis.transAxes)
         axis.set_axis_off()
         return _save_plot(plt, figure, output_path / "emotion_vs_bpm.png")
     positions = list(range(len(labels)))
@@ -221,8 +221,8 @@ def _emotion_bpm_plot(plt: Any, rows: list[dict[str, Any]], output_path: Path, t
         values = grouped[label]
         axis.scatter([position] * len(values), values, alpha=0.45, s=18)
     axis.set_xticks(positions, labels, rotation=30, ha="right")
-    axis.set_title(f"{title_prefix}: emotion vs BPM")
-    axis.set_xlabel("Emotion")
+    axis.set_title(f"{title_prefix}: cảm xúc và BPM")
+    axis.set_xlabel("Cảm xúc")
     axis.set_ylabel("BPM")
     axis.grid(axis="y", alpha=0.25)
     return _save_plot(plt, figure, output_path / "emotion_vs_bpm.png")
@@ -234,24 +234,24 @@ def _rating_plot(plt: Any, rows: list[dict[str, Any]], output_path: Path, title_
     if values:
         axis.hist(values, bins=[0.5, 1.5, 2.5, 3.5, 4.5, 5.5], color="#4169e1", rwidth=0.82)
     else:
-        axis.text(0.5, 0.5, "No rating data", ha="center", va="center", transform=axis.transAxes)
+        axis.text(0.5, 0.5, "Chưa có dữ liệu rating", ha="center", va="center", transform=axis.transAxes)
     axis.set_xlim(0.5, 5.5)
     axis.set_xticks(range(1, 6))
-    axis.set_title(f"{title_prefix}: user rating distribution ({source})")
-    axis.set_xlabel("Rating bucket (1-5)")
-    axis.set_ylabel("Number of cases")
+    axis.set_title(f"{title_prefix}: phân bố rating người dùng ({source})")
+    axis.set_xlabel("Mức rating (1-5)")
+    axis.set_ylabel("Số case")
     axis.grid(axis="y", alpha=0.25)
     return _save_plot(plt, figure, output_path / "user_rating.png")
 
 
 def _success_error_plot(plt: Any, rates: dict[str, Any], output_path: Path, title_prefix: str) -> str:
     figure, axis = plt.subplots(figsize=(6, 5))
-    labels = ["success", "error"]
+    labels = ["thành công", "lỗi"]
     values = [float(rates.get("success_rate", 0.0)), float(rates.get("error_rate", 0.0))]
     axis.bar(labels, values, color=["#2e8b57", "#c0392b"])
     axis.set_ylim(0, 1.05)
-    axis.set_title(f"{title_prefix}: success/error rate")
-    axis.set_ylabel("Rate")
+    axis.set_title(f"{title_prefix}: tỷ lệ thành công/lỗi")
+    axis.set_ylabel("Tỷ lệ")
     axis.grid(axis="y", alpha=0.25)
     return _save_plot(plt, figure, output_path / "success_error_rate.png")
 
@@ -352,23 +352,23 @@ def _input_to_mp3_plot(plt: Any, rows: list[dict[str, Any]], output_path: Path) 
     if values:
         axis.bar(range(len(values)), values, color=colors)
     else:
-        axis.text(0.5, 0.5, "No MP3-ready telemetry yet", ha="center", va="center", transform=axis.transAxes)
-    axis.set_title("Project: real input-to-MP3 processing time")
-    axis.set_xlabel("Generation attempt")
-    axis.set_ylabel("Seconds from input received to MP3 ready")
+        axis.text(0.5, 0.5, "Chưa có telemetry MP3 hoàn tất", ha="center", va="center", transform=axis.transAxes)
+    axis.set_title("Project: thời gian thực từ input tới MP3")
+    axis.set_xlabel("Lần tạo nhạc")
+    axis.set_ylabel("Giây từ lúc nhận input tới lúc có MP3")
     axis.grid(axis="y", alpha=0.25)
     return _save_plot(plt, figure, output_path / "input_to_mp3_processing_time.png")
 
 
 def _retry_error_plot(plt: Any, rates: dict[str, Any], output_path: Path) -> str:
     figure, axis = plt.subplots(figsize=(8, 5))
-    labels = ["Retry rate", "Attempt error", "Retry success", "MP3 success"]
+    labels = ["Tỷ lệ retry", "Lỗi lần chạy", "Retry thành công", "MP3 thành công"]
     keys = ["retry_rate", "attempt_error_rate", "retry_success_rate", "mp3_success_rate"]
     values = [float(rates.get(key, 0.0)) for key in keys]
     axis.bar(labels, values, color=["#f39c12", "#c0392b", "#2e8b57", "#4169e1"])
     axis.set_ylim(0, 1.05)
-    axis.set_ylabel("Rate")
-    axis.set_title("Project: Kaggle retry, error and MP3 success rates")
+    axis.set_ylabel("Tỷ lệ")
+    axis.set_title("Project: tỷ lệ retry, lỗi và MP3 thành công trên Kaggle")
     axis.tick_params(axis="x", rotation=20)
     axis.grid(axis="y", alpha=0.25)
     return _save_plot(plt, figure, output_path / "kaggle_retry_error_rate.png")
@@ -376,7 +376,7 @@ def _retry_error_plot(plt: Any, rates: dict[str, Any], output_path: Path) -> str
 
 def _stage_timing_plot(plt: Any, rows: list[dict[str, Any]], output_path: Path) -> str:
     figure, axis = plt.subplots(figsize=(9, 5))
-    labels = ["Dataset upload", "Dataset ready wait", "Kernel to MP3"]
+    labels = ["Upload dataset", "Chờ dataset sẵn sàng", "Kernel tới MP3"]
     keys = ["dataset_upload_seconds", "dataset_ready_wait_seconds", "kernel_to_mp3_seconds"]
     groups: list[list[float]] = []
     for key in keys:
@@ -390,9 +390,9 @@ def _stage_timing_plot(plt: Any, rows: list[dict[str, Any]], output_path: Path) 
         except TypeError:  # Matplotlib < 3.9
             axis.boxplot(box_values, labels=box_labels)
     else:
-        axis.text(0.5, 0.5, "No stage timing telemetry yet", ha="center", va="center", transform=axis.transAxes)
-    axis.set_title("Project: Kaggle stage processing time")
-    axis.set_ylabel("Seconds")
+        axis.text(0.5, 0.5, "Chưa có telemetry thời gian stage", ha="center", va="center", transform=axis.transAxes)
+    axis.set_title("Project: thời gian xử lý từng stage Kaggle")
+    axis.set_ylabel("Giây")
     axis.tick_params(axis="x", rotation=20)
     axis.grid(axis="y", alpha=0.25)
     return _save_plot(plt, figure, output_path / "kaggle_stage_processing_time.png")

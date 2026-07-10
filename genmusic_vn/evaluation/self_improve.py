@@ -6,11 +6,11 @@ from typing import Any
 
 from .evaluation import evaluate_dataset
 from .quality_checks import evaluate_simulated_cases
-from .reference_dataset import generate_reference_eval_records, generate_reference_training_records
+from ..data.reference_dataset import generate_reference_eval_records, generate_reference_training_records
 from .report_plots import generate_evaluation_plots, generate_self_improvement_plots
-from .synthetic_dataset import generate_synthetic_records, write_jsonl
-from .trained_text_model import DEFAULT_LOCAL_MODEL_PATH, train_text_model, write_text_model
-from .training_dataset import (
+from ..data.synthetic_dataset import generate_synthetic_records, write_jsonl
+from ..integrations.trained_text_model import DEFAULT_LOCAL_MODEL_PATH, train_text_model, write_text_model
+from ..data.training_dataset import (
     GENRE_SCENES,
     generate_diverse_training_records,
     load_training_records,
@@ -102,7 +102,7 @@ def run_self_improvement(
             eval_report,
             iter_dir / "plots",
             quality_report=quality_report,
-            title_prefix=f"Iteration {iteration}",
+            title_prefix=f"Vòng lặp {iteration}",
         )
         eval_report_path.write_text(json.dumps(eval_report, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -326,17 +326,17 @@ def _dedupe_values(values: list[str]) -> list[str]:
 
 def _markdown_report(report: dict[str, Any]) -> str:
     lines = [
-        "# GenMusic VN Self-Improve Report",
+        "# Báo cáo tự cải thiện GenMusic VN",
         "",
-        f"- Status: {report['status']}",
-        f"- Iterations run: {report['iterations_run']} / {report['iterations_requested']}",
-        f"- Model path: `{report['model_path']}`",
-        f"- Output root: `{report['output_root']}`",
-        f"- Plot dashboard: `{report.get('plots', {}).get('plot_data_path', '')}`",
+        f"- Trạng thái: {report['status']}",
+        f"- Số vòng đã chạy: {report['iterations_run']} / {report['iterations_requested']}",
+        f"- Đường dẫn model: `{report['model_path']}`",
+        f"- Thư mục output: `{report['output_root']}`",
+        f"- Dashboard plot: `{report.get('plots', {}).get('plot_data_path', '')}`",
         "",
-        "## Scores",
+        "## Điểm số",
         "",
-        "| Iteration | Combined | Text model | Planning | Quality | Emotion acc | Genre acc | Issues |",
+        "| Vòng | Tổng hợp | Text model | Lập kế hoạch | Chất lượng | Đúng cảm xúc | Đúng thể loại | Vấn đề |",
         "|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for item in report["history"]:
@@ -350,17 +350,17 @@ def _markdown_report(report: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "## Plots",
+            "## Biểu đồ",
             "",
             *[
                 f"- {name}: `{path}`"
                 for name, path in report.get("plots", {}).get("files", {}).items()
             ],
             "",
-            "## Notes",
+            "## Ghi chú",
             "",
-            "- The loop uses local training/evaluation so it can run without Kaggle quota.",
-            "- Actual singing vocal still requires Kaggle TTS output; local guide tracks verify backing clarity only.",
+            "- Vòng lặp dùng train/evaluate local nên có thể chạy khi không còn quota Kaggle.",
+            "- Vocal hát thật vẫn cần output TTS Kaggle; guide track local chỉ xác minh độ rõ nhạc nền.",
             f"- {report['copyright_note']}",
             "",
         ]

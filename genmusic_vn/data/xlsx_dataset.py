@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 
-from .text_utils import extract_keywords
+from ..core.text_utils import extract_keywords
 
 
 INPUT_SHEET = "Input_Dataset"
@@ -147,7 +147,7 @@ def _worksheet_path_for_sheet(archive: zipfile.ZipFile, sheet_name: str) -> str:
             if target.startswith("xl/"):
                 return target
             return "xl/" + target
-    raise ValueError(f"Sheet '{sheet_name}' was not found in the workbook.")
+    raise ValueError(f"Không tìm thấy sheet '{sheet_name}' trong workbook.")
 
 
 def _read_sheet_rows(archive: zipfile.ZipFile, worksheet_path: str, shared_strings: list[str]) -> list[list[Any]]:

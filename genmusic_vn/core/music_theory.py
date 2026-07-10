@@ -505,7 +505,7 @@ def note_to_midi(note: str, octave: int = 4) -> int:
 def parse_chord(chord: str) -> tuple[str, str]:
     match = re.match(r"^([A-G](?:#|b)?)(maj7|m7|dim|sus4|m|7)?$", chord)
     if not match:
-        raise ValueError(f"Unsupported chord: {chord}")
+        raise ValueError(f"Chord không được hỗ trợ: {chord}")
     return match.group(1), match.group(2) or ""
 
 

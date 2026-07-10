@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from genmusic_vn.schemas import EmotionProfile, GeneratedFile, HarmonyPlan, LyricDraft, NoteEvent, VocalPlan
+from genmusic_vn.core.schemas import EmotionProfile, GeneratedFile, HarmonyPlan, LyricDraft, NoteEvent, VocalPlan
 
 
 class GeneratorUnavailable(RuntimeError):

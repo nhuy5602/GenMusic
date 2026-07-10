@@ -6,8 +6,8 @@ import wave
 from pathlib import Path
 from typing import Any
 
-from .pipeline import create_music_project
-from .rhyme import (
+from ..core.pipeline import create_music_project
+from ..core.rhyme import (
     natural_rhyme_score,
     section_end_pair_rhyme_rate,
     section_assonance_rate,
@@ -15,8 +15,8 @@ from .rhyme import (
     section_luc_bat_rhyme_rate,
     section_vietnamese_rhyme_rate,
 )
-from .schemas import MusicResult, to_plain_data
-from .text_utils import tokenize_words
+from ..core.schemas import MusicResult, to_plain_data
+from ..core.text_utils import tokenize_words
 
 
 EMOTION_BPM_RANGES = {
@@ -123,9 +123,9 @@ def evaluate_music_result_quality(
         },
         "issues": issues,
         "rating_note": (
-            "Calibrated objective proxy; collect real user ratings for product decisions."
+            "Đây là rating proxy khách quan đã hiệu chỉnh; nên thu thập rating thật trước khi quyết định cho sản phẩm."
             if user_rating_source == "objective_quality_proxy"
-            else "Rating supplied by the user."
+            else "Rating do người dùng cung cấp."
         ),
     }
 
@@ -220,10 +220,10 @@ def _singable_line_rate(lines: list[str]) -> float:
 def _beat_mood_score(emotion: str, bpm: int) -> tuple[float, str]:
     low, high = EMOTION_BPM_RANGES.get(emotion, (64, 128))
     if low <= bpm <= high:
-        return 1.0, f"{bpm} BPM is inside the expected {emotion} range {low}-{high}."
+        return 1.0, f"BPM {bpm} nằm trong khoảng dự kiến của cảm xúc {emotion}: {low}-{high}."
     distance = low - bpm if bpm < low else bpm - high
     score = _clamp(1.0 - distance / 36.0)
-    return score, f"{bpm} BPM is {distance} BPM outside the expected {emotion} range {low}-{high}."
+    return score, f"BPM {bpm} lệch {distance} BPM so với khoảng dự kiến của cảm xúc {emotion}: {low}-{high}."
 
 
 def _vocal_score(result: MusicResult, *, audio_required: bool) -> tuple[float, str]:
@@ -234,15 +234,15 @@ def _vocal_score(result: MusicResult, *, audio_required: bool) -> tuple[float, s
     )
     prompt_demands_clear_vocal = "garbled" in result.negative_prompt.lower() and "wrong-language vocals" in result.negative_prompt.lower()
     if has_vocal_file:
-        return 1.0, "Rendered output includes a vocal artifact."
+        return 1.0, "Output đã render có artifact vocal."
     if audio_required:
         planned = 0.35 if has_vocal_plan else 0.0
-        return planned, "Audio was rendered locally, but no vocal artifact was found; Kaggle TTS is still required for actual vocals."
+        return planned, "Audio đã render local nhưng không có artifact vocal; vẫn cần TTS Kaggle để có giọng hát thật."
     if has_vocal_plan and prompt_demands_clear_vocal:
-        return 0.85, "Vocal is planned and constrained in the prompt; actual TTS was not rendered in this pass."
+        return 0.85, "Vocal đã được lập kế hoạch và ràng buộc trong prompt; lượt này chưa render TTS thật."
     if has_vocal_plan:
-        return 0.65, "Vocal is planned, but prompt constraints are weak."
-    return 0.0, "No vocal plan was found."
+        return 0.65, "Vocal đã được lập kế hoạch nhưng ràng buộc trong prompt còn yếu."
+    return 0.0, "Không tìm thấy kế hoạch vocal."
 
 
 def _audio_clarity_summary(result: MusicResult) -> dict[str, Any]:
@@ -255,7 +255,7 @@ def _audio_clarity_summary(result: MusicResult) -> dict[str, Any]:
         return {
             "score": 0.85,
             "status": "not_rendered",
-            "note": "No WAV artifact was available; treating clarity as planned, not verified.",
+            "note": "Không có artifact WAV; độ rõ chỉ được xem là dự kiến, chưa được xác minh.",
         }
     analyses = [_analyze_wav(path) for path in wav_files]
     score = _mean([item["score"] for item in analyses])

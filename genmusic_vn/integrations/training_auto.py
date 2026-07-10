@@ -23,7 +23,7 @@ from .kaggle_auto import (
     slugify,
 )
 from .trained_text_model import DEFAULT_LOCAL_MODEL_PATH
-from .training_dataset import generate_training_records, load_training_records, write_training_jsonl
+from ..data.training_dataset import generate_training_records, load_training_records, write_training_jsonl
 
 
 QUOTA_MARKERS = ("quota", "usage", "limit", "exceeded", "gpu", "not enough", "capacity")
@@ -49,7 +49,7 @@ def submit_text_model_training_job(
     )
     if not config.submit:
         state["status"] = "staged"
-        state["messages"].append("Text model training job staged locally. Submit is disabled.")
+        state["messages"].append("Job train text model đã được chuẩn bị local. Tắt bước submit.")
         _write_state(state)
         return state
 
@@ -59,7 +59,7 @@ def submit_text_model_training_job(
     _write_state(state)
     if not readiness["ready"]:
         state["status"] = "needs_setup"
-        state["messages"].append("Install/configure Kaggle API, then submit the generated training commands.")
+        state["messages"].append("Hãy cài/cấu hình Kaggle API rồi chạy các lệnh train đã tạo.")
         _write_state(state)
         return state
 
@@ -120,8 +120,8 @@ def stage_text_model_training_job(
                 "title": dataset_slug,
                 "id": dataset_ref,
                 "licenses": [{"name": "other"}],
-                "subtitle": "Vietnamese text-to-music supervised training data for GenMusic VN.",
-                "description": "Synthetic and optional local labeled samples used to train the GenMusic VN text emotion/style model.",
+                "subtitle": "Dataset train có giám sát văn bản tiếng Việt cho GenMusic VN.",
+                "description": "Mẫu tự sinh và mẫu local có nhãn dùng để train model cảm xúc/phong cách văn bản GenMusic VN.",
             },
             ensure_ascii=False,
             indent=2,
@@ -178,7 +178,7 @@ def stage_text_model_training_job(
         "total_record_count": len(training_records),
         "seed": seed,
         "commands": commands,
-        "messages": ["Kaggle text model training files prepared."],
+        "messages": ["Đã chuẩn bị file train text model cho Kaggle."],
         "history": [],
         "downloaded_files": [],
         "last_error": "",
@@ -199,7 +199,7 @@ def submit_training_kaggle_job(
     cli = kaggle_cli_command()
     if cli is None:
         state["status"] = "needs_setup"
-        state["messages"].append("Kaggle CLI was not found.")
+        state["messages"].append("Không tìm thấy Kaggle CLI.")
         _write_state(state)
         return state
 
@@ -209,7 +209,7 @@ def submit_training_kaggle_job(
         return _fail_or_quota(state, dataset, "Dataset upload failed.")
 
     state["status"] = "dataset_uploaded"
-    state["messages"].append("Training dataset uploaded to Kaggle.")
+    state["messages"].append("Đã upload dataset train lên Kaggle.")
     _write_state(state)
     if not _wait_for_dataset_ready(state, cli):
         _write_state(state)
@@ -222,7 +222,7 @@ def submit_training_kaggle_job(
 
     state["status"] = "submitted"
     state["submitted_at"] = _now()
-    state["messages"].append("Kaggle text model training kernel submitted.")
+    state["messages"].append("Đã submit kernel train text model lên Kaggle.")
     _write_state(state)
     if wait:
         deadline = time.time() + timeout_seconds
@@ -232,7 +232,7 @@ def submit_training_kaggle_job(
                 return state
             time.sleep(max(5, poll_seconds))
         state["status"] = "timeout"
-        state["messages"].append("Timed out while waiting for Kaggle text model training.")
+        state["messages"].append("Hết thời gian chờ Kaggle train text model.")
         _write_state(state)
     return state
 
@@ -242,7 +242,7 @@ def refresh_text_model_training_job(state_or_path: dict[str, Any] | str | Path) 
     cli = kaggle_cli_command()
     if cli is None:
         state["status"] = "needs_setup"
-        state["messages"].append("Kaggle CLI was not found.")
+        state["messages"].append("Không tìm thấy Kaggle CLI.")
         _write_state(state)
         return state
 
@@ -251,7 +251,7 @@ def refresh_text_model_training_job(state_or_path: dict[str, Any] | str | Path) 
     text = f"{status['stdout']}\n{status['stderr']}".lower()
     state["last_status_output"] = status["stdout"] or status["stderr"]
     if status["returncode"] != 0:
-        return _fail_or_quota(state, status, "Could not read Kaggle training kernel status.")
+        return _fail_or_quota(state, status, "Không thể đọc trạng thái kernel train Kaggle.")
     if any(marker in text for marker in ["complete", "completed", "succeeded"]):
         state["status"] = "complete"
         _download_training_output(state, cli)
@@ -291,8 +291,8 @@ def _download_training_output(state: dict[str, Any], cli: list[str]) -> None:
         return
     if state.get("status") == "complete":
         state["status"] = "failed"
-    state["last_error"] = _summarize_cli_error(output) or "Kaggle output downloaded, but no genmusic_text_model.json was found."
-    state["messages"].append("Kaggle training output downloaded, but no model artifact was found.")
+    state["last_error"] = _summarize_cli_error(output) or "Đã tải output Kaggle nhưng không tìm thấy genmusic_text_model.json."
+    state["messages"].append("Đã tải output train Kaggle nhưng không tìm thấy artifact model.")
 
 
 def _training_kernel_script(dataset_slug: str) -> str:
@@ -336,8 +336,8 @@ def prepare_source() -> None:
 def main() -> None:
     try:
         prepare_source()
-        from genmusic_vn.trained_text_model import train_text_model, write_text_model
-        from genmusic_vn.training_dataset import load_training_records
+        from genmusic_vn.integrations.trained_text_model import train_text_model, write_text_model
+        from genmusic_vn.data.training_dataset import load_training_records
 
         training_data = find_input_file("training_data.jsonl")
         request_path = find_input_file("training_request.json")
@@ -366,7 +366,7 @@ def _fail_or_quota(state: dict[str, Any], result: dict[str, Any], message: str) 
     state["last_error"] = error
     if _is_quota_error(error):
         state["status"] = "quota_exhausted"
-        state["messages"].append(f"{message} Kaggle quota/capacity appears exhausted.")
+        state["messages"].append(f"{message} Có vẻ quota/capacity Kaggle đã hết.")
     else:
         state["status"] = "failed"
         state["messages"].append(message)

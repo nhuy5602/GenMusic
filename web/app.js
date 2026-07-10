@@ -20,19 +20,19 @@ const DEFAULT_TTS_VOICE = "f5_vietnamese_vivoice_reference";
 const DEFAULT_CUSTOM_MUSIC_MODEL = "genmusic-vn/custom-symbolic-composer";
 
 duration.addEventListener("input", () => {
-  durationValue.textContent = `${duration.value}s target`;
+  durationValue.textContent = `Mục tiêu ${duration.value} giây`;
 });
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (isGenerating) return;
 
-  setGenerating(true, "Submitting...");
-  statusPill.textContent = "Submitting";
+  setGenerating(true, "Đang gửi...");
+  statusPill.textContent = "Đang gửi";
   downloads.innerHTML = "";
   renderWarning(null);
-  audioSlot.textContent = "Waiting for Kaggle custom composer output...";
-  lyricsOutput.textContent = "Preparing lyrics and vocal plan...";
+  audioSlot.textContent = "Đang chờ kết quả custom composer từ Kaggle...";
+  lyricsOutput.textContent = "Đang chuẩn bị lời bài hát và kế hoạch vocal...";
   kaggleJobBox.textContent = "";
 
   const data = {
@@ -50,17 +50,17 @@ form.addEventListener("submit", async (event) => {
     });
     const job = await response.json();
     if (!response.ok || job.error) {
-      throw new Error(job.error || "Could not submit job");
+      throw new Error(job.error || "Không thể gửi job");
     }
     renderJob(job);
-    statusPill.textContent = job.status === "needs_setup" ? "Needs Kaggle" : "Kaggle";
+    statusPill.textContent = job.status === "needs_setup" ? "Cần cấu hình Kaggle" : "Kaggle";
     if (!["needs_setup", "failed", "complete"].includes(job.status)) {
       pollKaggle(job.run_id);
     } else {
       setGenerating(false);
     }
   } catch (error) {
-    statusPill.textContent = "Error";
+    statusPill.textContent = "Lỗi";
     kaggleJobBox.textContent = error.message;
     setGenerating(false);
   }
@@ -72,7 +72,7 @@ downloads.addEventListener("click", async (event) => {
   await retryTts(button.getAttribute("data-retry-tts"));
 });
 
-function setGenerating(active, label = "Generate MP3") {
+function setGenerating(active, label = "Tạo MP3") {
   isGenerating = active;
   generateButton.disabled = active;
   generateButton.classList.toggle("is-loading", active);
@@ -88,36 +88,36 @@ function renderJob(job) {
   const durationCeiling = job.duration_ceiling_seconds || durationPlan.duration_ceiling_seconds;
   const outroTail = job.outro_tail_seconds || durationPlan.outro_tail_seconds;
   const lines = [
-    `Status: ${job.status}`,
-    `Custom model: ${job.model || DEFAULT_CUSTOM_MUSIC_MODEL}`,
+    `Trạng thái: ${formatJobStatus(job.status)}`,
+    `Model custom: ${job.model || DEFAULT_CUSTOM_MUSIC_MODEL}`,
     `TTS: ${job.tts_model || DEFAULT_TTS_MODEL}`,
-    `TTS fallback: ${job.mms_tts_model || DEFAULT_MMS_TTS_MODEL}`,
-    `TTS voice: ${job.tts_voice_actual || DEFAULT_TTS_VOICE}`,
-    `Dataset: ${job.dataset_ref}`,
-    `Kernel: ${job.kernel_ref}`,
+    `TTS dự phòng: ${job.mms_tts_model || DEFAULT_MMS_TTS_MODEL}`,
+    `Giọng TTS: ${job.tts_voice_actual || DEFAULT_TTS_VOICE}`,
+    `Dataset: ${job.dataset_ref || "-"}`,
+    `Kernel: ${job.kernel_ref || "-"}`,
     "",
     ...(job.messages || []),
   ];
   if (targetDuration) {
-    lines.splice(2, 0, `Target duration: ${targetDuration}s (soft)`);
+    lines.splice(2, 0, `Thời lượng mục tiêu: ${targetDuration} giây (mềm)`);
   }
   if (plannedBacking) {
-    lines.splice(targetDuration ? 3 : 2, 0, `Planned backing: ~${plannedBacking}s`);
+    lines.splice(targetDuration ? 3 : 2, 0, `Nhạc nền dự kiến: khoảng ${plannedBacking} giây`);
   }
   if (durationCeiling) {
-    lines.splice(targetDuration || plannedBacking ? 4 : 2, 0, `Soft ceiling: ${durationCeiling}s`);
+    lines.splice(targetDuration || plannedBacking ? 4 : 2, 0, `Giới hạn mềm: ${durationCeiling} giây`);
   }
   if (outroTail) {
-    lines.splice(targetDuration || plannedBacking || durationCeiling ? 5 : 2, 0, `Outro tail: ~${outroTail}s`);
+    lines.splice(targetDuration || plannedBacking || durationCeiling ? 5 : 2, 0, `Đuôi outro: khoảng ${outroTail} giây`);
   }
   if (job.mp3_path) {
     lines.push("", `MP3: ${job.mp3_path}`);
   }
   if (job.last_error) {
-    lines.push("", `Error detail: ${job.last_error}`);
+    lines.push("", `Chi tiết lỗi: ${job.last_error}`);
   }
   if (job.commands?.length && job.status === "needs_setup") {
-    lines.push("", "Run after Kaggle API setup:", ...job.commands);
+    lines.push("", "Chạy các lệnh này sau khi cấu hình Kaggle API:", ...job.commands);
   }
   kaggleJobBox.textContent = lines.join("\n");
   renderAudio(job);
@@ -129,8 +129,8 @@ function renderJob(job) {
 
 async function retryTts(runId) {
   if (!runId) return;
-  setGenerating(true, "Retrying TTS...");
-  statusPill.textContent = "Retry TTS";
+  setGenerating(true, "Đang thử lại TTS...");
+  statusPill.textContent = "Thử lại TTS";
   try {
     const response = await fetch("/api/kaggle/retry-tts", {
       method: "POST",
@@ -139,22 +139,22 @@ async function retryTts(runId) {
     });
     const job = await response.json();
     if (!response.ok || job.error) {
-      throw new Error(job.error || "Could not submit TTS retry");
+      throw new Error(job.error || "Không thể gửi lại job TTS");
     }
     renderJob(job);
     if (!["needs_setup", "failed", "complete"].includes(job.status)) {
-      pollKaggle(job.run_id, "Retrying TTS...");
+      pollKaggle(job.run_id, "Đang thử lại TTS...");
     } else {
       setGenerating(false);
     }
   } catch (error) {
-    statusPill.textContent = "Error";
+    statusPill.textContent = "Lỗi";
     kaggleJobBox.textContent = error.message;
     setGenerating(false);
   }
 }
 
-async function pollKaggle(runId, label = "Generating...") {
+async function pollKaggle(runId, label = "Đang tạo...") {
   const pollId = activePollId + 1;
   activePollId = pollId;
   setGenerating(true, label);
@@ -170,12 +170,12 @@ async function pollKaggle(runId, label = "Generating...") {
       }
       renderJob(job);
       if (job.status === "complete") {
-        statusPill.textContent = "Done";
+        statusPill.textContent = "Hoàn tất";
         setGenerating(false);
         return;
       }
       if (job.status === "failed" || job.status === "needs_setup") {
-        statusPill.textContent = job.status === "needs_setup" ? "Needs Kaggle" : "Error";
+        statusPill.textContent = job.status === "needs_setup" ? "Cần cấu hình Kaggle" : "Lỗi";
         setGenerating(false);
         return;
       }
@@ -189,7 +189,7 @@ async function pollKaggle(runId, label = "Generating...") {
 
 function renderAudio(job) {
   if (!job.mp3_url) {
-    audioSlot.textContent = "MP3 will appear here after the Kaggle job finishes.";
+    audioSlot.textContent = "MP3 sẽ xuất hiện ở đây sau khi job Kaggle hoàn tất.";
     return;
   }
   audioSlot.innerHTML = `<audio controls src="${job.mp3_url}"></audio>`;
@@ -269,19 +269,19 @@ function summarizeError(value) {
 function renderDownloads(job) {
   const links = [];
   if (job.mp3_url) {
-    links.push(`<a href="${job.mp3_url}" download>Download MP3</a>`);
+    links.push(`<a href="${job.mp3_url}" download>Tải MP3</a>`);
   }
   if (job.lyrics_url) {
-    links.push(`<a href="${job.lyrics_url}" download>Download Lyrics</a>`);
+    links.push(`<a href="${job.lyrics_url}" download>Tải lời bài hát</a>`);
   }
   if (job.vocal_url) {
-    links.push(`<a href="${job.vocal_url}" download>Download Vocal WAV</a>`);
+    links.push(`<a href="${job.vocal_url}" download>Tải vocal WAV</a>`);
   }
   if (job.backing_url) {
-    links.push(`<a href="${job.backing_url}" download>Download Backing MP3</a>`);
+    links.push(`<a href="${job.backing_url}" download>Tải nhạc nền MP3</a>`);
   }
   if (canRetryTts(job)) {
-    links.push(`<button type="button" class="download-action" data-retry-tts="${job.run_id}">Retry TTS</button>`);
+    links.push(`<button type="button" class="download-action" data-retry-tts="${job.run_id}">Thử lại TTS</button>`);
   }
   if (!links.length) {
     downloads.innerHTML = "";
@@ -308,24 +308,24 @@ function renderLyrics(job) {
   const vocal = job.vocal_plan || {};
   const scene = job.scene_plan || job.analysis?.scene || {};
   if (Array.isArray(scene.labels) && scene.labels.length) {
-    lines.push(`Scene: ${scene.labels.join(", ")}`);
+    lines.push(`Cảnh: ${scene.labels.join(", ")}`);
     if (Array.isArray(scene.ambience_layers) && scene.ambience_layers.length) {
-      lines.push(`Ambience: ${scene.ambience_layers.join(", ")}`);
+      lines.push(`Không khí: ${scene.ambience_layers.join(", ")}`);
     }
     if (Array.isArray(scene.prompt_cues) && scene.prompt_cues.length) {
-      lines.push(`Prompt cues: ${scene.prompt_cues.slice(0, 4).join(", ")}`);
+      lines.push(`Gợi ý prompt: ${scene.prompt_cues.slice(0, 4).join(", ")}`);
     }
     lines.push("");
   }
   if (Object.keys(vocal).length) {
-    lines.push(`Recommended singer: ${formatVocalGender(vocal.gender)} ${vocal.register || ""}`.trim());
-    lines.push(`Actual TTS voice: ${job.tts_voice_actual || DEFAULT_TTS_VOICE}`);
-    if (job.tts_voice_note) lines.push(`TTS note: ${job.tts_voice_note}`);
-    lines.push(`Pitch: ${vocal.pitch_center || "-"} | Range: ${vocal.range_low || "-"}-${vocal.range_high || "-"}`);
-    if (vocal.delivery) lines.push(`Delivery: ${vocal.delivery}`);
-    if (vocal.intensity) lines.push(`Intensity: ${vocal.intensity}`);
+    lines.push(`Ca sĩ gợi ý: ${formatVocalGender(vocal.gender)} ${vocal.register || ""}`.trim());
+    lines.push(`Giọng TTS thực tế: ${job.tts_voice_actual || DEFAULT_TTS_VOICE}`);
+    if (job.tts_voice_note) lines.push(`Ghi chú TTS: ${job.tts_voice_note}`);
+    lines.push(`Cao độ: ${vocal.pitch_center || "-"} | Âm vực: ${vocal.range_low || "-"}-${vocal.range_high || "-"}`);
+    if (vocal.delivery) lines.push(`Cách hát: ${vocal.delivery}`);
+    if (vocal.intensity) lines.push(`Cường độ: ${vocal.intensity}`);
     if (Array.isArray(vocal.rationale) && vocal.rationale.length) {
-      lines.push(`Reason: ${vocal.rationale.slice(0, 2).join(" ")}`);
+      lines.push(`Lý do: ${vocal.rationale.slice(0, 2).join(" ")}`);
     }
     lines.push("");
   }
@@ -336,14 +336,26 @@ function renderLyrics(job) {
     lines.push(job.lyrics.full_song.join("\n"));
   }
 
-  lyricsOutput.textContent = lines.join("\n").trim() || "Lyrics and vocal plan will appear here after the Kaggle job finishes.";
+  lyricsOutput.textContent = lines.join("\n").trim() || "Lời bài hát và kế hoạch vocal sẽ xuất hiện ở đây sau khi job Kaggle hoàn tất.";
 }
 
 function formatVocalGender(value) {
-  if (value === "female") return "Female";
-  if (value === "male") return "Male";
-  if (value === "duet") return "Duet";
-  return "Auto";
+  if (value === "female") return "Nữ";
+  if (value === "male") return "Nam";
+  if (value === "duet") return "Song ca";
+  return "Tự động";
+}
+
+function formatJobStatus(value) {
+  const labels = {
+    complete: "hoàn tất",
+    failed: "lỗi",
+    needs_setup: "cần cấu hình",
+    submitting: "đang gửi",
+    queued: "đang xếp hàng",
+    running: "đang chạy",
+  };
+  return labels[value] || value || "chưa rõ";
 }
 
 function drawWave(status = "idle") {

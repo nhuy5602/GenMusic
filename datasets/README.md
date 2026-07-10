@@ -1,17 +1,17 @@
-# Dataset Layout
+# Bố Cục Dataset
 
-## Directories
+## Các Thư Mục
 
-- `evaluation/`: JSONL benchmarks and safe evaluation cases.
-- `training/`: generated or licensed training records. Large shard datasets stay local and are ignored by Git.
-- `trained_models/`: the committed bootstrap text-model artifact used when no newer local model exists.
-- `vn_music_stylebank/`: compact music, instrument, genre, and lyric-pattern resources shipped with the pipeline.
-- `sources/`: source manifests only. A manifest must record URL, license, and explicit approval before the crawler can fetch anything.
-- `incoming/`: local-only drop zone for future user-provided ZIP datasets. It is ignored by Git.
+- `evaluation/`: benchmark JSONL và các case đánh giá an toàn.
+- `training/`: record huấn luyện tự sinh hoặc có license. Dataset shard lớn chỉ lưu local và được Git bỏ qua.
+- `trained_models/`: artifact text model bootstrap được commit, dùng khi chưa có model local mới hơn.
+- `vn_music_stylebank/`: tài nguyên gọn về nhạc cụ, thể loại, âm nhạc và mẫu lời được pipeline sử dụng.
+- `sources/`: chỉ chứa manifest nguồn. Manifest phải ghi URL, license và quyền phê duyệt rõ ràng trước khi crawler fetch.
+- `incoming/`: vùng nhận ZIP dataset do người dùng cung cấp, chỉ dùng local và được Git bỏ qua.
 
-## Future Lyric + MP3 ZIP
+## ZIP Lyric Và MP3 Trong Tương Lai
 
-When a licensed collection is available, place the ZIP under `datasets/incoming/` and keep its license/readme alongside the data. The preferred layout is:
+Khi có bộ dữ liệu được cấp phép, đặt ZIP dưới `datasets/incoming/` và giữ license/readme cạnh dữ liệu. Bố cục khuyến nghị:
 
 ```text
 collection.zip
@@ -20,4 +20,4 @@ collection.zip
   audio/<song_id>.mp3
 ```
 
-Each metadata row should include `song_id`, `section_type` (`verse` or `chorus`), `license`, `source`, and the relationship between the lyric section and MP3. Do not mix the collection into the repository root or commit the audio files.
+Mỗi dòng metadata nên có `song_id`, `section_type` (`verse` hoặc `chorus`), `license`, `source` và mối liên hệ giữa section lyric với MP3. Không trộn bộ dữ liệu vào thư mục gốc và không commit file audio.

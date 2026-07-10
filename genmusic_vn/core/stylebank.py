@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 
-STYLEBANK_DIR = Path(__file__).resolve().parents[1] / "datasets" / "vn_music_stylebank"
+STYLEBANK_DIR = Path(__file__).resolve().parents[2] / "datasets" / "vn_music_stylebank"
 
 
 @lru_cache(maxsize=1)
@@ -73,4 +73,3 @@ def _read_json(filename: str) -> dict[str, Any]:
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
-

@@ -5,7 +5,7 @@ Project có hai phần chạy trên Kaggle:
 - train lại `genmusic_text_model.json` từ dataset tiếng Việt tự sinh
 - sinh MP3 bằng custom composer + F5-TTS/MMS-TTS
 
-Luồng demo tự động do `genmusic_vn.kaggle_auto` xử lý:
+Luồng demo tự động do `genmusic_vn.integrations.kaggle_auto` xử lý:
 
 1. Local nhận văn bản tiếng Việt gốc.
 2. Local load trained text model để phân tích emotion/style nếu có artifact.

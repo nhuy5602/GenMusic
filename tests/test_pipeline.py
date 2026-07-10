@@ -8,11 +8,11 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from genmusic_vn.chorus_ablation import evaluate_chorus_ablation_dataset
-from genmusic_vn.dataset_scale import write_large_diverse_dataset
-from genmusic_vn.evaluation import evaluate_dataset, load_eval_dataset
-from genmusic_vn.emotion import analyze_emotion
-from genmusic_vn.kaggle_auto import (
+from genmusic_vn.evaluation.chorus_ablation import evaluate_chorus_ablation_dataset
+from genmusic_vn.data.dataset_scale import write_large_diverse_dataset
+from genmusic_vn.evaluation.evaluation import evaluate_dataset, load_eval_dataset
+from genmusic_vn.core.emotion import analyze_emotion
+from genmusic_vn.integrations.kaggle_auto import (
     KaggleJobConfig,
     kaggle_cli_command,
     load_kaggle_api_tokens,
@@ -21,23 +21,23 @@ from genmusic_vn.kaggle_auto import (
     submit_text_to_music_job,
     submit_tts_retry_job,
 )
-from genmusic_vn.licensed_lyric_crawler import (
+from genmusic_vn.data.licensed_lyric_crawler import (
     build_rhyme_profile,
     crawl_licensed_sources,
     extract_lyric_sections,
 )
-from genmusic_vn.music_theory import chord_notes
-from genmusic_vn.pipeline import create_music_project
-from genmusic_vn.project_metrics import build_project_report
-from genmusic_vn.quality_checks import evaluate_music_result_quality
-from genmusic_vn.reference_dataset import generate_reference_eval_records, generate_reference_training_records
-from genmusic_vn.rhyme import head_tail_rhyme_rate, luc_bat_rhyme_rate, vietnamese_rhyme_profile
-from genmusic_vn.scene_planner import build_scene_plan
-from genmusic_vn.self_improve import run_self_improvement
-from genmusic_vn.stylebank import get_emotion_music, load_stylebank
-from genmusic_vn.synthetic_dataset import generate_synthetic_records, write_jsonl
-from genmusic_vn.trained_text_model import predict_text_model, train_text_model, write_text_model
-from genmusic_vn.training_dataset import generate_diverse_training_records, generate_training_records
+from genmusic_vn.core.music_theory import chord_notes
+from genmusic_vn.core.pipeline import create_music_project
+from genmusic_vn.evaluation.project_metrics import build_project_report
+from genmusic_vn.evaluation.quality_checks import evaluate_music_result_quality
+from genmusic_vn.data.reference_dataset import generate_reference_eval_records, generate_reference_training_records
+from genmusic_vn.core.rhyme import head_tail_rhyme_rate, luc_bat_rhyme_rate, vietnamese_rhyme_profile
+from genmusic_vn.core.scene_planner import build_scene_plan
+from genmusic_vn.evaluation.self_improve import run_self_improvement
+from genmusic_vn.core.stylebank import get_emotion_music, load_stylebank
+from genmusic_vn.data.synthetic_dataset import generate_synthetic_records, write_jsonl
+from genmusic_vn.integrations.trained_text_model import predict_text_model, train_text_model, write_text_model
+from genmusic_vn.data.training_dataset import generate_diverse_training_records, generate_training_records
 
 
 class PipelineTests(unittest.TestCase):
@@ -321,8 +321,8 @@ class PipelineTests(unittest.TestCase):
             with zipfile.ZipFile(source_zip) as archive:
                 names = set(archive.namelist())
             self.assertIn("datasets/vn_music_stylebank/emotion_to_music.json", names)
-            self.assertIn("genmusic_vn/stylebank.py", names)
-            self.assertIn("genmusic_vn/vocal_planner.py", names)
+            self.assertIn("genmusic_vn/core/stylebank.py", names)
+            self.assertIn("genmusic_vn/core/vocal_planner.py", names)
             self.assertTrue((Path(job["kernel_dir"]) / "kernel-metadata.json").exists())
             self.assertEqual(job["tts_model"], "hynt/F5-TTS-Vietnamese-ViVoice")
             self.assertEqual(job["mms_tts_model"], "facebook/mms-tts-vie")
@@ -413,7 +413,7 @@ class PipelineTests(unittest.TestCase):
             self.assertTrue((root / "report" / "plots" / "input_to_mp3_processing_time.png").exists())
 
     def test_calibrated_rating_proxy_has_visible_low_and_high_range(self) -> None:
-        from genmusic_vn.quality_checks import _quality_score_to_rating
+        from genmusic_vn.evaluation.quality_checks import _quality_score_to_rating
 
         self.assertLess(_quality_score_to_rating(0.50), 3.0)
         self.assertGreater(_quality_score_to_rating(0.90), 4.0)
@@ -667,7 +667,7 @@ class PipelineTests(unittest.TestCase):
     def test_self_improvement_loop_runs_one_small_iteration(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             temp_root = Path(temp)
-            with patch("genmusic_vn.self_improve.DEFAULT_LOCAL_MODEL_PATH", temp_root / "default_model.json"):
+            with patch("genmusic_vn.evaluation.self_improve.DEFAULT_LOCAL_MODEL_PATH", temp_root / "default_model.json"):
                 report = run_self_improvement(
                     iterations=1,
                     samples=40,
@@ -804,10 +804,10 @@ class PipelineTests(unittest.TestCase):
             executable.write_text("", encoding="utf-8")
 
             with (
-                patch("genmusic_vn.kaggle_auto.shutil.which", return_value=None),
-                patch("genmusic_vn.kaggle_auto.site.USER_BASE", str(root)),
-                patch("genmusic_vn.kaggle_auto.site.USER_SITE", str(user_site)),
-                patch("genmusic_vn.kaggle_auto.sys.executable", str(root / "python.exe")),
+                patch("genmusic_vn.integrations.kaggle_auto.shutil.which", return_value=None),
+                patch("genmusic_vn.integrations.kaggle_auto.site.USER_BASE", str(root)),
+                patch("genmusic_vn.integrations.kaggle_auto.site.USER_SITE", str(user_site)),
+                patch("genmusic_vn.integrations.kaggle_auto.sys.executable", str(root / "python.exe")),
             ):
                 self.assertEqual(kaggle_cli_command(), [str(executable)])
 
