@@ -1,25 +1,16 @@
 # Dataset
 
-Dataset hiện tại phục vụ trực tiếp DiffRhythm upstream.
+Dataset runtime của model tự code dùng manifest `records.jsonl`:
 
-## Dataset random smoke
-
-```
-random_diffrhythm/
-  train.scp
-  latent/<id>.pt
-  lrc/<id>.pt
-  style/<id>.pt
-  diffrhythm-random.json
-  random_dataset_report.json
+```text
+random_self_diffusion/
+  records.jsonl
+  mels/<id>.pt
+  config.json
+  dataset_report.json
+  validation_report.json
 ```
 
-train.scp có format:
+Mỗi tensor mel có shape `[64, frames]`. Mỗi record chứa `text`, `style`, `mel_path` và `frames`. Dataset random chỉ xác nhận contract và train loop; không đại diện cho chất lượng âm nhạc.
 
-```
-utt_id|lrc_path|latent_path|style_path
-```
-
-Latent random dùng shape [1, 64, T], style [1, 512], LRC là dictionary có time và lrc, đúng contract của dataset/dataset.py upstream.
-
-Không commit audio, checkpoint, tensor lớn hoặc output inference vào Git.
+Không commit audio, checkpoint hoặc tensor lớn vào Git.

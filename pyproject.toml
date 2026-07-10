@@ -1,14 +1,14 @@
 [project]
 name = "genmusic-vn"
 version = "0.1.0"
-description = "Vietnamese text-to-music client orchestrating the official ASLP-lab DiffRhythm model."
+description = "Self-authored Vietnamese text-to-music diffusion model and Kaggle runner."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
 kaggle = ["kaggle"]
-diffrhythm = ["torch", "torchaudio", "torchdiffeq", "x-transformers", "transformers", "librosa", "pyarrow", "pandas", "ema-pytorch", "prefigure", "muq", "mutagen", "phonemizer", "faster-whisper", "matplotlib", "scipy", "bitsandbytes", "kaggle"]
+self = ["torch", "torchaudio", "librosa", "numpy", "scipy", "matplotlib", "kaggle", "faster-whisper", "phonemizer"]
 dev = ["pytest"]
 
 [tool.setuptools.packages.find]

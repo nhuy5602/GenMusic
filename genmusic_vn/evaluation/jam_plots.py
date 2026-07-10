@@ -1,4 +1,4 @@
-"""Academic evaluation plots for objective and subjective metrics."""
+"""Academic evaluation plots for the self-authored music model."""
 
 from __future__ import annotations
 

@@ -4,7 +4,7 @@ const durationValue = document.querySelector("#duration-value");
 const statusPill = document.querySelector("#status-pill");
 const generateButton = document.querySelector("#generate-button");
 const buttonText = generateButton.querySelector(".button-text");
-const kaggleJobBox = document.querySelector("#kaggle-job");
+const jobBox = document.querySelector("#kaggle-job");
 const downloads = document.querySelector("#downloads");
 const audioSlot = document.querySelector("#audio-slot");
 const warningSlot = document.querySelector("#warning-slot");
@@ -13,7 +13,7 @@ const canvas = document.querySelector("#wave-canvas");
 const ctx = canvas.getContext("2d");
 let isGenerating = false;
 let activePollId = 0;
-const MODEL = "ASLP-lab/DiffRhythm-1_2";
+const MODEL = "genmusic-vn-self-diffusion-v1";
 
 duration.addEventListener("input", () => {
   durationValue.textContent = duration.value + " giây";
@@ -26,9 +26,9 @@ form.addEventListener("submit", async (event) => {
   statusPill.textContent = "Đang gửi";
   downloads.innerHTML = "";
   warningSlot.hidden = true;
-  audioSlot.textContent = "Đang chờ DiffRhythm trên Kaggle...";
+  audioSlot.textContent = "Đang chuẩn bị model tự code trên Kaggle...";
   lyricsOutput.textContent = "Đang chuẩn bị LRC...";
-  kaggleJobBox.textContent = "";
+  jobBox.textContent = "";
   try {
     const response = await fetch("/api/generate", {
       method: "POST",
@@ -41,16 +41,13 @@ form.addEventListener("submit", async (event) => {
       }),
     });
     const job = await response.json();
-    if (!response.ok || job.error) throw new Error(job.error || "Không thể gửi job DiffRhythm");
+    if (!response.ok || job.error) throw new Error(job.error || "Không thể gửi job");
     renderJob(job);
-    if (["staged", "submitted", "dataset_uploaded", "running"].includes(job.status)) {
-      pollKaggle(job.run_id);
-    } else {
-      setGenerating(false);
-    }
+    if (["staged", "submitted", "dataset_uploaded", "running"].includes(job.status)) pollKaggle(job.run_id);
+    else setGenerating(false);
   } catch (error) {
     statusPill.textContent = "Lỗi";
-    kaggleJobBox.textContent = error.message;
+    jobBox.textContent = error.message;
     setGenerating(false);
   }
 });
@@ -60,7 +57,7 @@ function setGenerating(active, label) {
   generateButton.disabled = active;
   generateButton.classList.toggle("is-loading", active);
   generateButton.setAttribute("aria-busy", active ? "true" : "false");
-  buttonText.textContent = label || "Tạo bài hát";
+  buttonText.textContent = label || "Tạo bản nhạc";
 }
 
 function renderJob(job) {
@@ -68,15 +65,14 @@ function renderJob(job) {
     "Trạng thái: " + formatStatus(job.status),
     "Backend: " + (job.backend || MODEL),
     "Model: " + (job.model || MODEL),
-    "Thời lượng: " + (job.audio_length || "-") + " giây",
+    "Thời lượng: " + (job.duration_seconds || "-") + " giây",
     "Dataset: " + (job.dataset_ref || "-"),
     "Kernel: " + (job.kernel_ref || "-"),
     "",
     ...(job.messages || []),
   ];
   if (job.last_error) lines.push("", "Lỗi: " + job.last_error);
-  if (job.commands && job.status === "needs_setup") lines.push("", "Lệnh cần chạy:", ...job.commands);
-  kaggleJobBox.textContent = lines.join("\n");
+  jobBox.textContent = lines.join("\n");
   lyricsOutput.textContent = job.lyrics || "LRC đã được tạo trong request.";
   renderAudio(job);
   renderDownloads(job);
@@ -88,7 +84,7 @@ function renderJob(job) {
 
 function renderAudio(job) {
   const audioUrl = job.mp3_url || job.wav_url;
-  audioSlot.innerHTML = audioUrl ? '<audio controls src="' + audioUrl + '"></audio>' : "Audio sẽ xuất hiện sau khi job DiffRhythm hoàn tất.";
+  audioSlot.innerHTML = audioUrl ? '<audio controls src="' + audioUrl + '"></audio>' : "Audio sẽ xuất hiện sau khi job hoàn tất.";
 }
 
 function renderDownloads(job) {
@@ -99,18 +95,9 @@ function renderDownloads(job) {
   downloads.innerHTML = links.join("");
 }
 
-function renderWarning(job) {
-  if (!job || !job.last_error) {
-    warningSlot.hidden = true;
-    return;
-  }
-  warningSlot.hidden = false;
-  warningSlot.textContent = job.last_error;
-}
-
 async function pollKaggle(runId) {
   const pollId = ++activePollId;
-  setGenerating(true, "Đang tạo...");
+  setGenerating(true, "Đang train và tạo...");
   for (let index = 0; index < 120; index += 1) {
     await new Promise((resolve) => setTimeout(resolve, 15000));
     if (pollId !== activePollId) return;
@@ -119,14 +106,13 @@ async function pollKaggle(runId) {
       const job = await response.json();
       if (!response.ok || job.error) throw new Error(job.error || "Không đọc được trạng thái job");
       renderJob(job);
-      renderWarning(job);
       if (["complete", "failed", "needs_setup"].includes(job.status)) {
         setGenerating(false);
         return;
       }
     } catch (error) {
       statusPill.textContent = "Lỗi";
-      kaggleJobBox.textContent = error.message;
+      jobBox.textContent = error.message;
       setGenerating(false);
       return;
     }
@@ -135,15 +121,7 @@ async function pollKaggle(runId) {
 }
 
 function formatStatus(value) {
-  const labels = {
-    complete: "hoàn tất",
-    failed: "lỗi",
-    needs_setup: "cần cấu hình Kaggle",
-    staged: "đã stage",
-    submitted: "đã submit",
-    running: "đang chạy",
-    dataset_uploaded: "đã tải dataset",
-  };
+  const labels = {complete: "hoàn tất", failed: "lỗi", needs_setup: "cần cấu hình Kaggle", staged: "đã stage", submitted: "đã submit", running: "đang chạy", dataset_uploaded: "đã tải dataset"};
   return labels[value] || value || "chưa rõ";
 }
 

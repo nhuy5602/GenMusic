@@ -1,5 +1,5 @@
-"""Model integration is delegated to the official DiffRhythm checkout."""
+"""Self-authored generative music models."""
 
-from ..integrations.diffrhythm_official import DiffRhythmConfig, DiffRhythmError, ensure_official_checkout, run_official_inference
+from .text_to_music_diffusion import MusicDiffusionConfig, generate_audio, load_checkpoint, make_model, sample_mel
 
-__all__ = ["DiffRhythmConfig", "DiffRhythmError", "ensure_official_checkout", "run_official_inference"]
+__all__ = ["MusicDiffusionConfig", "generate_audio", "load_checkpoint", "make_model", "sample_mel"]

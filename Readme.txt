@@ -1,26 +1,23 @@
-GenMusic VN dùng snapshot DiffRhythm đã vendor trong third_party/DiffRhythm, không clone GitHub lúc chạy.
+GenMusic VN là model text-to-music conditional diffusion tự code.
 
 Cài đặt:
-  pip install -e ".[diffrhythm]"
+  pip install -e ".[self]"
 
-Chạy web:
+Tạo dataset và train:
+  python -m genmusic_vn.cli make-random-dataset --out datasets/random_self_diffusion --count 16 --frames 128
+  python -m genmusic_vn.cli train-self --dataset datasets/random_self_diffusion --checkpoint outputs/self_music.pt --epochs 1 --batch-size 4
+
+Sinh local:
+  python -m genmusic_vn.cli generate-local --text "Mưa rơi nhẹ nhàng, em còn nhớ con đường xưa." --style "Vietnamese pop ballad, warm piano" --duration 4 --checkpoint outputs/self_music.pt --out outputs/local_self_music
+
+Stage Kaggle:
+  python -m genmusic_vn.cli generate --text "Một ngày mới bắt đầu." --duration 12 --no-submit
+
+Web:
   python -m genmusic_vn.server --port 8000
   http://127.0.0.1:8000
 
-Stage job DiffRhythm:
-  python -m genmusic_vn.cli generate --text "Một đêm mưa, em còn nhớ con đường cũ." --duration 95 --no-submit
+Đánh giá:
+  python -m genmusic_vn.cli evaluate-self --generated outputs/local_self_music/final.wav --out outputs/self_evaluation
 
-Tạo random dataset đúng format upstream:
-  python -m genmusic_vn.cli make-random-diffrhythm-dataset --out datasets/random_diffrhythm --count 4 --max-frames 64
-  python -m genmusic_vn.cli validate-diffrhythm-dataset --dataset datasets/random_diffrhythm
-
-Train official train/train.py:
-  python -m genmusic_vn.cli train-diffrhythm --dataset datasets/random_diffrhythm --epochs 1 --batch-size 1
-
-Inference local:
-  python -m genmusic_vn.cli generate-local-diffrhythm --lyrics data/song.txt --style "Vietnamese pop ballad, piano" --duration 95 --out outputs/local_diffrhythm
-
-Đánh giá khách quan, bỏ qua MOS:
-  python -m genmusic_vn.cli evaluate-diffrhythm --generated outputs/generated.wav --out outputs/diffrhythm_evaluation
-
-Nếu máy thiếu torch/torchaudio thì chạy random train trên Kaggle GPU. Project không dùng custom Transformer, classifier, symbolic composer hoặc TTS add-on làm pipeline chính.
+Model random chỉ dùng smoke test. Muốn cải thiện chất lượng cần train trên dataset audio/mel và lyric có quyền sử dụng.

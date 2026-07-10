@@ -10,9 +10,8 @@ kaggle.json
 .kaggle_runtime_home/
 outputs/
 models/
-# The upstream DiffRhythm source is vendored for reproducible demos.
 datasets/processed/
-datasets/random_diffrhythm/
+datasets/random_self_diffusion/
 kaggle/working/
 kaggle/input/
 datasets/incoming/

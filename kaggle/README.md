@@ -1,20 +1,26 @@
 # Kaggle
 
-Kaggle là môi trường chạy chính cho DiffRhythm vì upstream yêu cầu PyTorch, torchaudio, MuQ, phonemizer và GPU.
+Kaggle là môi trường GPU để chạy trainer và inference của model conditional diffusion tự code.
 
-Job genmusic-vn.cli generate sẽ:
-1. tạo private dataset chứa lyric LRC và request;
-2. tạo kernel GPU;
-3. giải nén source zip vendor vào `/kaggle/working/GenMusic`;
-4. cài `third_party/DiffRhythm/requirements.txt`;
-5. chạy infer/infer.py với checkpoint ASLP-lab/DiffRhythm-1_2;
-6. tải WAV/MP3 về outputs/<run_id>/kaggle_job/downloaded_output.
+Job `genmusic-vn.cli generate` sẽ:
 
-Train random smoke:
+1. Tạo dataset private gồm request, LRC và source project.
+2. Tạo kernel GPU.
+3. Cài dependency Python từ package index.
+4. Tạo dataset random để smoke train.
+5. Train checkpoint self-diffusion.
+6. Sinh WAV/MP3 từ lyric và style prompt.
+
+Stage job:
 
 ```powershell
-python -m genmusic_vn.cli make-random-diffrhythm-dataset --out datasets/random_diffrhythm --count 4 --max-frames 64
-python -m genmusic_vn.cli train-diffrhythm --dataset datasets/random_diffrhythm --epochs 1 --batch-size 1
+python -m genmusic_vn.cli generate --text "Một ngày mới bắt đầu." --duration 12 --no-submit
 ```
 
-Nếu random .pt không tạo được tại Windows vì thiếu torch, tạo dataset ở một kernel Kaggle có torch sẵn rồi chạy official train/train.py.
+Submit và chờ:
+
+```powershell
+python -m genmusic_vn.cli generate --text "Một ngày mới bắt đầu." --duration 12 --wait
+```
+
+Kaggle cần `KAGGLE_USERNAME`, `KAGGLE_KEY` và CLI tương ứng. Dataset random cần được thay bằng dữ liệu audio/mel có quyền sử dụng để model học được chất lượng thực.

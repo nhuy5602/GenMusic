@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .integrations.kaggle_auto import DEFAULT_DIFFRHYTHM_MODEL, KaggleJobConfig, refresh_kaggle_job, submit_text_to_music_job
+from .integrations.kaggle_auto import DEFAULT_MODEL, KaggleJobConfig, refresh_kaggle_job, submit_text_to_music_job
 from .evaluation.project_metrics import build_project_report
 
 
@@ -39,7 +39,7 @@ class GenMusicHandler(BaseHTTPRequestHandler):
             self._send_file(requested)
             return
         if path == "/api/health":
-            self._send_json({"status": "ok", "backend": "ASLP-lab/DiffRhythm", "model": DEFAULT_DIFFRHYTHM_MODEL, "text_model": {"status": "not-used-by-generation"}})
+            self._send_json({"status": "ok", "backend": "genmusic-vn-self-diffusion", "model": DEFAULT_MODEL, "generator": "conditional-diffusion"})
             return
         if path == "/api/kaggle/status":
             query = parse_qs(parsed.query)
@@ -83,7 +83,7 @@ class GenMusicHandler(BaseHTTPRequestHandler):
                 duration_seconds=int(payload.get("duration_seconds", 30)),
                 genre=payload.get("genre") or None,
                 config=KaggleJobConfig(
-                    model=payload.get("model") or DEFAULT_DIFFRHYTHM_MODEL,
+                    model=payload.get("model") or DEFAULT_MODEL,
                     submit=True,
                     wait=False,
                 ),

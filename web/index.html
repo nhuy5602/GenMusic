@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>GenMusic VN | DiffRhythm</title>
+    <title>GenMusic VN | Self Diffusion</title>
     <link rel="stylesheet" href="/web/app.css" />
   </head>
   <body>
@@ -13,19 +13,19 @@
           <div class="brand-row">
             <div>
               <h1>GenMusic VN</h1>
-              <p>ASLP-lab/DiffRhythm: sinh bài hát có nhạc và vocal từ lyric tiếng Việt</p>
+              <p>Model conditional diffusion tự code cho text-to-music tiếng Việt</p>
             </div>
             <div class="status-pill" id="status-pill">Sẵn sàng</div>
           </div>
 
-          <label for="text">Lời bài hát hoặc ý tưởng</label>
+          <label for="text">Lyric hoặc ý tưởng âm nhạc</label>
           <textarea id="text" name="text" rows="12">Một chiều mưa, tôi nhớ về những con phố cũ. Có lời hứa chưa kịp nói, có ánh đèn vẫn chờ trong tim.</textarea>
 
           <div class="control-grid">
             <label>
-              Thời lượng DiffRhythm
-              <input id="duration" type="range" min="95" max="285" step="1" value="95" />
-              <span id="duration-value">95 giây</span>
+              Thời lượng
+              <input id="duration" type="range" min="4" max="120" step="1" value="12" />
+              <span id="duration-value">12 giây</span>
             </label>
             <label>
               Phong cách
@@ -34,23 +34,21 @@
           </div>
 
           <button id="generate-button" class="primary-button" type="submit" aria-busy="false">
-            <span class="button-text">Tạo bài hát</span>
+            <span class="button-text">Tạo bản nhạc</span>
             <span class="button-loader" aria-hidden="true"></span>
           </button>
         </form>
 
         <section class="result-panel" aria-live="polite">
-          <div class="visualizer">
-            <canvas id="wave-canvas" width="960" height="180"></canvas>
-          </div>
-          <div id="audio-slot" class="audio-slot">Audio sẽ xuất hiện sau khi job DiffRhythm hoàn tất.</div>
+          <div class="visualizer"><canvas id="wave-canvas" width="960" height="180"></canvas></div>
+          <div id="audio-slot" class="audio-slot">Audio sẽ xuất hiện sau khi model hoàn tất.</div>
           <div id="warning-slot" class="warning-slot" hidden></div>
           <article>
             <h2>Lyric đã gửi</h2>
             <pre id="lyrics-output">Lyric và timestamp LRC sẽ hiển thị ở đây.</pre>
           </article>
           <article>
-            <h2>Job DiffRhythm</h2>
+            <h2>Thông tin job</h2>
             <pre id="kaggle-job"></pre>
           </article>
           <div id="downloads" class="downloads"></div>

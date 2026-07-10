@@ -1,4 +1,5 @@
-"""Kaggle automation for the official ASLP-lab/DiffRhythm backend."""
+"""Local and Kaggle orchestration for the self-authored music model."""
+
 from __future__ import annotations
 
 import json
@@ -16,24 +17,22 @@ from hashlib import sha1
 from pathlib import Path
 from typing import Any
 
-from ..data.lyric_alignment import write_lrc
+from ..data.lyric_alignment import AlignedLine, write_lrc
 from ..data.vietnamese_text import normalize_vietnamese_lyrics
-from .diffrhythm_official import DEFAULT_MODEL_REF, OFFICIAL_REPO_COMMIT, OFFICIAL_REPO_URL, make_lrc_for_diff_rhythm
+from ..models.text_to_music_diffusion import MusicDiffusionConfig, generate_audio, load_checkpoint, make_model
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DIFFRHYTHM_MODEL = "ASLP-lab/DiffRhythm-1_2"
-DEFAULT_CUSTOM_MUSIC_MODEL = DEFAULT_DIFFRHYTHM_MODEL
-DEFAULT_OFFICIAL_REPO_COMMIT = OFFICIAL_REPO_COMMIT
+DEFAULT_MODEL = "genmusic-vn-self-diffusion-v1"
 
 
-class KaggleAutoError(RuntimeError):
+class SelfMusicError(RuntimeError):
     pass
 
 
 @dataclass(frozen=True)
 class KaggleJobConfig:
-    model: str = DEFAULT_DIFFRHYTHM_MODEL
+    model: str = DEFAULT_MODEL
     username: str | None = None
     machine_shape: str = "NvidiaTeslaT4"
     submit: bool = True
@@ -42,30 +41,46 @@ class KaggleJobConfig:
     timeout_seconds: int = 21_600
 
 
-def submit_text_to_music_job(*, text: str, output_root: str | Path = "outputs", duration_seconds: int = 95, genre: str | None = None, config: KaggleJobConfig | None = None) -> dict[str, Any]:
-    config = config or KaggleJobConfig()
-    state = stage_text_to_music_job(text=text, output_root=output_root, duration_seconds=duration_seconds, genre=genre, config=config)
-    if not config.submit:
-        state["status"] = "staged"
-        state["messages"].append("Đã stage job DiffRhythm; chưa submit Kaggle.")
-        _write_state(state)
-        return state
-    readiness = kaggle_readiness(config.username)
-    state["kaggle_ready"] = readiness["ready"]
-    state["messages"].extend(readiness["messages"])
-    if not readiness["ready"]:
-        state["status"] = "needs_setup"
-        _write_state(state)
-        return state
-    return submit_kaggle_job(state, wait=config.wait, poll_seconds=config.poll_seconds, timeout_seconds=config.timeout_seconds)
+def run_local_generation(*, text: str, style: str, output_dir: str | Path, duration_seconds: float, checkpoint: str | Path | None = None, steps: int = 6, seed: int = 5602, device: str | None = None) -> dict[str, Any]:
+    normalized = normalize_vietnamese_lyrics(text).strip()
+    if not normalized:
+        raise SelfMusicError("Văn bản input đang trống.")
+    destination = Path(output_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    selected_device = device or _default_device()
+    if checkpoint and Path(checkpoint).exists():
+        model, config, payload = load_checkpoint(checkpoint, device=selected_device)
+        checkpoint_path = str(Path(checkpoint).resolve())
+        checkpoint_epoch = payload.get("epoch", 0)
+    else:
+        config = MusicDiffusionConfig()
+        model = make_model(config).to(selected_device)
+        checkpoint_path = ""
+        checkpoint_epoch = 0
+    report = generate_audio(
+        model,
+        normalized,
+        style or "Vietnamese pop, warm piano, clear melody",
+        destination / "final.wav",
+        duration_seconds=max(1.0, float(duration_seconds)),
+        config=config,
+        device=selected_device,
+        steps=max(1, int(steps)),
+        seed=int(seed),
+    )
+    report.update({"text": normalized, "style": style, "checkpoint": checkpoint_path, "checkpoint_epoch": checkpoint_epoch, "device": selected_device})
+    mp3_path = _convert_to_mp3(Path(report["audio_path"]))
+    if mp3_path:
+        report["mp3_path"] = str(mp3_path)
+    (destination / "generation_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return report
 
 
 def stage_text_to_music_job(*, text: str, output_root: str | Path, duration_seconds: int, genre: str | None, config: KaggleJobConfig, input_received_at: str | None = None) -> dict[str, Any]:
     normalized = normalize_vietnamese_lyrics(text).strip()
     if not normalized:
         raise ValueError("Văn bản input đang trống.")
-    requested_duration = max(1, int(duration_seconds))
-    audio_length = 95 if requested_duration <= 95 else min(285, requested_duration)
+    requested_duration = max(1, min(120, int(duration_seconds)))
     run_id = make_run_id(normalized)
     username = resolve_kaggle_username(config.username) or "YOUR_KAGGLE_USERNAME"
     run_dir = Path(output_root) / run_id
@@ -75,44 +90,40 @@ def stage_text_to_music_job(*, text: str, output_root: str | Path, duration_seco
     download_dir = job_dir / "downloaded_output"
     for path in (dataset_dir, kernel_dir, download_dir):
         path.mkdir(parents=True, exist_ok=True)
-    dataset_slug = slugify(f"genmusic-vn-diffrhythm-{run_id}", max_length=48)
-    kernel_slug = slugify(f"genmusic-vn-diffrhythm-kernel-{run_id}", max_length=48)
+    dataset_slug = slugify(f"genmusic-self-diffusion-{run_id}", max_length=48)
+    kernel_slug = slugify(f"genmusic-self-diffusion-kernel-{run_id}", max_length=48)
     dataset_ref = f"{username}/{dataset_slug}"
     kernel_ref = f"{username}/{kernel_slug}"
     received = input_received_at or _now()
-    style_prompt = genre or "Vietnamese pop ballad, warm piano, emotional strings, clear vocal melody"
+    style_prompt = genre or "Vietnamese pop ballad, warm piano, emotional strings, clear melody"
     request = {
         "run_id": run_id,
         "text": normalized,
         "lyrics": normalized,
-        "duration_seconds_requested": requested_duration,
-        "audio_length": audio_length,
-        "genre": genre or "Vietnamese pop ballad",
+        "duration_seconds": requested_duration,
         "style_prompt": style_prompt,
-        "model": config.model or DEFAULT_MODEL_REF,
-        "backend": "ASLP-lab/DiffRhythm",
-        "official_repo": OFFICIAL_REPO_URL,
-        "official_repo_commit": DEFAULT_OFFICIAL_REPO_COMMIT,
-        "official_repo_source": "vendored:third_party/DiffRhythm",
+        "model": config.model or DEFAULT_MODEL,
+        "backend": "genmusic-vn-self-diffusion",
+        "source": "project-local",
         "input_received_at": received,
         "created_at": _now(),
     }
     (run_dir / "request.json").write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
     (dataset_dir / "request.json").write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
-    write_lrc(make_lrc_for_diff_rhythm(normalized, audio_length), dataset_dir / "lyrics.lrc")
+    write_lrc(_make_lrc(normalized, requested_duration), dataset_dir / "lyrics.lrc")
     _write_source_zip(dataset_dir / "genmusic_vn_source.zip")
-    (dataset_dir / "dataset-metadata.json").write_text(json.dumps({"title": dataset_slug, "id": dataset_ref, "licenses": [{"name": "other"}], "subtitle": "Input LRC và request cho DiffRhythm.", "description": "Private request dataset for official ASLP-lab/DiffRhythm inference."}, ensure_ascii=False, indent=2), encoding="utf-8")
-    (kernel_dir / "run_diffrhythm.py").write_text(_kernel_script(dataset_slug), encoding="utf-8")
-    (kernel_dir / "kernel-metadata.json").write_text(json.dumps({"id": kernel_ref, "title": kernel_slug, "code_file": "run_diffrhythm.py", "language": "python", "kernel_type": "script", "is_private": "true", "enable_gpu": "true", "enable_internet": "true", "machine_shape": config.machine_shape, "dataset_sources": [dataset_ref], "competition_sources": [], "kernel_sources": [], "model_sources": []}, ensure_ascii=False, indent=2), encoding="utf-8")
+    (dataset_dir / "dataset-metadata.json").write_text(json.dumps({"title": dataset_slug, "id": dataset_ref, "licenses": [{"name": "other"}], "subtitle": "Request cho model GenMusic tự code.", "description": "Private request dataset for the self-authored GenMusic diffusion model."}, ensure_ascii=False, indent=2), encoding="utf-8")
+    (kernel_dir / "run_genmusic.py").write_text(_kernel_script(dataset_slug), encoding="utf-8")
+    (kernel_dir / "kernel-metadata.json").write_text(json.dumps({"id": kernel_ref, "title": kernel_slug, "code_file": "run_genmusic.py", "language": "python", "kernel_type": "script", "is_private": "true", "enable_gpu": "true", "enable_internet": "true", "machine_shape": config.machine_shape, "dataset_sources": [dataset_ref], "competition_sources": [], "kernel_sources": [], "model_sources": []}, ensure_ascii=False, indent=2), encoding="utf-8")
     commands = _commands(dataset_dir, kernel_dir, download_dir, kernel_ref)
     (job_dir / "run_commands.ps1").write_text("\n".join(commands) + "\n", encoding="utf-8")
     state = {
         "run_id": run_id,
-        "job_kind": "diffrhythm_generation",
+        "job_kind": "self_diffusion_generation",
         "status": "staged",
         "created_at": _now(),
         "input_received_at": received,
-        "backend": "ASLP-lab/DiffRhythm",
+        "backend": "genmusic-vn-self-diffusion",
         "model": request["model"],
         "lyrics": normalized,
         "dataset_ref": dataset_ref,
@@ -123,17 +134,33 @@ def stage_text_to_music_job(*, text: str, output_root: str | Path, duration_seco
         "kernel_dir": str(kernel_dir),
         "download_dir": str(download_dir),
         "state_path": str(job_dir / "job_state.json"),
-        "audio_length": audio_length,
-        "duration_seconds_requested": requested_duration,
+        "duration_seconds": requested_duration,
         "commands": commands,
-        "messages": ["Đã chuẩn bị request DiffRhythm chính thức; model sẽ tự tải trên Kaggle."],
+        "messages": ["Đã đóng gói source model tự code; chưa submit Kaggle."],
         "history": [],
-        "generation_backend": "ASLP-lab/DiffRhythm",
+        "generation_backend": "genmusic-vn-self-diffusion",
         "downloaded_files": [],
         "last_error": "",
     }
     _write_state(state)
     return state
+
+
+def submit_text_to_music_job(*, text: str, output_root: str | Path = "outputs", duration_seconds: int = 12, genre: str | None = None, config: KaggleJobConfig | None = None) -> dict[str, Any]:
+    config = config or KaggleJobConfig()
+    state = stage_text_to_music_job(text=text, output_root=output_root, duration_seconds=duration_seconds, genre=genre, config=config)
+    if not config.submit:
+        state["messages"].append("Đã stage job self-diffusion; chưa submit Kaggle.")
+        _write_state(state)
+        return state
+    readiness = kaggle_readiness(config.username)
+    state["kaggle_ready"] = readiness["ready"]
+    state["messages"].extend(readiness["messages"])
+    if not readiness["ready"]:
+        state["status"] = "needs_setup"
+        _write_state(state)
+        return state
+    return submit_kaggle_job(state, wait=config.wait, poll_seconds=config.poll_seconds, timeout_seconds=config.timeout_seconds)
 
 
 def submit_kaggle_job(state: dict[str, Any], *, wait: bool, poll_seconds: int, timeout_seconds: int) -> dict[str, Any]:
@@ -239,6 +266,12 @@ def slugify(value: str, *, max_length: int = 48) -> str:
     return normalized[:max_length].strip("-") or "genmusic-vn"
 
 
+def _make_lrc(text: str, duration: int):
+    lines = [line.strip() for line in text.splitlines() if line.strip()] or [text]
+    span = max(1.0, duration / len(lines))
+    return [AlignedLine(line, index * span, (index + 1) * span, "generated") for index, line in enumerate(lines)]
+
+
 def _kernel_script(dataset_slug: str) -> str:
     return f'''import json
 import os
@@ -253,39 +286,29 @@ request = json.loads((input_root / "request.json").read_text(encoding="utf-8"))
 source_root = Path("/kaggle/working/GenMusic")
 with zipfile.ZipFile(input_root / "genmusic_vn_source.zip") as archive:
     archive.extractall(source_root)
-repo = source_root / "third_party" / "DiffRhythm"
-if not (repo / "infer" / "infer.py").exists():
-    raise RuntimeError("Vendored DiffRhythm source is missing from genmusic_vn_source.zip")
-subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", str(repo / "requirements.txt")], check=True)
-output = Path("/kaggle/working/diffrhythm_output")
-output.mkdir(parents=True, exist_ok=True)
-command = [sys.executable, str(repo / "infer" / "infer.py"), "--lrc-path", str(input_root / "lyrics.lrc"), "--ref-prompt", request["style_prompt"], "--audio-length", str(request["audio_length"]), "--output-dir", str(output), "--batch-infer-num", "1", "--chunked"]
-environment = os.environ.copy()
-environment["PYTHONPATH"] = os.pathsep.join([str(repo), str(repo / "infer"), environment.get("PYTHONPATH", "")])
-subprocess.run(command, cwd=repo, env=environment, check=True)
-(output / "request.json").write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
+os.environ["PYTHONPATH"] = str(source_root) + os.pathsep + os.environ.get("PYTHONPATH", "")
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "torch", "torchaudio", "librosa", "matplotlib"], check=False)
+dataset = Path("/kaggle/working/random_self_dataset")
+checkpoint = Path("/kaggle/working/self_music.pt")
+subprocess.run([sys.executable, "-m", "genmusic_vn.cli", "make-random-dataset", "--out", str(dataset), "--count", "16"], cwd=source_root, check=True)
+subprocess.run([sys.executable, "-m", "genmusic_vn.cli", "train-self", "--dataset", str(dataset), "--checkpoint", str(checkpoint), "--epochs", "1", "--batch-size", "4"], cwd=source_root, check=True)
+output = Path("/kaggle/working/genmusic_output")
+subprocess.run([sys.executable, "-m", "genmusic_vn.cli", "generate-local", "--text", request["lyrics"], "--style", request["style_prompt"], "--duration", str(request["duration_seconds"]), "--checkpoint", str(checkpoint), "--steps", "6", "--out", str(output)], cwd=source_root, check=True)
+output.joinpath("request.json").write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
 if shutil.which("ffmpeg") and list(output.glob("*.wav")):
-    wav = list(output.glob("*.wav"))[0]
-    subprocess.run(["ffmpeg", "-y", "-i", str(wav), str(output / "final.mp3")], check=False)
+    subprocess.run(["ffmpeg", "-y", "-i", str(list(output.glob("*.wav"))[0]), str(output / "final.mp3")], check=False)
 '''
 
 
 def _write_source_zip(destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    excluded_parts = {
-        ".git",
-        "outputs",
-        "__pycache__",
-        ".pytest_cache",
-        ".venv",
-        "models",
-    }
+    excluded = {".git", "outputs", "__pycache__", ".pytest_cache", ".venv"}
     with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
         for path in PROJECT_ROOT.rglob("*"):
             relative = path.relative_to(PROJECT_ROOT)
-            if not path.is_file() or any(part in excluded_parts for part in relative.parts):
+            if not path.is_file() or any(part in excluded for part in relative.parts):
                 continue
-            if relative.as_posix().startswith(("datasets/random_diffrhythm/", "datasets/processed/")):
+            if relative.as_posix().startswith(("models/", "outputs/", "datasets/random_self_diffusion/", "datasets/processed/")):
                 continue
             archive.write(path, relative.as_posix())
 
@@ -299,6 +322,24 @@ def _commands(dataset_dir: Path, kernel_dir: Path, download_dir: Path, kernel_re
         f'kaggle kernels status "{kernel_ref}"',
         f'kaggle kernels output "{kernel_ref}" -p "{download_dir}" -o',
     ]
+
+
+def _default_device() -> str:
+    try:
+        import torch
+
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except ImportError:
+        return "cpu"
+
+
+def _convert_to_mp3(wav_path: Path) -> Path | None:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return None
+    destination = wav_path.with_suffix(".mp3")
+    result = subprocess.run([ffmpeg, "-y", "-i", str(wav_path), str(destination)], capture_output=True, text=True, check=False)
+    return destination.resolve() if result.returncode == 0 and destination.exists() else None
 
 
 def _run(command: list[str], *, timeout: int) -> dict[str, Any]:
@@ -347,17 +388,15 @@ def _attach_artifact_urls(state: dict[str, Any]) -> None:
         except ValueError:
             continue
         url = "/outputs/" + relative
-        suffix = path.suffix.lower()
-        if suffix == ".mp3":
+        if path.suffix.lower() == ".mp3":
             state["mp3_url"] = url
             state["mp3_path"] = str(path)
-        elif suffix == ".wav":
+        elif path.suffix.lower() == ".wav":
             state["wav_url"] = url
             state["wav_path"] = str(path)
     lrc = Path(state["dataset_dir"]) / "lyrics.lrc"
     if lrc.exists():
         try:
-            relative = lrc.resolve().relative_to(output_root.resolve()).as_posix()
-            state["lrc_url"] = "/outputs/" + relative
+            state["lrc_url"] = "/outputs/" + lrc.resolve().relative_to(output_root.resolve()).as_posix()
         except ValueError:
             pass

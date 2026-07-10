@@ -1,4 +1,4 @@
-"""Objective and subjective metrics for the JAM/DiffRhythm evaluation plan."""
+"""Objective and subjective metrics for the self-authored music model."""
 
 from __future__ import annotations
 
