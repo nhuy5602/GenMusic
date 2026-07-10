@@ -26,7 +26,6 @@ from .data.licensed_lyric_crawler import (
 )
 from .core.pipeline import create_music_project
 from .evaluation.project_metrics import build_project_report
-from .data.reference_dataset import write_reference_datasets
 from .evaluation.self_improve import run_self_improvement
 from .data.synthetic_dataset import generate_synthetic_records, write_jsonl
 from .integrations.trained_text_model import DEFAULT_LOCAL_MODEL_PATH, trained_model_status, train_text_model, write_text_model
@@ -72,17 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
     train_data.add_argument("--profile", choices=["standard", "diverse"], default="diverse", help="Profile sinh dữ liệu; diverse kết hợp nhiều pool context/style độc lập.")
     train_data.add_argument("--out", default="datasets/training/generated_text_model_train.jsonl", help="Đường dẫn JSONL output.")
 
-    reference_data = sub.add_parser("make-reference-dataset", help="Tạo dataset train/eval tham chiếu an toàn cho self-improve.")
-    reference_data.add_argument("--count", type=int, default=24, help="Số record kiểu tham chiếu.")
-    reference_data.add_argument("--seed", type=int, default=5602, help="Seed ngẫu nhiên xác định.")
-    reference_data.add_argument("--train-out", default="datasets/training/reference_song_train.jsonl", help="Đường dẫn JSONL train.")
-    reference_data.add_argument("--eval-out", default="datasets/evaluation/reference_song_eval.jsonl", help="Đường dẫn JSONL đánh giá.")
-
     crawl_lyrics = sub.add_parser("crawl-licensed-lyrics", help="Thu thập nguyên verse/chorus có license kèm provenance.")
     crawl_lyrics.add_argument("--sources", required=True, help="Manifest JSON/JSONL có URL được phê duyệt và trường license.")
     crawl_lyrics.add_argument("--out", default="datasets/training/licensed_lyric_sections.jsonl", help="Đường dẫn JSONL output.")
     crawl_lyrics.add_argument("--max-sources", type=int, default=0, help="Số nguồn tối đa được dùng; 0 nghĩa là tất cả.")
-    crawl_lyrics.add_argument("--max-sections", type=int, default=12, help="Số section đầy đủ tối đa trên mỗi nguồn.")
+    crawl_lyrics.add_argument("--max-sections", type=int, default=0, help="Số section tối đa mỗi nguồn; 0 nghĩa là lấy toàn bộ section hợp lệ.")
 
     rhyme_profile = sub.add_parser("train-rhyme-profile", help="Học profile vần/điệp âm gọn từ các section có license.")
     rhyme_profile.add_argument("--dataset", required=True, help="JSONL section có license do crawl-licensed-lyrics tạo.")
@@ -128,6 +121,8 @@ def build_parser() -> argparse.ArgumentParser:
     self_improve.add_argument("--model-out", default=str(DEFAULT_LOCAL_MODEL_PATH), help="Đường dẫn artifact model cần cập nhật.")
     self_improve.add_argument("--extra-dataset", default="", help="Dataset JSONL local bổ sung mà bạn có quyền sử dụng, phân cách bằng dấu phẩy.")
     self_improve.add_argument("--extra-dataset-limit", type=int, default=60000, help="Số record tối đa lấy từ file/thư mục bổ sung.")
+    self_improve.add_argument("--reference-dataset", default="", help="Dataset reference JSON/JSONL có nhãn, phân cách bằng dấu phẩy.")
+    self_improve.add_argument("--reference-dataset-limit", type=int, default=60000, help="Số record reference tối đa được lấy.")
     self_improve.add_argument("--duration", type=int, default=30, help="Thời lượng dùng cho prompt user giả lập.")
     self_improve.add_argument("--render-audio", action="store_true", help="Render WAV/MP3 backing local để kiểm tra độ rõ.")
     self_improve.add_argument("--stop-score", type=float, default=0.88, help="Dừng sớm khi điểm tổng hợp đạt ngưỡng này.")
@@ -192,16 +187,6 @@ def main(argv: list[str] | None = None) -> int:
         output_path = write_training_jsonl(records, args.out)
         unique_inputs = len({str(record.get("input_text", "")) for record in records})
         print(json.dumps({"path": str(output_path), "count": len(records), "unique_inputs": unique_inputs, "seed": args.seed, "profile": args.profile}, ensure_ascii=False, indent=2))
-        return 0
-
-    if args.command == "make-reference-dataset":
-        train_path, eval_path = write_reference_datasets(
-            train_out=args.train_out,
-            eval_out=args.eval_out,
-            count=args.count,
-            seed=args.seed,
-        )
-        print(json.dumps({"train_path": str(train_path), "eval_path": str(eval_path), "count": args.count, "seed": args.seed}, ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "crawl-licensed-lyrics":
@@ -311,6 +296,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "self-improve":
         extra_paths = [item.strip() for item in args.extra_dataset.split(",") if item.strip()]
+        reference_paths = [item.strip() for item in args.reference_dataset.split(",") if item.strip()]
         report = run_self_improvement(
             iterations=args.iterations,
             samples=args.samples,
@@ -319,6 +305,9 @@ def main(argv: list[str] | None = None) -> int:
             output_root=args.out,
             model_out=args.model_out,
             extra_datasets=extra_paths,
+            extra_dataset_max_records=args.extra_dataset_limit,
+            reference_datasets=reference_paths,
+            reference_dataset_max_records=args.reference_dataset_limit,
             duration_seconds=args.duration,
             render_audio=args.render_audio,
             stop_score=args.stop_score,

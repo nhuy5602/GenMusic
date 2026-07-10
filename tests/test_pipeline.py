@@ -30,7 +30,7 @@ from genmusic_vn.core.music_theory import chord_notes
 from genmusic_vn.core.pipeline import create_music_project
 from genmusic_vn.evaluation.project_metrics import build_project_report
 from genmusic_vn.evaluation.quality_checks import evaluate_music_result_quality
-from genmusic_vn.data.reference_dataset import generate_reference_eval_records, generate_reference_training_records
+from genmusic_vn.data.reference_dataset import load_reference_eval_records, load_reference_training_records
 from genmusic_vn.core.rhyme import head_tail_rhyme_rate, luc_bat_rhyme_rate, vietnamese_rhyme_profile
 from genmusic_vn.core.scene_planner import build_scene_plan
 from genmusic_vn.evaluation.self_improve import run_self_improvement
@@ -426,6 +426,11 @@ class PipelineTests(unittest.TestCase):
         sections = extract_lyric_sections(html)
         self.assertEqual([item["section_type"] for item in sections], ["verse", "chorus"])
         self.assertEqual(len(sections[0]["text"].splitlines()), 4)
+        many_sections = "".join(
+            f"<h2>Verse {index}</h2><p>Mưa đi qua câu chuyện {index} trong tim và gió</p>"
+            for index in range(25)
+        )
+        self.assertEqual(len(extract_lyric_sections(many_sections, max_sections=None)), 25)
         with tempfile.TemporaryDirectory() as temp:
             dataset_path = Path(temp) / "licensed.jsonl"
             report = crawl_licensed_sources(
@@ -609,8 +614,25 @@ class PipelineTests(unittest.TestCase):
         self.assertGreaterEqual(report["summary"]["no_title"], 1.0)
 
     def test_reference_datasets_feed_training_and_evaluation(self) -> None:
-        train_records = generate_reference_training_records(10, seed=5602)
-        eval_records = generate_reference_eval_records(8, seed=5602)
+        source_record = {
+            "input_text": "Một chiều mưa bên khung cửa, lời hẹn cũ vẫn ở trong tim.",
+            "emotion": "sadness",
+            "genre_label": "pop_ballad",
+            "style_prompt": "Vietnamese melancholic pop ballad, soft piano, clear vocal",
+            "expected_keywords": ["mưa", "khung cửa", "lời hẹn"],
+            "expected_lyric_phrases": ["mưa", "trong tim"],
+            "expected_vocal_gender": "female",
+            "source": "external_dataset_fixture",
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            dataset_path = Path(temp) / "reference.jsonl"
+            rows = [
+                {**source_record, "id": f"external_{index:03d}", "input_text": f"{source_record['input_text']} {index}"}
+                for index in range(10)
+            ]
+            dataset_path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n", encoding="utf-8")
+            train_records = load_reference_training_records([dataset_path], max_records=10, seed=5602)
+            eval_records = load_reference_eval_records([dataset_path], max_records=8, seed=5602)
         self.assertEqual(len(train_records), 10)
         self.assertEqual(len(eval_records), 8)
         self.assertTrue(all(record["emotion"] for record in train_records))
@@ -647,7 +669,13 @@ class PipelineTests(unittest.TestCase):
             self.assertTrue(Path(manifest["manifest_path"]).exists())
 
     def test_quality_checker_scores_pipeline_output_dimensions(self) -> None:
-        case = generate_reference_eval_records(1, seed=5602)[0]
+        case = {
+            "input_text": "Một chiều mưa bên khung cửa, lời hẹn cũ vẫn ở trong tim.",
+            "expected_emotions": ["sadness"],
+            "expected_keywords": ["mưa", "khung cửa", "lời hẹn"],
+            "expected_vocal_gender": "female",
+            "genre": "Vietnamese melancholic pop ballad, soft piano, clear vocal",
+        }
         with tempfile.TemporaryDirectory() as temp:
             result = create_music_project(
                 case["input_text"],

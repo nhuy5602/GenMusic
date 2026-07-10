@@ -6,7 +6,7 @@ from typing import Any
 
 from .evaluation import evaluate_dataset
 from .quality_checks import evaluate_simulated_cases
-from ..data.reference_dataset import generate_reference_eval_records, generate_reference_training_records
+from ..data.reference_dataset import load_reference_eval_records, load_reference_training_records
 from .report_plots import generate_evaluation_plots, generate_self_improvement_plots
 from ..data.synthetic_dataset import generate_synthetic_records, write_jsonl
 from ..integrations.trained_text_model import DEFAULT_LOCAL_MODEL_PATH, train_text_model, write_text_model
@@ -41,6 +41,8 @@ def run_self_improvement(
     model_out: str | Path = DEFAULT_LOCAL_MODEL_PATH,
     extra_datasets: list[str | Path] | None = None,
     extra_dataset_max_records: int | None = 60000,
+    reference_datasets: list[str | Path] | None = None,
+    reference_dataset_max_records: int | None = 60000,
     duration_seconds: int = 30,
     render_audio: bool = False,
     stop_score: float = 0.88,
@@ -53,8 +55,17 @@ def run_self_improvement(
         max_records=extra_dataset_max_records,
         seed=seed,
     )
-    reference_train = generate_reference_training_records(max(16, eval_count // 2), seed=seed)
-    reference_eval = generate_reference_eval_records(max(8, eval_count // 3), seed=seed)
+    reference_paths = reference_datasets or []
+    reference_train = load_reference_training_records(
+        reference_paths,
+        max_records=reference_dataset_max_records,
+        seed=seed,
+    )
+    reference_eval = load_reference_eval_records(
+        reference_paths,
+        max_records=reference_dataset_max_records,
+        seed=seed,
+    )
 
     targeted_records: list[dict[str, Any]] = []
     history: list[dict[str, Any]] = []
@@ -158,6 +169,9 @@ def run_self_improvement(
         "output_root": str(output_path),
         "extra_dataset_record_count": len(extra_records),
         "extra_dataset_max_records": extra_dataset_max_records,
+        "reference_dataset_paths": [str(path) for path in reference_paths],
+        "reference_dataset_record_count": len(reference_train),
+        "reference_dataset_max_records": reference_dataset_max_records,
         "copyright_note": (
             "No copyrighted web lyrics are bundled. Use --extra-dataset only for local lyrics/data "
             "you have permission to use."

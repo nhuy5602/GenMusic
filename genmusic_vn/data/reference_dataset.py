@@ -3,277 +3,118 @@ from __future__ import annotations
 import json
 import random
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
-from .training_dataset import GENRE_SCENES, normalize_training_record, style_prompt_for_genre
-
-
-REFERENCE_SONG_CASES: list[dict[str, Any]] = [
-    {
-        "id": "ref_ballad_rain_window",
-        "title": "Khung cửa mưa",
-        "genre_label": "pop_ballad",
-        "emotion": "sadness",
-        "expected_vocal_gender": "female",
-        "input_text": "Một người ngồi bên khung cửa mưa, nhớ lời hẹn chưa nói hết và muốn một bản pop ballad piano thật rõ vocal.",
-        "reference_lyrics": [
-            "mưa nghiêng qua khung cửa nhỏ",
-            "lời chưa nói ngủ trong tim",
-            "phố quen xa dần trong gió",
-            "em gọi tên anh lặng im",
-            "xin giữ câu ca ở lại",
-            "cho đêm thôi rơi thật dài",
-        ],
-        "expected_keywords": ["mưa", "khung cửa", "lời hẹn", "piano", "vocal"],
-        "expected_lyric_phrases": ["mưa", "lời chưa nói", "trong tim"],
-    },
-    {
-        "id": "ref_folk_river_home",
-        "title": "Bến sông nhà",
-        "genre_label": "folk",
-        "emotion": "nostalgic",
-        "expected_vocal_gender": "female",
-        "input_text": "Ký ức bến sông quê, tiếng sáo trúc và đàn bầu đưa người xa nhà nhớ mẹ, nhớ hàng tre.",
-        "reference_lyrics": [
-            "sáo đưa chiều qua bến cũ",
-            "đàn bầu ngân phía sau nhà",
-            "mẹ ngồi hong mùi rơm mới",
-            "con nghe thương nhớ đi xa",
-            "hàng tre nghiêng lời ru nhẹ",
-            "dòng sông giữ bóng quê nhà",
-        ],
-        "expected_keywords": ["sáo trúc", "đàn bầu", "quê", "mẹ", "sông"],
-        "expected_lyric_phrases": ["đàn bầu", "quê nhà", "dòng sông"],
-    },
-    {
-        "id": "ref_trap_city_rise",
-        "title": "Đứng dậy giữa phố",
-        "genre_label": "trap",
-        "emotion": "hope",
-        "expected_vocal_gender": "male",
-        "input_text": "Một bạn trẻ vượt qua thất bại giữa thành phố đêm, cần melodic trap, 808 chắc, rap hook rõ chữ và flow tự tin.",
-        "reference_lyrics": [
-            "đèn phố rọi lên vai áo",
-            "ta đứng dậy sau cơn đau",
-            "tám không tám đập trong ngực",
-            "hi hat dẫn bước qua cầu",
-            "hook vang lên không lùi lại",
-            "ngày mai mở cửa thật sâu",
-        ],
-        "expected_keywords": ["808", "hi-hat", "rap", "hook", "đứng dậy"],
-        "expected_lyric_phrases": ["đứng dậy", "hook", "ngày mai"],
-    },
-    {
-        "id": "ref_edm_summer_light",
-        "title": "Mùa sáng",
-        "genre_label": "edm",
-        "emotion": "joy",
-        "expected_vocal_gender": "female",
-        "input_text": "Một đêm lễ hội mùa hè nhiều ánh sáng, mọi người cùng hát, cần EDM festival có drop vui và vocal hook dễ nhớ.",
-        "reference_lyrics": [
-            "nắng bật lên trong mắt ai",
-            "đêm nay ta hát không ngừng",
-            "drop rơi xuống như pháo sáng",
-            "đám đông nghiêng giữa không trung",
-            "câu hook bay qua môi cười",
-            "ngày mới reo vang từng vùng",
-        ],
-        "expected_keywords": ["edm", "drop", "lễ hội", "ánh sáng", "hook"],
-        "expected_lyric_phrases": ["drop", "câu hook", "môi cười"],
-    },
-    {
-        "id": "ref_rnb_late_cafe",
-        "title": "Sau quán khuya",
-        "genre_label": "rnb",
-        "emotion": "romantic",
-        "expected_vocal_gender": "duet",
-        "input_text": "Hai người gặp lại trong quán cà phê đêm, cần R&B mượt, electric piano, snap drums và vocal duet ấm.",
-        "reference_lyrics": [
-            "ly cà phê còn hơi ấm",
-            "mắt em nghiêng phía đèn vàng",
-            "snap rơi nhẹ trên nhịp thở",
-            "anh nghe đêm bỗng dịu dàng",
-            "hai giọng chạm nhau thật khẽ",
-            "tình yêu đi giữa mơ màng",
-        ],
-        "expected_keywords": ["cà phê", "R&B", "electric piano", "snap", "duet"],
-        "expected_lyric_phrases": ["cà phê", "đèn vàng", "hai giọng"],
-    },
-    {
-        "id": "ref_rock_fire_stage",
-        "title": "Không lùi",
-        "genre_label": "rock",
-        "emotion": "anger",
-        "expected_vocal_gender": "male",
-        "input_text": "Một ca khúc rock sân khấu về không cúi đầu trước bất công, guitar điện mạnh, trống live và chorus bùng nổ.",
-        "reference_lyrics": [
-            "guitar xé ngang màn tối",
-            "trống gọi tim đứng thẳng lên",
-            "ta không cúi đầu lần nữa",
-            "lửa trong ngực vẫn chưa quên",
-            "chorus nổ tung sân khấu",
-            "vết thương hóa tiếng gọi tên",
-        ],
-        "expected_keywords": ["rock", "guitar điện", "trống live", "bất công", "chorus"],
-        "expected_lyric_phrases": ["không cúi đầu", "chorus", "sân khấu"],
-    },
-    {
-        "id": "ref_bolero_night_station",
-        "title": "Ga mưa đêm",
-        "genre_label": "bolero",
-        "emotion": "nostalgic",
-        "expected_vocal_gender": "female",
-        "input_text": "Một chuyện tình lỡ ở sân ga mưa đêm, cần bolero chậm, guitar tremolo, vocal rõ từng chữ và nhiều tiếc nuối.",
-        "reference_lyrics": [
-            "ga khuya nghiêng trong mưa nhỏ",
-            "guitar run tiếng mong manh",
-            "người đi qua miền thương nhớ",
-            "bỏ tôi đứng giữa ga xanh",
-            "tremolo rơi đều rất khẽ",
-            "tình xưa còn gọi tên anh",
-        ],
-        "expected_keywords": ["bolero", "tremolo", "mưa đêm", "tình lỡ", "vocal"],
-        "expected_lyric_phrases": ["ga khuya", "tremolo", "tình xưa"],
-    },
-    {
-        "id": "ref_horror_dark_room",
-        "title": "Phòng cuối hành lang",
-        "genre_label": "horror",
-        "emotion": "fear",
-        "expected_vocal_gender": "female",
-        "input_text": "Một căn phòng tối cuối hành lang, tiếng động xa và hơi thở run, cần horror score lạnh, vocal mỏng, không giai điệu vui.",
-        "reference_lyrics": [
-            "cửa cuối hành lang khép lại",
-            "bóng đêm bò dưới chân tường",
-            "tiếng ai rơi ngoài ô cửa",
-            "hơi thở run giữa màn sương",
-            "xin giữ một đốm sáng nhỏ",
-            "dẫn tôi qua khỏi đêm trường",
-        ],
-        "expected_keywords": ["horror", "bóng tối", "hành lang", "run", "không vui"],
-        "expected_lyric_phrases": ["hành lang", "bóng đêm", "đốm sáng"],
-    },
-]
+from .training_dataset import normalize_training_record
 
 
-def generate_reference_training_records(
-    count: int | None = None,
+def load_reference_records(
+    paths: Iterable[str | Path],
     *,
+    max_records: int | None = None,
     seed: int = 42,
-    include_reference_lyrics: bool = True,
 ) -> list[dict[str, Any]]:
-    rng = random.Random(seed)
-    cases = list(REFERENCE_SONG_CASES)
-    records: list[dict[str, Any]] = []
-    target = len(cases) if count is None else max(0, count)
-    for index in range(target):
-        case = cases[index % len(cases)]
-        text = _training_text_from_case(case, include_reference_lyrics=include_reference_lyrics)
-        if index >= len(cases):
-            text = _vary_text(text, rng)
-        records.append(
-            {
-                "id": f"{case['id']}_train_{index + 1:03d}",
-                "input_text": text,
-                "emotion": case["emotion"],
-                "genre_label": case["genre_label"],
-                "style_prompt": style_prompt_for_genre(case["genre_label"]),
-                "expected_keywords": list(case["expected_keywords"]),
-                "expected_vocal_gender": case["expected_vocal_gender"],
-                "source": "curated_original_reference_song_case",
-            }
-        )
-    return records
+    """Load labeled reference rows supplied by the caller or crawler.
 
-
-def generate_reference_eval_records(count: int | None = None, *, seed: int = 42) -> list[dict[str, Any]]:
-    rng = random.Random(seed)
-    cases = list(REFERENCE_SONG_CASES)
-    records: list[dict[str, Any]] = []
-    target = len(cases) if count is None else max(0, count)
-    for index in range(target):
-        case = cases[index % len(cases)]
-        text = str(case["input_text"])
-        if index >= len(cases):
-            text = _vary_text(text, rng)
-        records.append(
-            {
-                "id": f"{case['id']}_eval_{index + 1:03d}",
-                "input_text": text,
-                "expected_emotions": [case["emotion"]],
-                "expected_keywords": list(case["expected_keywords"]),
-                "expected_lyric_phrases": list(case["expected_lyric_phrases"]),
-                "expected_vocal_gender": case["expected_vocal_gender"],
-                "genre": GENRE_SCENES[case["genre_label"]]["style_prompt"],
-                "genre_label": case["genre_label"],
-                "duration_seconds": 30,
-                "length_bucket": "reference",
-                "source": "curated_original_reference_song_case",
-            }
-        )
-    return records
-
-
-def load_user_licensed_lyrics_jsonl(paths: list[str | Path]) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
+    Reference content is intentionally not embedded in the package. Rows must
+    contain text, an emotion label, and a genre label so the model cannot
+    silently invent missing reference metadata.
+    """
+    candidates: list[dict[str, Any]] = []
     for path_value in paths:
         path = Path(path_value)
         if not path.exists():
             continue
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                raw = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            normalized = normalize_training_record(raw)
-            if normalized:
-                normalized["source"] = str(raw.get("source") or "user_licensed_lyrics_jsonl")
-                records.append(normalized)
+        source_paths = sorted(path.glob("*.jsonl")) if path.is_dir() else [path]
+        for source_path in source_paths:
+            for raw in _read_json_rows(source_path):
+                if _is_labeled_reference(raw):
+                    candidates.append(raw)
+
+    if max_records is None or max_records <= 0 or len(candidates) <= max_records:
+        return candidates
+    rng = random.Random(seed)
+    return rng.sample(candidates, max_records)
+
+
+def load_reference_training_records(
+    paths: Iterable[str | Path],
+    *,
+    max_records: int | None = None,
+    seed: int = 42,
+) -> list[dict[str, Any]]:
+    """Normalize externally supplied reference rows for text-model training."""
+    records: list[dict[str, Any]] = []
+    for raw in load_reference_records(paths, max_records=max_records, seed=seed):
+        normalized = normalize_training_record(raw)
+        if normalized:
+            normalized["source"] = str(raw.get("source") or "external_reference_dataset")
+            records.append(normalized)
     return records
 
 
-def write_reference_datasets(
+def load_reference_eval_records(
+    paths: Iterable[str | Path],
     *,
-    train_out: str | Path,
-    eval_out: str | Path,
-    count: int | None = None,
+    max_records: int | None = None,
     seed: int = 42,
-) -> tuple[Path, Path]:
-    train_path = _write_jsonl(generate_reference_training_records(count, seed=seed), train_out)
-    eval_path = _write_jsonl(generate_reference_eval_records(count, seed=seed), eval_out)
-    return train_path, eval_path
+) -> list[dict[str, Any]]:
+    """Adapt externally supplied rows to the evaluation schema without inventing lyric data."""
+    records: list[dict[str, Any]] = []
+    for raw in load_reference_records(paths, max_records=max_records, seed=seed):
+        normalized = normalize_training_record(raw)
+        if not normalized:
+            continue
+        record = dict(raw)
+        record["id"] = str(record.get("id") or normalized["id"])
+        record["input_text"] = normalized["input_text"]
+        record["expected_emotions"] = list(
+            record.get("expected_emotions") or [normalized["emotion"]]
+        )
+        record["expected_keywords"] = list(
+            record.get("expected_keywords") or normalized["expected_keywords"]
+        )
+        record["expected_vocal_gender"] = str(
+            record.get("expected_vocal_gender") or normalized.get("expected_vocal_gender") or ""
+        )
+        record["genre"] = str(record.get("genre") or normalized["style_prompt"])
+        record["genre_label"] = normalized["genre_label"]
+        record["length_bucket"] = str(record.get("length_bucket") or "reference_dataset")
+        record["source"] = str(record.get("source") or "external_reference_dataset")
+        records.append(record)
+    return records
 
 
-def _training_text_from_case(case: dict[str, Any], *, include_reference_lyrics: bool) -> str:
-    parts = [str(case["input_text"])]
-    if include_reference_lyrics:
-        parts.append("Lời tham chiếu:\n" + "\n".join(case["reference_lyrics"]))
-    return "\n".join(parts)
+def _read_json_rows(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return rows
+    if path.suffix.lower() == ".json":
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return rows
+        values = payload if isinstance(payload, list) else [payload]
+        return [dict(item) for item in values if isinstance(item, dict)]
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            rows.append(item)
+    return rows
 
 
-def _vary_text(text: str, rng: random.Random) -> str:
-    prefixes = [
-        "Người dùng muốn bản nhạc rõ vocal:",
-        "Prompt thử nghiệm cần beat hợp mood:",
-        "Ca khúc cần lời đủ câu và có vần:",
-        "Bản demo cần flow đúng style:",
-    ]
-    suffixes = [
-        "Ưu tiên hát rõ chữ và tránh rè.",
-        "Giữ hook ngắn, dễ nhớ và đúng cảm xúc.",
-        "Đừng để output chỉ có nhạc nền.",
-        "Beat phải bám mood của câu chuyện.",
-    ]
-    return f"{rng.choice(prefixes)} {text} {rng.choice(suffixes)}"
-
-
-def _write_jsonl(records: list[dict[str, Any]], path: str | Path) -> Path:
-    output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        "\n".join(json.dumps(record, ensure_ascii=False) for record in records) + "\n",
-        encoding="utf-8",
-    )
-    return output_path
+def _is_labeled_reference(record: dict[str, Any]) -> bool:
+    text = str(record.get("input_text") or record.get("text") or record.get("chorus") or "").strip()
+    emotion = str(record.get("emotion") or "").strip()
+    if not emotion:
+        expected_emotions = record.get("expected_emotions")
+        emotion = str(expected_emotions[0]).strip() if isinstance(expected_emotions, list) and expected_emotions else ""
+    genre_label = str(record.get("genre_label") or "").strip()
+    return bool(text and emotion and genre_label)

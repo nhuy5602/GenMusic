@@ -62,7 +62,7 @@ def crawl_licensed_sources(
     output_path: str | Path,
     *,
     max_sources: int | None = None,
-    max_sections_per_source: int = 12,
+    max_sections_per_source: int = 0,
     max_snippets_per_source: int | None = None,
     user_agent: str = "GenMusicVN-LicensedLyricResearch/1.0 (+local evaluation)",
 ) -> dict[str, Any]:
@@ -76,7 +76,7 @@ def crawl_licensed_sources(
     for spec in selected_specs:
         result = _crawl_one_source(
             spec,
-            max_sections=max(1, min(12, int(max_sections_per_source))),
+            max_sections=max(0, int(max_sections_per_source)),
             user_agent=user_agent,
         )
         source_results.append(result["summary"])
@@ -97,6 +97,7 @@ def crawl_licensed_sources(
             "license_required": True,
             "max_section_chars": MAX_SECTION_CHARS,
             "max_section_lines": MAX_SECTION_LINES,
+            "max_sections_per_source": "all" if max_sections_per_source <= 0 else max_sections_per_source,
             "allowed_section_types": ["verse", "chorus", "bridge", "pre_chorus", "outro"],
             "full_song_reconstruction": False,
         },
@@ -145,7 +146,7 @@ def build_rhyme_profile(dataset_path: str | Path, output_path: str | Path) -> di
 def extract_lyric_sections(
     html: str,
     *,
-    max_sections: int = 20,
+    max_sections: int | None = 20,
     max_section_chars: int = MAX_SECTION_CHARS,
 ) -> list[dict[str, str]]:
     parser = _SectionParser()
@@ -171,7 +172,7 @@ def extract_lyric_sections(
         if key and key not in seen:
             seen.add(key)
             sections.append({"section_type": section_type, "text": text})
-        if len(sections) >= max_sections:
+        if max_sections and len(sections) >= max_sections:
             break
     return sections
 
@@ -216,7 +217,7 @@ def _crawl_one_source(
         html = _fetch_html(url, user_agent)
         sections = extract_lyric_sections(
             html,
-            max_sections=max_sections,
+            max_sections=max_sections or None,
             max_section_chars=min(
                 MAX_SECTION_CHARS,
                 int(spec.get("max_section_chars") or MAX_SECTION_CHARS),
