@@ -10,6 +10,7 @@ from genmusic_vn.data.vietnamese_text import normalize_vietnamese_lyrics
 from genmusic_vn.integrations.diffrhythm_official import (
     DEFAULT_MODEL_REF,
     create_random_official_dataset,
+    ensure_official_checkout,
     official_train_command,
     validate_official_dataset,
 )
@@ -31,8 +32,15 @@ class DiffRhythmPipelineTests(unittest.TestCase):
             self.assertEqual(state["audio_length"], 95)
             self.assertTrue(Path(state["dataset_dir"], "lyrics.lrc").exists())
             script = Path(state["kernel_dir"], "run_diffrhythm.py").read_text(encoding="utf-8")
-            self.assertIn("ASLP-lab/DiffRhythm.git", script)
+            self.assertIn("genmusic_vn_source.zip", script)
+            self.assertIn("third_party", script)
+            self.assertNotIn("git clone", script)
             self.assertIn("infer.py", script)
+
+    def test_official_source_is_vendored(self) -> None:
+        source = ensure_official_checkout()
+        self.assertTrue((source / "infer" / "infer.py").exists())
+        self.assertTrue((source / "requirements.txt").exists())
 
     def test_random_dataset_reports_dependency_or_creates_official_format(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

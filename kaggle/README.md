@@ -5,8 +5,8 @@ Kaggle là môi trường chạy chính cho DiffRhythm vì upstream yêu cầu P
 Job genmusic-vn.cli generate sẽ:
 1. tạo private dataset chứa lyric LRC và request;
 2. tạo kernel GPU;
-3. clone ASLP-lab/DiffRhythm;
-4. cài requirements.txt upstream;
+3. giải nén source zip vendor vào `/kaggle/working/GenMusic`;
+4. cài `third_party/DiffRhythm/requirements.txt`;
 5. chạy infer/infer.py với checkpoint ASLP-lab/DiffRhythm-1_2;
 6. tải WAV/MP3 về outputs/<run_id>/kaggle_job/downloaded_output.
 

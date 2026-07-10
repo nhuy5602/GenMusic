@@ -13,7 +13,7 @@ Input lyric/style
   -> objective evaluation + telemetry
 ```
 
-Project giữ lại phần orchestration, tạo LRC, random smoke dataset, Kaggle automation và báo cáo. Model code, CFM/DiT, VAE và checkpoint được lấy từ upstream ASLP-lab/DiffRhythm, không fork lại trong source project.
+Project giữ lại phần orchestration, tạo LRC, random smoke dataset, Kaggle automation và báo cáo. Snapshot mã nguồn CFM/DiT, G2P, inference và training của upstream được vendor tại `third_party/DiffRhythm` để demo reproducible, không clone GitHub lúc chạy. Bản vendor bổ sung nhận diện nhánh `vi` và eSpeak Vietnamese cho lyric có dấu. Checkpoint DiT/VAE và MuQ vẫn được tải riêng theo cơ chế của DiffRhythm.
 
 Upstream hiện có:
 - infer/infer.py cho inference;
@@ -120,13 +120,17 @@ Báo cáo:
 
 `project-report` sinh telemetry và các biểu đồ project: thời gian từ input tới WAV/MP3, success/error, retry Kaggle, emotion vs BPM và user rating. Hai biểu đồ cuối hiển thị trạng thái chưa có dữ liệu thay vì tự bịa số khi request không chứa emotion/BPM hoặc MOS/rating đang được bỏ qua.
 
+## Source vendor
+
+Source DiffRhythm đã đóng gói trong `third_party/DiffRhythm` tại commit upstream `28ad63c0f096fe2ee258bcabbcf081d5d9366afd`. Khi stage job, project đóng gói snapshot này vào `genmusic_vn_source.zip`; kernel Kaggle giải nén và chạy source local. Chỉ model weights và các dependency được tải trong môi trường Kaggle.
+
 ## Kaggle
 
 Job tự động tạo:
 - private input dataset chứa request.json, lyrics.lrc;
 - kernel metadata GPU;
-- script clone đúng upstream DiffRhythm;
-- install requirements chính thức;
+- source zip chứa snapshot vendor DiffRhythm;
+- install `third_party/DiffRhythm/requirements.txt`;
 - tải checkpoint Hugging Face trong Kaggle;
 - chạy infer/infer.py;
 - tải WAV và MP3 nếu ffmpeg có sẵn.

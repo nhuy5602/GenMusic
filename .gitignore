@@ -10,7 +10,7 @@ kaggle.json
 .kaggle_runtime_home/
 outputs/
 models/
-third_party/DiffRhythm/
+# The upstream DiffRhythm source is vendored for reproducible demos.
 datasets/processed/
 datasets/random_diffrhythm/
 kaggle/working/

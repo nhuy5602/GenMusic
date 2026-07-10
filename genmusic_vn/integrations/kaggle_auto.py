@@ -18,13 +18,13 @@ from typing import Any
 
 from ..data.lyric_alignment import write_lrc
 from ..data.vietnamese_text import normalize_vietnamese_lyrics
-from .diffrhythm_official import DEFAULT_MODEL_REF, OFFICIAL_REPO_URL, make_lrc_for_diff_rhythm
+from .diffrhythm_official import DEFAULT_MODEL_REF, OFFICIAL_REPO_COMMIT, OFFICIAL_REPO_URL, make_lrc_for_diff_rhythm
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DIFFRHYTHM_MODEL = "ASLP-lab/DiffRhythm-1_2"
 DEFAULT_CUSTOM_MUSIC_MODEL = DEFAULT_DIFFRHYTHM_MODEL
-DEFAULT_OFFICIAL_REPO_COMMIT = "28ad63c0f096fe2ee258bcabbcf081d5d9366afd"
+DEFAULT_OFFICIAL_REPO_COMMIT = OFFICIAL_REPO_COMMIT
 
 
 class KaggleAutoError(RuntimeError):
@@ -93,6 +93,7 @@ def stage_text_to_music_job(*, text: str, output_root: str | Path, duration_seco
         "backend": "ASLP-lab/DiffRhythm",
         "official_repo": OFFICIAL_REPO_URL,
         "official_repo_commit": DEFAULT_OFFICIAL_REPO_COMMIT,
+        "official_repo_source": "vendored:third_party/DiffRhythm",
         "input_received_at": received,
         "created_at": _now(),
     }
@@ -244,13 +245,18 @@ import os
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 input_root = Path("/kaggle/input/{dataset_slug}")
 request = json.loads((input_root / "request.json").read_text(encoding="utf-8"))
-repo = Path("/kaggle/working/DiffRhythm")
-subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", "https://raw.githubusercontent.com/ASLP-lab/DiffRhythm/main/requirements.txt"], check=True)
-subprocess.run(["git", "clone", "--depth", "1", "{OFFICIAL_REPO_URL}", str(repo)], check=True)
+source_root = Path("/kaggle/working/GenMusic")
+with zipfile.ZipFile(input_root / "genmusic_vn_source.zip") as archive:
+    archive.extractall(source_root)
+repo = source_root / "third_party" / "DiffRhythm"
+if not (repo / "infer" / "infer.py").exists():
+    raise RuntimeError("Vendored DiffRhythm source is missing from genmusic_vn_source.zip")
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", str(repo / "requirements.txt")], check=True)
 output = Path("/kaggle/working/diffrhythm_output")
 output.mkdir(parents=True, exist_ok=True)
 command = [sys.executable, str(repo / "infer" / "infer.py"), "--lrc-path", str(input_root / "lyrics.lrc"), "--ref-prompt", request["style_prompt"], "--audio-length", str(request["audio_length"]), "--output-dir", str(output), "--batch-infer-num", "1", "--chunked"]
@@ -273,7 +279,6 @@ def _write_source_zip(destination: Path) -> None:
         ".pytest_cache",
         ".venv",
         "models",
-        "third_party",
     }
     with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
         for path in PROJECT_ROOT.rglob("*"):

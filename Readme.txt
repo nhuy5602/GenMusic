@@ -1,4 +1,4 @@
-GenMusic VN dùng trực tiếp ASLP-lab/DiffRhythm.
+GenMusic VN dùng snapshot DiffRhythm đã vendor trong third_party/DiffRhythm, không clone GitHub lúc chạy.
 
 Cài đặt:
   pip install -e ".[diffrhythm]"

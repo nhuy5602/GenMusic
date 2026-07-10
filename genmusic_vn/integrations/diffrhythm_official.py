@@ -1,8 +1,8 @@
-"""Official ASLP-lab/DiffRhythm integration.
+"""Vendored ASLP-lab/DiffRhythm integration.
 
-The project owns orchestration and dataset preparation, while model code and
-checkpoint loading stay in the upstream repository. This avoids maintaining a
-second, incompatible DiT implementation.
+The project owns orchestration and dataset preparation while executing the
+upstream CFM/DiT source snapshot stored in ``third_party/DiffRhythm``. Model
+weights remain external artifacts and are not committed to this repository.
 """
 
 from __future__ import annotations
@@ -21,10 +21,11 @@ from ..data.lyric_alignment import AlignedLine, write_lrc
 from ..data.vietnamese_text import lyric_content_lines, normalize_vietnamese_lyrics
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 OFFICIAL_REPO_URL = "https://github.com/ASLP-lab/DiffRhythm.git"
 OFFICIAL_REPO_COMMIT = "28ad63c0f096fe2ee258bcabbcf081d5d9366afd"
 DEFAULT_MODEL_REF = "ASLP-lab/DiffRhythm-1_2"
-DEFAULT_REPO_PATH = Path("third_party") / "DiffRhythm"
+DEFAULT_REPO_PATH = PROJECT_ROOT / "third_party" / "DiffRhythm"
 
 
 class DiffRhythmError(RuntimeError):
@@ -48,17 +49,19 @@ class DiffRhythmConfig:
         return max(96, min(285, requested))
 
 
-def ensure_official_checkout(repo_path: str | Path | None = None, *, update: bool = False) -> Path:
-    destination = Path(repo_path or DEFAULT_REPO_PATH)
-    if not (destination / "infer" / "infer.py").exists():
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(["git", "clone", "--depth", "1", OFFICIAL_REPO_URL, str(destination)], capture_output=True, text=True)
-        if result.returncode != 0:
-            raise DiffRhythmError(f"Không clone được DiffRhythm: {result.stderr[-1000:]}")
-    elif update:
-        subprocess.run(["git", "fetch", "--depth", "1", "origin", "main"], cwd=destination, check=False, capture_output=True, text=True)
-        subprocess.run(["git", "checkout", "--force", "main"], cwd=destination, check=False, capture_output=True, text=True)
-    return destination.resolve()
+def ensure_official_checkout(repo_path: str | Path | None = None) -> Path:
+    """Resolve the vendored upstream source without network access."""
+
+    destination = Path(repo_path).expanduser() if repo_path else DEFAULT_REPO_PATH
+    destination = destination.resolve()
+    required = (destination / "infer" / "infer.py", destination / "model" / "cfm.py", destination / "requirements.txt")
+    if not all(path.exists() for path in required):
+        raise DiffRhythmError(
+            "Thiếu source DiffRhythm đã vendor tại "
+            f"{destination}. Hãy kiểm tra thư mục third_party/DiffRhythm trong project. "
+            f"Snapshot upstream: {OFFICIAL_REPO_COMMIT}."
+        )
+    return destination
 
 
 def make_lrc_for_diff_rhythm(lyrics: str, duration_seconds: int) -> list[AlignedLine]:
