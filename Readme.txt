@@ -59,3 +59,13 @@ Báo cáo telemetry của toàn project:
 
 Dataset tổng hợp mặc định 5 GB:
    python -m genmusic_vn.cli make-large-dataset --target-gb 5 --out datasets/training/diverse_5gb --shard-mb 128 --batch-size 4000 --seed 5602
+
+Pipeline JAM/DiffRhythm mới:
+   python -m genmusic_vn.cli prepare-jam-dataset --manifest data/source_manifest.jsonl --audio-root data --out datasets/processed/jam --asr-model medium --vae-checkpoint checkpoints/vae.ts --style-checkpoint checkpoints/style.ts
+   python -m genmusic_vn.cli pack-jam-webdataset --manifest datasets/processed/jam/manifest.jsonl --out datasets/processed/jam_shards --shard-size 500
+   python -m genmusic_vn.cli train-jam-sft --manifest datasets/processed/jam/manifest.jsonl --out outputs/jam_sft --preset demo --steps 100
+   python -m genmusic_vn.cli stage-jam-sft-kaggle --dataset-ref your-user/jam-preprocessed --preset diffrhythm --steps 100000 --out outputs/jam_kaggle
+   python -m genmusic_vn.cli distill-jam --teacher outputs/jam_sft/sft_checkpoint.pt --manifest datasets/processed/jam/manifest.jsonl --out outputs/jam_student --teacher-steps 32 --student-steps 4
+   python -m genmusic_vn.cli evaluate-jam --generated outputs/generated.wav --reference data/reference.wav --out outputs/jam_evaluation
+
+Preset demo chỉ để kiểm tra pipeline. Preset jam/diffrhythm cần GPU, VAE/style encoder thật và dataset có quyền sử dụng. Tensor proxy được đánh dấu, không dùng để kết luận chất lượng. Báo cáo học thuật phải nêu parameter_count thực tế của checkpoint, không mặc định 402M.

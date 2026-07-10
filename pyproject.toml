@@ -9,6 +9,7 @@ dependencies = []
 [project.optional-dependencies]
 kaggle = ["kaggle"]
 custom_music = ["torch", "numpy", "matplotlib", "librosa", "soundfile"]
+jam = ["torch", "numpy", "scipy", "matplotlib", "librosa", "soundfile", "faster-whisper", "phonemizer"]
 dev = ["pytest"]
 
 [tool.setuptools.packages.find]

@@ -56,3 +56,9 @@ outputs/<run_id>/kaggle_job/
 ```
 
 Sau khi thêm token, có thể chạy lại các lệnh trong `run_commands.ps1`.
+
+## Demo Train JAM/DiffRhythm Trên Kaggle
+
+Kaggle nên chạy các stage nặng theo thứ tự: chuẩn bị latent/style, SFT CFM-DiT, sinh candidate và tính F0 để tạo preference pair, DPO, rồi distillation/INT8. Project đã có CLI và module tương ứng; notebook/kernel Kaggle cần mount dataset đã được cấp quyền, truyền checkpoint VAE/style bằng biến cấu hình, và lưu `sft_report.json`, `dpo_report.json`, `evaluation_report.json` cùng thư mục `plots/`.
+
+Không dùng `--allow-proxy` cho kết quả nộp báo cáo. Khi dataset chỉ có MP3, truyền rõ `--asr-model` để bóc transcript tiếng Việt; nếu ASR không có thì record được ghi vào danh sách skipped, không bị coi là mẫu đã căn chỉnh.

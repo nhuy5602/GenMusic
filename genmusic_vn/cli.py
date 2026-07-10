@@ -34,6 +34,20 @@ from .integrations.custom_music_training_auto import submit_custom_music_trainin
 from .data.music_audio_dataset import PUBLIC_MUSIC_DATASET_REF, build_custom_music_audio_manifest
 from .data.training_dataset import generate_diverse_training_records, generate_training_records, load_training_records, write_training_jsonl
 from .data.xlsx_dataset import records_from_xlsx, write_jsonl as write_xlsx_jsonl
+from .data.jam_preprocessing import AudioPreprocessingSpec, load_torchscript_encoder, prepare_jam_dataset
+from .data.lyric_alignment import align_wav_to_lyrics, load_segments, write_lrc
+from .data.vietnamese_g2p import vietnamese_g2p
+from .data.vietnamese_text import normalize_vietnamese_lyrics
+from .data.webdataset_pack import pack_jam_webdataset
+from .evaluation.jam_metrics import objective_metrics, subjective_summary, write_metric_report
+from .evaluation.jam_plots import write_jam_plots
+from .models.jam_diffrhythm import model_config
+from .training.dpo import DPOConfig, train_dpo_from_pairs
+from .training.consistency import DistillationConfig, distill_jam_checkpoint
+from .training.preference import build_preference_pairs
+from .training.quantization import quantize_linear_layers
+from .training.sft import SFTConfig, train_sft_from_manifest
+from .integrations.jam_training_auto import stage_jam_sft_kernel
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -183,6 +197,96 @@ def build_parser() -> argparse.ArgumentParser:
     synth.add_argument("--out", default="datasets/evaluation/synthetic_eval.jsonl", help="Đường dẫn JSONL output.")
     synth.add_argument("--emotions", default="", help="Nhãn cảm xúc phân cách bằng dấu phẩy; mặc định dùng tất cả.")
     synth.add_argument("--lengths", default="", help="Nhóm độ dài phân cách bằng dấu phẩy: short,medium,long.")
+
+    normalize = sub.add_parser("normalize-lyrics", help="Chuẩn hóa lời Việt trước khi đưa vào G2P.")
+    normalize.add_argument("--input", required=True, help="File lời thô UTF-8.")
+    normalize.add_argument("--out", required=True, help="File lời đã chuẩn hóa.")
+
+    g2p = sub.add_parser("lyrics-g2p", help="Chuyển lời Việt sang token IPA kèm số thanh điệu 1-6.")
+    g2p.add_argument("--input", required=True, help="File lời UTF-8.")
+    g2p.add_argument("--out", required=True, help="JSON output.")
+    g2p.add_argument("--no-phonemizer", action="store_true", help="Dùng fallback IPA xác định thay vì eSpeak.")
+
+    align = sub.add_parser("align-lyrics", help="Căn chỉnh câu hát thành LRC từ ASR segments hoặc model ASR.")
+    align.add_argument("--audio", required=True, help="WAV/MP3 gốc.")
+    align.add_argument("--lyrics", required=True, help="File lời UTF-8.")
+    align.add_argument("--out", required=True, help="File LRC output.")
+    align.add_argument("--segments", default="", help="JSON/JSONL segments có start/end/text.")
+    align.add_argument("--asr-model", default=None, help="Tên/path faster-whisper; phải truyền rõ để chạy ASR.")
+    align.add_argument("--allow-heuristic", action="store_true", help="Cho phép timestamp chia đều chỉ để smoke test.")
+
+    prepare = sub.add_parser("prepare-jam-dataset", help="Tạo normalized lyrics, G2P, LRC, latent .pt và style .pt.")
+    prepare.add_argument("--manifest", required=True, help="Manifest JSON/JSONL chứa audio và lyrics hoặc source.")
+    prepare.add_argument("--audio-root", default=".")
+    prepare.add_argument("--out", required=True, help="Thư mục dataset đã tiền xử lý.")
+    prepare.add_argument("--asr-model", default=None, help="faster-whisper model cho dataset chỉ có MP3.")
+    prepare.add_argument("--vae-checkpoint", default=None, help="TorchScript VAE encoder đã được cấp quyền.")
+    prepare.add_argument("--style-checkpoint", default=None, help="TorchScript style encoder 512 chiều đã được cấp quyền.")
+    prepare.add_argument("--allow-proxy", action="store_true", help="Dùng latent/style proxy; không dùng để báo cáo chất lượng.")
+    prepare.add_argument("--max-files", type=int, default=0)
+    prepare.add_argument("--latent-dim", type=int, default=64)
+    prepare.add_argument("--style-dim", type=int, default=512)
+
+    pack = sub.add_parser("pack-jam-webdataset", help="Đóng gói manifest đã tiền xử lý thành tar shards.")
+    pack.add_argument("--manifest", required=True)
+    pack.add_argument("--out", required=True)
+    pack.add_argument("--shard-size", type=int, default=1000)
+
+    sft = sub.add_parser("train-jam-sft", help="Train SFT CFM-DiT từ manifest latent đã tiền xử lý.")
+    sft.add_argument("--manifest", required=True)
+    sft.add_argument("--out", required=True)
+    sft.add_argument("--preset", choices=["demo", "jam", "diffrhythm"], default="demo")
+    sft.add_argument("--steps", type=int, default=1000)
+    sft.add_argument("--batch-size", type=int, default=2)
+    sft.add_argument("--learning-rate", type=float, default=2e-4)
+    sft.add_argument("--device", default="auto")
+    sft.add_argument("--seed", type=int, default=5602)
+
+    dpo_pairs = sub.add_parser("build-jam-dpo-pairs", help="Lọc cặp preferred/dispreferred theo hướng F0 thanh điệu.")
+    dpo_pairs.add_argument("--scores", required=True, help="JSON/JSONL candidates có music_f0/speech_f0 hoặc tone_score.")
+    dpo_pairs.add_argument("--out", required=True)
+    dpo_pairs.add_argument("--threshold", type=float, default=0.1)
+
+    dpo = sub.add_parser("train-jam-dpo", help="Căn chỉnh DPO trên cặp latent đã lọc.")
+    dpo.add_argument("--checkpoint", required=True)
+    dpo.add_argument("--pairs", required=True)
+    dpo.add_argument("--out", required=True)
+    dpo.add_argument("--steps", type=int, default=200)
+    dpo.add_argument("--learning-rate", type=float, default=5e-5)
+    dpo.add_argument("--beta", type=float, default=0.1)
+    dpo.add_argument("--device", default="auto")
+
+    quantize = sub.add_parser("quantize-jam", help="Xuất checkpoint PTQ INT8 cho các lớp Linear.")
+    quantize.add_argument("--checkpoint", required=True)
+    quantize.add_argument("--out", required=True)
+
+    distill = sub.add_parser("distill-jam", help="Chưng cất velocity teacher thành student 4 bước.")
+    distill.add_argument("--teacher", required=True)
+    distill.add_argument("--manifest", required=True)
+    distill.add_argument("--out", required=True)
+    distill.add_argument("--steps", type=int, default=1000)
+    distill.add_argument("--teacher-steps", type=int, default=32)
+    distill.add_argument("--student-steps", type=int, default=4)
+    distill.add_argument("--learning-rate", type=float, default=1e-4)
+    distill.add_argument("--device", default="auto")
+
+    stage_jam = sub.add_parser("stage-jam-sft-kaggle", help="Stage kernel Kaggle train SFT JAM/DiffRhythm, chưa submit.")
+    stage_jam.add_argument("--dataset-ref", required=True, help="Dataset Kaggle đã chứa manifest/latent/style/lrc.")
+    stage_jam.add_argument("--out", default="outputs/jam_kaggle")
+    stage_jam.add_argument("--preset", choices=["demo", "jam", "diffrhythm"], default="diffrhythm")
+    stage_jam.add_argument("--steps", type=int, default=100000)
+    stage_jam.add_argument("--batch-size", type=int, default=2)
+    stage_jam.add_argument("--username", default=None)
+    stage_jam.add_argument("--machine-shape", default="NvidiaTeslaT4")
+    stage_jam.add_argument("--seed", type=int, default=5602)
+
+    evaluate_jam = sub.add_parser("evaluate-jam", help="Tính FAD/MCD/FFE/WER, MOS/CMOS và sinh plot.")
+    evaluate_jam.add_argument("--generated", required=True)
+    evaluate_jam.add_argument("--reference", default=None)
+    evaluate_jam.add_argument("--generated-text", default=None)
+    evaluate_jam.add_argument("--reference-text", default=None)
+    evaluate_jam.add_argument("--votes", default=None, help="CSV/JSONL phiếu nghe mù đôi.")
+    evaluate_jam.add_argument("--out", required=True)
     return parser
 
 
@@ -191,6 +295,149 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8")
 
     args = build_parser().parse_args(argv)
+    if args.command == "normalize-lyrics":
+        output = Path(args.out)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(normalize_vietnamese_lyrics(Path(args.input).read_text(encoding="utf-8")) + "\n", encoding="utf-8")
+        print(json.dumps({"path": str(output.resolve()), "status": "normalized"}, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "lyrics-g2p":
+        result = vietnamese_g2p(Path(args.input).read_text(encoding="utf-8"), use_phonemizer=not args.no_phonemizer)
+        output = Path(args.out)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(result.as_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "align-lyrics":
+        segments = load_segments(args.segments) if args.segments else None
+        lines = align_wav_to_lyrics(
+            args.audio,
+            Path(args.lyrics).read_text(encoding="utf-8"),
+            segments=segments,
+            asr_model=args.asr_model,
+            allow_heuristic=args.allow_heuristic,
+        )
+        output = write_lrc(lines, args.out)
+        print(json.dumps({"path": str(output.resolve()), "line_count": len(lines), "sources": sorted({line.source for line in lines})}, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "prepare-jam-dataset":
+        report = prepare_jam_dataset(
+            args.manifest,
+            args.out,
+            audio_root=args.audio_root,
+            spec=AudioPreprocessingSpec(latent_dim=args.latent_dim, style_dim=args.style_dim),
+            vae_encoder=load_torchscript_encoder(args.vae_checkpoint, kind="vae_latent", spec=AudioPreprocessingSpec(latent_dim=args.latent_dim, style_dim=args.style_dim)) if args.vae_checkpoint else None,
+            style_encoder=load_torchscript_encoder(args.style_checkpoint, kind="style_embedding", spec=AudioPreprocessingSpec(latent_dim=args.latent_dim, style_dim=args.style_dim)) if args.style_checkpoint else None,
+            asr_model=args.asr_model,
+            allow_proxy=args.allow_proxy,
+            max_files=args.max_files,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "pack-jam-webdataset":
+        report = pack_jam_webdataset(args.manifest, args.out, shard_size=args.shard_size)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "train-jam-sft":
+        report = train_sft_from_manifest(
+            args.manifest,
+            args.out,
+            config=SFTConfig(
+                preset=args.preset,
+                steps=args.steps,
+                batch_size=args.batch_size,
+                learning_rate=args.learning_rate,
+                device=args.device,
+                seed=args.seed,
+            ),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "build-jam-dpo-pairs":
+        source = Path(args.scores)
+        if source.suffix.casefold() == ".jsonl":
+            scores = [json.loads(line) for line in source.read_text(encoding="utf-8").splitlines() if line.strip()]
+        else:
+            parsed = json.loads(source.read_text(encoding="utf-8"))
+            scores = parsed if isinstance(parsed, list) else parsed.get("records", parsed.get("candidates", []))
+        report = build_preference_pairs(scores, args.out, threshold=args.threshold)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "train-jam-dpo":
+        report = train_dpo_from_pairs(
+            args.checkpoint,
+            args.pairs,
+            args.out,
+            config=DPOConfig(steps=args.steps, learning_rate=args.learning_rate, beta=args.beta, device=args.device),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "quantize-jam":
+        report = quantize_linear_layers(args.checkpoint, args.out)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "distill-jam":
+        report = distill_jam_checkpoint(
+            args.teacher,
+            args.manifest,
+            args.out,
+            config=DistillationConfig(
+                steps=args.steps,
+                teacher_steps=args.teacher_steps,
+                student_steps=args.student_steps,
+                learning_rate=args.learning_rate,
+                device=args.device,
+            ),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "stage-jam-sft-kaggle":
+        report = stage_jam_sft_kernel(
+            preprocessed_dataset_ref=args.dataset_ref,
+            output_root=args.out,
+            preset=args.preset,
+            steps=args.steps,
+            batch_size=args.batch_size,
+            username=args.username,
+            machine_shape=args.machine_shape,
+            seed=args.seed,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "evaluate-jam":
+        def _read_optional(value: str | None) -> str | None:
+            if not value:
+                return None
+            try:
+                candidate = Path(value)
+                return candidate.read_text(encoding="utf-8") if candidate.exists() else value
+            except OSError:
+                return value
+
+        objective = objective_metrics(
+            generated_audio=args.generated,
+            reference_audio=args.reference,
+            generated_transcript=_read_optional(args.generated_text),
+            reference_transcript=_read_optional(args.reference_text),
+        )
+        subjective = subjective_summary(args.votes) if args.votes else {"vote_count": 0, "listener_count": 0, "variants": {}, "CMOS": None, "status": "no-votes"}
+        report = {"objective": objective, "subjective": subjective, "protocol": {"required_listener_count": 15, "metrics": ["FAD", "MCD", "FFE", "WER", "MOS", "CMOS"]}}
+        write_metric_report(report, args.out)
+        report["plots"] = write_jam_plots(report, Path(args.out) / "plots")
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+
     if args.command == "model-status":
         print(json.dumps(trained_model_status(args.model), ensure_ascii=False, indent=2))
         return 0
