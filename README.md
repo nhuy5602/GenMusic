@@ -2,7 +2,7 @@
 
 Project bài tập lớn môn AI tạo sinh.
 
-Mục tiêu: nhập văn bản tiếng Việt, dùng model đã train để phân tích cảm xúc/style, tạo lời/harmony/melody, sinh backing bằng custom composer của project, synth vocal tiếng Việt bằng TTS rồi mix thành file `.mp3`.
+Mục tiêu: nhập văn bản tiếng Việt, dùng Transformer text-to-music tự code của project để tạo backing track, sau đó tùy chọn thêm lyric/vocal bằng TTS và mix thành file `.mp3`.
 
 ## Kiến Trúc
 
@@ -12,11 +12,9 @@ Local web/CLI
   Trả output: link nghe/tải file MP3
   Ưu tiên load trained text model từ models/current hoặc datasets/trained_models
 
-Trained text model
-  Tự train bằng dataset tiếng Việt do project sinh ra
-  Dự đoán emotion + genre/style
-  Xuất artifact genmusic_text_model.json
-  Local/Kaggle đều dùng artifact này, không gọi LLM API để phân tích text
+Text model phụ trợ
+  Có thể dùng artifact genmusic_text_model.json để gợi ý emotion/style
+  Không phải mô hình sinh nhạc và không còn là model chính của pipeline
 
 Kaggle GPU / CPU
   Train lại text model khi cần cải thiện
@@ -25,8 +23,8 @@ Kaggle GPU / CPU
   Tra cứu dataset kiến thức âm nhạc Việt Nam
   Viết lại nội dung thành lời bài hát hoàn chỉnh
   Chọn key, scale, BPM, hợp âm, nhạc cụ và hướng giai điệu
-  Custom Music Model sinh chord + bass + drum + melody guide + arrangement
-  Render MIDI/symbolic arrangement thành backing.wav/backing.mp3
+  CustomTextToMusicTransformer sinh chuỗi đặc trưng audio từ prompt văn bản
+  Với request dài, sinh theo chunk tối đa 30 giây rồi crossfade
   Chạy F5-TTS Vietnamese để synth vocal tiếng Việt
   Nếu F5-TTS lỗi thì fallback sang MMS Vietnamese TTS
   Mix vocal với backing track
@@ -38,21 +36,23 @@ Luồng audio chính:
 ```text
 Text tiếng Việt
   -> TextPlan / Emotion / Harmony / Lyrics
-  -> Custom Music Model
-  -> chord + bass + drum + melody guide + arrangement
-  -> backing.wav + song.mid
+  -> Transformer text-to-music tự code
+  -> backing.wav/backing.mp3
   -> TTS vocal tiếng Việt
   -> mix vocal + backing
   -> final.mp3
 ```
 
-Project không còn phụ thuộc Meta/Facebook MusicGen cho bước sinh nhạc nền. Một số field legacy `musicgen_*` có thể còn xuất hiện trong state để đọc job cũ, nhưng pipeline mới dùng custom composer trong repo.
+Transformer text-to-music tự code là backend sinh nhạc chính. Symbolic composer chỉ còn là backend local cũ để phát triển và không được chọn khi submit job mặc định.
 
 TTS mặc định dùng model `hynt/F5-TTS-Vietnamese-ViVoice` trên Kaggle. Model này dùng một đoạn giọng tham chiếu tiếng Việt ngắn để tạo vocal; trường male/female trong project vẫn là khuyến nghị phối giọng, cao độ và profile hậu kỳ chứ không bảo đảm đổi hoàn toàn timbre ca sĩ. `facebook/mms-tts-vie` được giữ làm fallback để demo vẫn trả file MP3 có vocal khi F5-TTS lỗi.
 
 ## Model Train Của Project
 
-Project có model train thật cho bước hiểu văn bản tiếng Việt:
+Project có hai lớp model:
+
+1. CustomTextToMusicTransformer là mô hình generative AI chính cho text-to-music.
+2. `genmusic_text_model.json` là model phụ trợ cho emotion/style, không tạo audio.
 
 ```text
 datasets/trained_models/genmusic_text_model.json
@@ -65,7 +65,7 @@ Thứ tự load:
 2. `datasets/trained_models/genmusic_text_model.json`: bootstrap artifact đi kèm repo.
 3. fallback rule-based nếu chưa có artifact.
 
-Model hiện tại là Multinomial Naive Bayes tự triển khai, train trên dataset supervised tiếng Việt do project tự sinh. Output gồm:
+Model phụ trợ hiện tại là Multinomial Naive Bayes tự triển khai, train trên dataset supervised tiếng Việt do project tự sinh. Output gồm:
 
 - emotion: `joy`, `sadness`, `anger`, `fear`, `calm`, `romantic`, `hope`, `nostalgic`
 - genre/style: `pop_ballad`, `trap`, `edm`, `folk`, `rock`, `rnb`, `bolero`, `ambient`, `orchestral`, `horror`, `lofi`
@@ -111,7 +111,15 @@ Train local nhanh để kiểm thử thuật toán:
 python -m genmusic_vn.cli train-text-model --local --samples 800 --seed 5602 --model-out datasets/trained_models/genmusic_text_model.json
 ```
 
-Train trên Kaggle và tải artifact về `models/current`:
+Train model text-to-music tự code trên Kaggle bằng MP3 CC0 và sinh report/plot:
+
+```powershell
+python -m genmusic_vn.cli train-custom-music --max-files 32 --max-steps 200 --audio-seconds 16 --wait --out outputs/custom_music_training
+```
+
+Kernel này dùng dataset `sonlest/vietnamese-music-dataset-version3-part3` (CC0), tự tạo caption mood/energy/brightness từ MP3 vì dataset không có lyric label. Output gồm `custom_text_to_music.pt`, `custom_music_training_report.json` và thư mục `plots/`.
+
+Train model phụ trợ text trên Kaggle và tải artifact về `models/current`:
 
 ```powershell
 python -m genmusic_vn.cli train-text-model --samples 1200 --seed 5602 --wait --model-out models/current/genmusic_text_model.json
@@ -145,6 +153,16 @@ Dataset này không phải audio training set. Nó được dùng để hướng
 - bổ sung keyword/style theo ngữ cảnh tiếng Việt
 
 Khi submit job, dataset này được đóng gói vào `genmusic_vn_source.zip` và upload lên Kaggle.
+
+## Dataset Audio Text-to-Music
+
+Dataset `sonlest/vietnamese-music-dataset-version3-part3` chỉ có MP3, nhưng được Kaggle ghi nhận là CC0. Có thể tạo manifest caption từ thư mục audio đã tải về:
+
+```powershell
+python -m genmusic_vn.cli make-custom-music-manifest --input D:\DataSet_GenMusic --out datasets/training/custom_music_audio_manifest.jsonl
+```
+
+Manifest không tự bịa lyric. Nếu cần vocal, lyric được tạo ở add-on như pipeline cũ hoặc gắn thêm transcript ASR có provenance riêng.
 
 ## Xử Lý Text Dài
 
@@ -271,7 +289,7 @@ outputs/<run_id>/
     run_commands.ps1
 ```
 
-Kaggle Kernel sẽ giải nén `genmusic_vn_source.zip`, chạy pipeline AI tiếng Việt, sinh backing bằng custom composer, chạy TTS/mix và ghi:
+Kaggle Kernel sẽ giải nén `genmusic_vn_source.zip`, chạy pipeline lập prompt tiếng Việt, sinh backing bằng Transformer tự code, chạy TTS/mix và ghi:
 
 ```text
 /kaggle/working/genmusic_vn/<run_id>.mp3
@@ -292,7 +310,8 @@ genmusic_vn/
     pipeline.py       # điều phối toàn bộ pipeline
     generators/       # các backend sinh backing track local/Kaggle
   data/               # tạo, nhập và quản lý dataset
-    training_dataset.py # sinh record huấn luyện tiếng Việt
+    training_dataset.py # sinh record huấn luyện phụ trợ tiếng Việt
+    music_audio_dataset.py # manifest caption cho audio text-to-music
     dataset_scale.py  # tạo dataset streaming/shard tới quy mô GB
     reference_dataset.py # loader reference dataset do người dùng/crawler cung cấp
     licensed_lyric_crawler.py # nhập section có license được phê duyệt
@@ -300,10 +319,14 @@ genmusic_vn/
     evaluation.py     # đánh giá text -> emotion -> lyric -> prompt
     quality_checks.py  # đủ lời, vần, beat/mood, vocal, clarity, flow/style
     self_improve.py   # train -> giả lập user -> đánh giá -> thêm case yếu
-    report_plots.py   # tạo biểu đồ matplotlib cho model và project
+    report_plots.py   # tạo biểu đồ matplotlib cho project
+    custom_music_metrics.py # metric kỹ thuật và plot cho model tự code
   integrations/       # kết nối dịch vụ ngoài và artifact model
     kaggle_auto.py    # tạo dataset/kernel và tải kết quả Kaggle
-    training_auto.py  # submit job train text model trên Kaggle
+    training_auto.py  # submit job train model text phụ trợ
+    custom_music_training_auto.py # submit train model text-to-music tự code
+  models/              # kiến trúc generative AI tự triển khai
+    custom_text_to_music.py # Transformer text -> audio feature tokens
     trained_text_model.py # train/load/predict model text local
 datasets/
   vn_music_stylebank/ # dataset kiến thức âm nhạc Việt Nam
@@ -383,6 +406,17 @@ python -m genmusic_vn.cli self-improve --iterations 1 --samples 4000 --eval-coun
 ```
 
 Artifact nam trong `outputs/self_improve_5gb/plots/` va duoc lien ket trong `self_improve_report.json`/`.md`.
+
+Report job custom text-to-music có plot riêng trong `outputs/custom_music_training/<run_id>/kaggle_train_custom_music/downloaded_output/plots/`:
+
+- `duration_vs_energy.png`: thời lượng và RMS của mẫu audio sinh.
+- `clipping_rate.png`: tỷ lệ clipping kỹ thuật.
+- `loss_curve.png`: loss theo bước train nếu kernel đã chạy.
+- `holdout_feature_accuracy.png`: accuracy trên tập holdout cho pitch, energy, bass và brightness.
+- `plot_data.json`: dữ liệu gốc dùng để vẽ.
+- `custom_music_training_report.json`: loss theo bước, metric audio, kiến trúc và thông tin dataset.
+
+Các metric audio này chỉ là proxy kỹ thuật. Đánh giá nhạc thật vẫn cần nghe thử hoặc human rating; không nên đọc `RMS`/`clipping` như điểm chất lượng âm nhạc tổng thể.
 
 Nếu có dataset lyrics/text local bạn có quyền dùng:
 

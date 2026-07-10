@@ -29,13 +29,15 @@ def make_run_id(text: str) -> str:
 def get_generator(backend: str) -> MusicGenerator:
     if backend in {"custom", "guide"}:
         return GuideTrackGenerator()
+    if backend == "custom_text_to_music":
+        raise ValueError("Backend model tự code chạy trên Kaggle; dùng lệnh generate hoặc tạo project với render_audio=False.")
     raise ValueError(f"Backend không được hỗ trợ: {backend}")
 
 
 def create_music_project(
     text: str,
     output_root: str | Path = "outputs",
-    backend: str = "custom",
+    backend: str = "custom_text_to_music",
     duration_seconds: int = 30,
     genre: str | None = None,
     render_audio: bool = True,

@@ -78,7 +78,7 @@ def records_from_xlsx(path: str | Path) -> list[dict[str, Any]]:
     for row in load_xlsx_input_rows(path):
         input_text = str(row.get("Input tiếng Việt", "")).strip()
         mood = str(row.get("Mood chính", "")).strip()
-        prompt_hint = str(row.get("Prompt nhạc gợi ý cho MusicGen", "")).strip()
+        prompt_hint = str(row.get("Prompt nhạc gợi ý cho model", row.get("Prompt nhạc gợi ý cho MusicGen", ""))).strip()
         genre = prompt_hint or str(row.get("Genre/Style đề xuất", "")).strip()
         duration = _as_int(row.get("Duration target (s)"), 30)
         expected_keywords = extract_keywords(

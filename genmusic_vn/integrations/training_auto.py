@@ -23,7 +23,7 @@ from .kaggle_auto import (
     slugify,
 )
 from .trained_text_model import DEFAULT_LOCAL_MODEL_PATH
-from ..data.training_dataset import generate_training_records, load_training_records, write_training_jsonl
+from ..data.training_dataset import generate_diverse_training_records, generate_training_records, load_training_records, write_training_jsonl
 
 
 QUOTA_MARKERS = ("quota", "usage", "limit", "exceeded", "gpu", "not enough", "capacity")
@@ -35,6 +35,8 @@ def submit_text_model_training_job(
     sample_count: int = 480,
     seed: int = 42,
     extra_datasets: list[str | Path] | None = None,
+    extra_dataset_max_records: int | None = 60000,
+    profile: str = "diverse",
     config: KaggleJobConfig | None = None,
     local_model_path: str | Path = DEFAULT_LOCAL_MODEL_PATH,
 ) -> dict[str, Any]:
@@ -44,6 +46,8 @@ def submit_text_model_training_job(
         sample_count=sample_count,
         seed=seed,
         extra_datasets=extra_datasets or [],
+        extra_dataset_max_records=extra_dataset_max_records,
+        profile=profile,
         config=config,
         local_model_path=local_model_path,
     )
@@ -77,6 +81,8 @@ def stage_text_model_training_job(
     sample_count: int,
     seed: int,
     extra_datasets: list[str | Path],
+    extra_dataset_max_records: int | None,
+    profile: str,
     config: KaggleJobConfig,
     local_model_path: str | Path,
 ) -> dict[str, Any]:
@@ -91,8 +97,13 @@ def stage_text_model_training_job(
     kernel_dir.mkdir(parents=True, exist_ok=True)
     download_dir.mkdir(parents=True, exist_ok=True)
 
-    generated = generate_training_records(sample_count, seed=seed)
-    extra_records = load_training_records(extra_datasets)
+    generator = generate_diverse_training_records if profile == "diverse" else generate_training_records
+    generated = generator(sample_count, seed=seed)
+    extra_records = load_training_records(
+        extra_datasets,
+        max_records=extra_dataset_max_records,
+        seed=seed,
+    )
     training_records = generated + extra_records
     training_jsonl = dataset_dir / "training_data.jsonl"
     write_training_jsonl(training_records, training_jsonl)
@@ -106,6 +117,8 @@ def stage_text_model_training_job(
         "run_id": run_id,
         "job_kind": "text_model_training",
         "sample_count": sample_count,
+        "profile": profile,
+        "extra_dataset_max_records": extra_dataset_max_records,
         "extra_record_count": len(extra_records),
         "total_record_count": len(training_records),
         "seed": seed,

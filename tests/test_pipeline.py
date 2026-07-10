@@ -294,16 +294,19 @@ class PipelineTests(unittest.TestCase):
 
     def test_kaggle_job_stages_raw_text_request_and_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
+            checkpoint = Path(temp) / "custom_text_to_music.pt"
+            checkpoint.write_bytes(b"test checkpoint")
             job = submit_text_to_music_job(
                 text="Một đoạn văn yên bình để demo tự động hóa Kaggle.",
                 output_root=temp,
                 duration_seconds=6,
                 genre="Vietnamese cinematic pop",
-                config=KaggleJobConfig(username="demo-user", submit=False),
+                config=KaggleJobConfig(username="demo-user", model_checkpoint=str(checkpoint), submit=False),
             )
             self.assertEqual(job["status"], "staged")
-            self.assertEqual(job["backend"], "custom")
-            self.assertEqual(job["model"], "genmusic-vn/custom-symbolic-composer")
+            self.assertEqual(job["backend"], "custom_text_to_music")
+            self.assertEqual(job["model"], "genmusic-vn/custom-text-to-music-v1")
+            self.assertTrue(job["custom_checkpoint_present"])
             self.assertEqual(job["duration_policy"], "soft_target")
             self.assertEqual(job["target_duration_seconds"], 6)
             self.assertTrue(job["input_received_at"])
@@ -340,7 +343,7 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("tts_failed_backing_only", kernel_script)
             self.assertIn('"vocal_failed": bool(tts_error)', kernel_script)
             self.assertIn("mix_vocal_with_backing", kernel_script)
-            self.assertIn("render_custom_backing_mp3", kernel_script)
+            self.assertIn("render_custom_text_to_music_backing_mp3", kernel_script)
             self.assertIn("_backing.mp3", kernel_script)
             self.assertIn("_song.mid", kernel_script)
             self.assertIn("tts_voice_actual", kernel_script)
@@ -458,12 +461,14 @@ class PipelineTests(unittest.TestCase):
 
     def test_tts_retry_stages_backing_only_kernel_without_musicgen(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
+            checkpoint = Path(temp) / "custom_text_to_music.pt"
+            checkpoint.write_bytes(b"test checkpoint")
             job = submit_text_to_music_job(
                 text="Một đoạn văn yên bình để demo tự động hóa Kaggle.",
                 output_root=temp,
                 duration_seconds=12,
                 genre="Vietnamese cinematic pop",
-                config=KaggleJobConfig(username="demo-user", submit=False),
+                config=KaggleJobConfig(username="demo-user", model_checkpoint=str(checkpoint), submit=False),
             )
             backing_path = Path(job["run_dir"]) / "previous_backing.mp3"
             backing_path.write_bytes(b"fake mp3 bytes")

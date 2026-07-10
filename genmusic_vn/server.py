@@ -46,7 +46,7 @@ class GenMusicHandler(BaseHTTPRequestHandler):
             self._send_file(requested)
             return
         if path == "/api/health":
-            self._send_json({"status": "ok", "backend": "trained-text-model+custom-composer+tts", "text_model": trained_model_status()})
+            self._send_json({"status": "ok", "backend": "custom-text-to-music-transformer+tts-lyrics-addon", "custom_model": DEFAULT_CUSTOM_MUSIC_MODEL, "text_model": trained_model_status()})
             return
         if path == "/api/kaggle/status":
             query = parse_qs(parsed.query)

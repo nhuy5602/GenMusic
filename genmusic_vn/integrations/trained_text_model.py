@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import re
 import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -44,7 +45,19 @@ def train_text_model(
     holdout_ratio: float = 0.2,
     alpha: float = 0.6,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    usable = [record for record in records if _record_text(record) and record.get("emotion") and record.get("genre_label")]
+    usable: list[dict[str, Any]] = []
+    seen_text: set[str] = set()
+    duplicate_count = 0
+    for record in records:
+        text = _record_text(record)
+        if not text or not record.get("emotion") or not record.get("genre_label"):
+            continue
+        key = normalize_text(text).lower()
+        if key in seen_text:
+            duplicate_count += 1
+            continue
+        seen_text.add(key)
+        usable.append(record)
     if len(usable) < 8:
         raise ValueError("Cần ít nhất 8 record huấn luyện có nhãn.")
 
@@ -57,6 +70,8 @@ def train_text_model(
 
     holdout_model = _fit_model(train, seed=seed, alpha=alpha)
     report = evaluate_text_model(holdout_model, holdout)
+    report["unique_record_count"] = len(usable)
+    report["duplicate_records_removed"] = duplicate_count
     final_model = _fit_model(usable, seed=seed, alpha=alpha)
     final_model["training_report"] = report
     final_model["trained_on"] = {
@@ -186,7 +201,7 @@ def _fit_model(records: list[dict[str, Any]], *, seed: int, alpha: float) -> dic
         "schema_version": MODEL_SCHEMA_VERSION,
         "model_type": "multinomial_naive_bayes",
         "model_version": f"genmusic-text-nb-{_now_compact()}",
-        "feature_extractor": "word_unigram_bigram_accentless_v1",
+        "feature_extractor": "word_unigram_bigram_char_ngram_accentless_v2",
         "seed": seed,
         "classifiers": {
             "emotion": emotion_classifier,
@@ -263,6 +278,12 @@ def _extract_features(text: str) -> Counter[str]:
         left_a = _strip_accents(left)
         right_a = _strip_accents(right)
         features[f"ba:{left_a}_{right_a}"] += 1
+    accentless = re.sub(r"\s+", " ", _strip_accents(normalized)).strip()
+    for size in (3, 4):
+        for index in range(max(0, len(accentless) - size + 1)):
+            gram = accentless[index : index + size].strip()
+            if len(gram) == size and any(char.isalpha() for char in gram):
+                features[f"c{size}:{gram}"] += 0.35
     for marker in ("r&b", "lo-fi", "edm", "trap", "bolero", "horror", "ambient", "orchestral"):
         if marker in normalized:
             features[f"m:{marker}"] += 2
@@ -306,7 +327,13 @@ def _refine_genre_label(text: str, predicted: str) -> str:
 
 
 def _record_text(record: dict[str, Any]) -> str:
-    return str(record.get("input_text") or record.get("text") or record.get("chorus") or "")
+    values = [
+        record.get("input_text") or record.get("text") or record.get("chorus") or "",
+        record.get("style_prompt") or "",
+        record.get("genre") or "",
+        record.get("expected_mood_text") or record.get("mood") or "",
+    ]
+    return " ".join(str(value).strip() for value in values if str(value).strip())
 
 
 def _strip_accents(value: str) -> str:

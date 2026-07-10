@@ -30,20 +30,22 @@ from .evaluation.self_improve import run_self_improvement
 from .data.synthetic_dataset import generate_synthetic_records, write_jsonl
 from .integrations.trained_text_model import DEFAULT_LOCAL_MODEL_PATH, trained_model_status, train_text_model, write_text_model
 from .integrations.training_auto import submit_text_model_training_job
+from .integrations.custom_music_training_auto import submit_custom_music_training_job
+from .data.music_audio_dataset import PUBLIC_MUSIC_DATASET_REF, build_custom_music_audio_manifest
 from .data.training_dataset import generate_diverse_training_records, generate_training_records, load_training_records, write_training_jsonl
 from .data.xlsx_dataset import records_from_xlsx, write_jsonl as write_xlsx_jsonl
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="genmusic-vn", description="Công cụ custom composer tạo MP3 từ văn bản tiếng Việt.")
+    parser = argparse.ArgumentParser(prog="genmusic-vn", description="Công cụ model tự code tạo nhạc từ văn bản tiếng Việt và add-on lyric/vocal.")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    generate = sub.add_parser("generate", help="Gửi văn bản tiếng Việt lên custom composer Kaggle và nhận artifact MP3.")
+    generate = sub.add_parser("generate", help="Gửi văn bản tiếng Việt lên model tự code trên Kaggle và nhận MP3.")
     generate.add_argument("--text", required=True, help="Văn bản input tiếng Việt.")
     generate.add_argument("--duration", type=int, default=30, help="Thời lượng mục tiêu, tính bằng giây.")
     generate.add_argument("--out", default="outputs", help="Thư mục output.")
     generate.add_argument("--genre", default=None, help="Gợi ý phong cách/thể loại, không bắt buộc.")
-    generate.add_argument("--model", default=DEFAULT_CUSTOM_MUSIC_MODEL, help="Mã định danh custom music model.")
+    generate.add_argument("--model", default=DEFAULT_CUSTOM_MUSIC_MODEL, help="Mã model text-to-music tự triển khai của project.")
     generate.add_argument("--username", default=None, help="Username Kaggle; mặc định đọc từ kaggle.json hoặc KAGGLE_USERNAME.")
     generate.add_argument("--machine-shape", default="NvidiaTeslaT4")
     generate.add_argument("--no-submit", action="store_true", help="Chỉ chuẩn bị file Kaggle ở local.")
@@ -51,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--poll-seconds", type=int, default=60)
     generate.add_argument("--timeout-seconds", type=int, default=10_800)
 
-    generate_local = sub.add_parser("generate-local", help="Tạo backing track custom composer ở local.")
+    generate_local = sub.add_parser("generate-local", help="Tạo backing track symbolic cũ ở local để kiểm tra nhanh.")
     generate_local.add_argument("--text", required=True, help="Văn bản input tiếng Việt.")
     generate_local.add_argument("--duration", type=int, default=30, help="Thời lượng mục tiêu, tính bằng giây.")
     generate_local.add_argument("--out", default="outputs/local", help="Thư mục output.")
@@ -91,6 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     train_model = sub.add_parser("train-text-model", help="Train text model cảm xúc/phong cách local; mặc định submit lên Kaggle.")
     train_model.add_argument("--samples", type=int, default=480, help="Số record tổng hợp tạo trước khi train.")
+    train_model.add_argument("--profile", choices=["standard", "diverse"], default="diverse", help="Profile dữ liệu tự sinh; diverse được khuyến nghị.")
     train_model.add_argument("--seed", type=int, default=42, help="Seed ngẫu nhiên xác định.")
     train_model.add_argument("--dataset", default="", help="Dataset train JSONL bổ sung, không bắt buộc.")
     train_model.add_argument("--dataset-limit", type=int, default=60000, help="Số record tối đa lấy từ file/thư mục bổ sung.")
@@ -102,6 +105,26 @@ def build_parser() -> argparse.ArgumentParser:
     train_model.add_argument("--wait", action="store_true", help="Chờ Kaggle train xong rồi tải artifact model.")
     train_model.add_argument("--poll-seconds", type=int, default=60)
     train_model.add_argument("--timeout-seconds", type=int, default=7200)
+
+    train_custom = sub.add_parser("train-custom-music", help="Train model text-to-music tự code trên MP3 CC0 bằng Kaggle và sinh plot.")
+    train_custom.add_argument("--audio-dataset-ref", default=PUBLIC_MUSIC_DATASET_REF, help="Dataset Kaggle chứa MP3, mặc định là bộ Vietnamese Music Dataset Part 3.")
+    train_custom.add_argument("--model", default=DEFAULT_CUSTOM_MUSIC_MODEL, help="Mã model tự triển khai của project.")
+    train_custom.add_argument("--max-files", type=int, default=32, help="Số MP3 tối đa dùng cho demo.")
+    train_custom.add_argument("--max-steps", type=int, default=200, help="Số bước train.")
+    train_custom.add_argument("--audio-seconds", type=int, default=16, help="Số giây cắt từ mỗi MP3.")
+    train_custom.add_argument("--seed", type=int, default=5602)
+    train_custom.add_argument("--out", default="outputs/custom_music_training")
+    train_custom.add_argument("--username", default=None)
+    train_custom.add_argument("--machine-shape", default="NvidiaTeslaT4")
+    train_custom.add_argument("--no-submit", action="store_true", help="Chỉ tạo kernel local.")
+    train_custom.add_argument("--wait", action="store_true", help="Chờ kernel hoàn thành và tải report/plot.")
+    train_custom.add_argument("--poll-seconds", type=int, default=60)
+    train_custom.add_argument("--timeout-seconds", type=int, default=21600)
+
+    music_manifest = sub.add_parser("make-custom-music-manifest", help="Tạo manifest caption từ thư mục MP3 cho model tự code.")
+    music_manifest.add_argument("--input", required=True, help="Thư mục audio đã tải về hoặc đã giải nén.")
+    music_manifest.add_argument("--out", default="datasets/training/custom_music_audio_manifest.jsonl")
+    music_manifest.add_argument("--max-files", type=int, default=0)
 
     evaluate = sub.add_parser("evaluate", help="Đánh giá lập kế hoạch text-to-lyrics/vocal trên dataset benchmark.")
     evaluate.add_argument("--dataset", default=str(DEFAULT_EVAL_DATASET), help="Dataset đánh giá JSONL.")
@@ -220,7 +243,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "train-text-model":
         extra_paths = [item.strip() for item in args.dataset.split(",") if item.strip()]
         if args.local:
-            records = generate_training_records(args.samples, seed=args.seed) + load_training_records(
+            generator = generate_diverse_training_records if args.profile == "diverse" else generate_training_records
+            records = generator(args.samples, seed=args.seed) + load_training_records(
                 extra_paths,
                 max_records=args.dataset_limit,
                 seed=args.seed,
@@ -239,6 +263,7 @@ def main(argv: list[str] | None = None) -> int:
             seed=args.seed,
             extra_datasets=extra_paths,
             extra_dataset_max_records=args.extra_dataset_limit,
+            profile=args.profile,
             config=KaggleJobConfig(
                 username=args.username,
                 machine_shape="CPU",
@@ -250,6 +275,33 @@ def main(argv: list[str] | None = None) -> int:
             local_model_path=args.model_out,
         )
         print(json.dumps(job, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "train-custom-music":
+        job = submit_custom_music_training_job(
+            output_root=args.out,
+            audio_dataset_ref=args.audio_dataset_ref,
+            model=args.model,
+            max_files=args.max_files,
+            max_steps=args.max_steps,
+            audio_seconds=args.audio_seconds,
+            seed=args.seed,
+            config=KaggleJobConfig(
+                model=args.model,
+                username=args.username,
+                machine_shape=args.machine_shape,
+                submit=not args.no_submit,
+                wait=args.wait,
+                poll_seconds=args.poll_seconds,
+                timeout_seconds=args.timeout_seconds,
+            ),
+        )
+        print(json.dumps(job, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "make-custom-music-manifest":
+        report = build_custom_music_audio_manifest(args.input, args.out, max_files=args.max_files)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "generate-local":

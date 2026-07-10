@@ -1,13 +1,14 @@
 [project]
 name = "genmusic-vn"
 version = "0.1.0"
-description = "Vietnamese text-to-MP3 client with a custom composer and Kaggle TTS pipeline."
+description = "Vietnamese text-to-music client with a project-owned Transformer and optional lyric/vocal TTS add-on."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
 kaggle = ["kaggle"]
+custom_music = ["torch", "numpy", "matplotlib", "librosa", "soundfile"]
 dev = ["pytest"]
 
 [tool.setuptools.packages.find]

@@ -10,6 +10,13 @@ kaggle.json
 .kaggle_runtime_home/
 outputs/
 models/
+!genmusic_vn/models/
+!genmusic_vn/models/*.py
+!models/
+models/*
+!models/current/
+models/current/*
+!models/current/custom_text_to_music.pt
 kaggle/working/
 kaggle/input/
 datasets/incoming/

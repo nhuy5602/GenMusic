@@ -23,8 +23,9 @@ class KaggleAutoError(RuntimeError):
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CUSTOM_MUSIC_MODEL = "genmusic-vn/custom-symbolic-composer"
-DEFAULT_MUSICGEN_MODEL = DEFAULT_CUSTOM_MUSIC_MODEL
+# The primary text-to-music model is implemented inside this repository.
+DEFAULT_CUSTOM_MUSIC_MODEL = "genmusic-vn/custom-text-to-music-v1"
+DEFAULT_CUSTOM_MODEL_CHECKPOINT = PROJECT_ROOT / "models" / "current" / "custom_text_to_music.pt"
 DEFAULT_TTS_MODEL = "hynt/F5-TTS-Vietnamese-ViVoice"
 DEFAULT_MMS_TTS_MODEL = "facebook/mms-tts-vie"
 DEFAULT_TTS_VOICE_ACTUAL = "f5_vietnamese_vivoice_reference"
@@ -33,7 +34,8 @@ DEFAULT_TTS_VOICE_NOTE = "F5-TTS Vietnamese uses a short Vietnamese reference vo
 
 @dataclass(frozen=True)
 class KaggleJobConfig:
-    model: str = DEFAULT_MUSICGEN_MODEL
+    model: str = DEFAULT_CUSTOM_MUSIC_MODEL
+    model_checkpoint: str | None = None
     username: str | None = None
     machine_shape: str = "NvidiaTeslaT4"
     submit: bool = True
@@ -60,6 +62,11 @@ def submit_text_to_music_job(
         config=config,
         input_received_at=input_received_at,
     )
+    if not state.get("custom_checkpoint_present"):
+        state["status"] = "needs_training"
+        state["messages"].append("Chưa có checkpoint custom_text_to_music.pt; hãy train model tự code trước khi sinh MP3.")
+        _write_state(state)
+        return state
     if not config.submit:
         state["status"] = "staged"
         state["messages"].append("Job đã được chuẩn bị local. Tắt bước submit.")
@@ -142,7 +149,7 @@ def stage_text_to_music_job(
     download_dir.mkdir(parents=True, exist_ok=True)
 
     dataset_slug = slugify(f"genmusic-vn-job-{run_id}", max_length=48)
-    kernel_slug = slugify(f"genmusic-vn-custom-{run_id}", max_length=48)
+    kernel_slug = slugify(f"genmusic-vn-custom-music-{run_id}", max_length=48)
     dataset_ref = f"{username}/{dataset_slug}"
     kernel_ref = f"{username}/{kernel_slug}"
 
@@ -157,13 +164,21 @@ def stage_text_to_music_job(
         "model": config.model,
         "tts_model": DEFAULT_TTS_MODEL,
         "mms_tts_model": DEFAULT_MMS_TTS_MODEL,
-        "backend": "custom",
+        "backend": "custom_text_to_music",
         "created_at": input_received_at,
         "input_received_at": input_received_at,
     }
     (run_dir / "request.json").write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
     (dataset_dir / "request.json").write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
     _write_source_zip(dataset_dir / "genmusic_vn_source.zip")
+    checkpoint_path = Path(config.model_checkpoint) if config.model_checkpoint else DEFAULT_CUSTOM_MODEL_CHECKPOINT
+    checkpoint_present = checkpoint_path.exists()
+    if checkpoint_present:
+        shutil.copy2(checkpoint_path, dataset_dir / "custom_text_to_music.pt")
+    request["custom_checkpoint_present"] = checkpoint_present
+    request["custom_checkpoint_name"] = "custom_text_to_music.pt"
+    (run_dir / "request.json").write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
+    (dataset_dir / "request.json").write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
     (dataset_dir / "dataset-metadata.json").write_text(
         json.dumps(
             {
@@ -213,8 +228,9 @@ def stage_text_to_music_job(
         "created_at": _now(),
         "input_received_at": input_received_at,
         "kaggle_ready": False,
-        "backend": "custom",
+        "backend": "custom_text_to_music",
         "model": config.model,
+        "custom_checkpoint_present": checkpoint_present,
         "duration_policy": "soft_target",
         "target_duration_seconds": duration_seconds,
         "duration_plan": {
@@ -241,6 +257,7 @@ def stage_text_to_music_job(
         "backing_url": "",
         "vocal_path": "",
         "vocal_url": "",
+        "plot_urls": [],
         "custom_model_failed": False,
         "musicgen_failed": False,
         "vocal_failed": False,
@@ -250,10 +267,12 @@ def stage_text_to_music_job(
         "tts_voice_note": DEFAULT_TTS_VOICE_NOTE,
         "retry_count": 0,
         "commands": commands,
-        "messages": ["Đã chuẩn bị file job custom composer cho Kaggle."],
+        "messages": ["Đã chuẩn bị job model text-to-music tự code cho Kaggle."],
         "last_error": "",
         "custom_model_error": "",
         "musicgen_error": "",
+        "custom_music_metrics": {},
+        "custom_music_plots": {},
         "f5_tts_error": "",
         "tts_error": "",
         "history": [],
@@ -471,7 +490,7 @@ def submit_kaggle_job(
     if state.get("job_kind") == "tts_retry":
         state["messages"].append("Đã submit kernel thử lại chỉ TTS lên Kaggle.")
     else:
-        state["messages"].append("Đã submit kernel custom composer lên Kaggle.")
+        state["messages"].append("Đã submit kernel model text-to-music tự code lên Kaggle.")
     _write_state(state)
 
     if wait:
@@ -771,6 +790,7 @@ ASSET_DIR.mkdir(parents=True, exist_ok=True)
 DEFAULT_TTS_MODEL = "hynt/F5-TTS-Vietnamese-ViVoice"
 DEFAULT_F5_TTS_MODEL = "hynt/F5-TTS-Vietnamese-ViVoice"
 DEFAULT_MMS_TTS_MODEL = "facebook/mms-tts-vie"
+DEFAULT_CUSTOM_MUSIC_MODEL = "genmusic-vn/custom-text-to-music-v1"
 DEFAULT_TTS_VOICE_ACTUAL = "f5_vietnamese_vivoice_reference"
 DEFAULT_TTS_VOICE_NOTE = "F5-TTS Vietnamese uses a short Vietnamese reference voice; MMS Vietnamese is kept as fallback."
 F5_REPO_URL = "https://github.com/nguyenthienhy/F5-TTS-Vietnamese.git"
@@ -785,7 +805,7 @@ def ensure(import_name: str, *pip_specs: str) -> None:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", *pip_specs])
 
 
-def ensure_transformers_version(min_version: str = "4.33.0") -> None:
+def ensure_transformers_version(min_version: str = "4.40.0") -> None:
     ensure("packaging", "packaging")
     ensure("transformers", f"transformers>={{min_version}}")
 
@@ -868,13 +888,13 @@ def build_duration_plan(request: dict, result) -> dict:
     word_count = sum(len(line.split()) for line in lines)
     section_count = sum(1 for line in result.lyrics.full_song if line.strip().startswith("["))
     is_existing_lyrics = getattr(getattr(result, "text_plan", None), "input_kind", "") == "lyrics"
-    seconds_per_word = 0.34 if is_existing_lyrics else 0.27
-    line_pause = 0.52 if is_existing_lyrics else 0.42
-    section_pause = 0.45 if is_existing_lyrics else 0.35
+    seconds_per_word = 0.52 if is_existing_lyrics else 0.42
+    line_pause = 0.68 if is_existing_lyrics else 0.58
+    section_pause = 0.72 if is_existing_lyrics else 0.62
     estimated_vocal = word_count * seconds_per_word + max(0, len(lines) - 1) * line_pause + section_count * section_pause
     outro_tail = 2.5 if target <= 30 else 4.0
     breathing_room = min(10.0, max(2.0, len(lines) * (0.35 if is_existing_lyrics else 0.25)))
-    soft_overrun = max(2, min(8, int(round(target * 0.18))))
+    soft_overrun = max(4, min(12, int(round(target * 0.28))))
     duration_ceiling = min(180, target + soft_overrun)
     natural_needed = int(round(max(target, estimated_vocal + breathing_room + outro_tail)))
     planned = min(natural_needed, duration_ceiling)
@@ -891,6 +911,8 @@ def build_duration_plan(request: dict, result) -> dict:
         "lyric_line_count": len(lines),
         "lyric_word_count": word_count,
         "tts_seconds_per_word": seconds_per_word,
+        "tts_speed": 0.76,
+        "vocal_slowdown": 0.82,
         "input_kind": getattr(getattr(result, "text_plan", None), "input_kind", ""),
     }}
 
@@ -960,8 +982,8 @@ def select_tts_lines_for_duration(result, duration_plan: dict) -> list[str]:
         return []
     planned = max(6, int(duration_plan.get("planned_backing_duration_seconds", 30)))
     is_existing_lyrics = getattr(getattr(result, "text_plan", None), "input_kind", "") == "lyrics"
-    seconds_per_word = float(duration_plan.get("tts_seconds_per_word") or (0.34 if is_existing_lyrics else 0.27))
-    word_budget = max(18, int(max(6, planned - 4) / seconds_per_word))
+    seconds_per_word = float(duration_plan.get("tts_seconds_per_word") or (0.52 if is_existing_lyrics else 0.42))
+    word_budget = max(18, int(max(6, planned - 5) / seconds_per_word))
     selected: list[str] = []
     used_words = 0
     for line in all_lines:
@@ -975,6 +997,61 @@ def select_tts_lines_for_duration(result, duration_plan: dict) -> list[str]:
     if not is_existing_lyrics and all_lines[-1] not in selected and len(selected) >= 2:
         selected[-1] = all_lines[-1]
     return selected or all_lines[:1]
+
+
+def _crossfade_audio_chunks(chunks, sampling_rate: int):
+    import numpy as np
+
+    if not chunks:
+        return np.zeros(1, dtype="float32")
+    result = chunks[0].astype("float32")
+    crossfade = max(1, int(0.6 * sampling_rate))
+    for chunk in chunks[1:]:
+        chunk = chunk.astype("float32")
+        overlap = min(crossfade, result.size // 4, chunk.size // 4)
+        if overlap < 2:
+            result = np.concatenate([result, chunk])
+            continue
+        fade_out = np.linspace(1.0, 0.0, overlap, dtype="float32")
+        fade_in = np.linspace(0.0, 1.0, overlap, dtype="float32")
+        result = np.concatenate([
+            result[:-overlap],
+            result[-overlap:] * fade_out + chunk[:overlap] * fade_in,
+            chunk[overlap:],
+        ])
+    return result
+
+
+def render_custom_text_to_music_backing_mp3(request: dict, result, duration_plan: dict) -> Path:
+    """Generate backing with the project-owned text-conditioned Transformer."""
+    ensure("torch", "torch")
+    ensure("numpy", "numpy")
+    import torch
+    from genmusic_vn.models.custom_text_to_music import load_custom_checkpoint, render_generated_features
+
+    checkpoint_path = find_input_file("custom_text_to_music.pt", required=False)
+    if checkpoint_path is None:
+        raise RuntimeError(
+            "Chưa có custom_text_to_music.pt. Hãy chạy train-custom-music trên Kaggle trước rồi đồng bộ checkpoint về models/current."
+        )
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model, vocabulary, codec = load_custom_checkpoint(checkpoint_path, device=device)
+    condition_text = " ".join(
+        value for value in [str(request.get("text") or ""), str(request.get("genre") or ""), str(result.prompt or "")] if value
+    )
+    text_ids = torch.tensor([vocabulary.encode(condition_text)], dtype=torch.long, device=device)
+    target_seconds = max(6, int(duration_plan.get("planned_backing_duration_seconds", 30)))
+    max_frames = max(8, min(120, int(round(target_seconds / codec.frame_seconds))))
+    with torch.inference_mode():
+        generated = model.generate(text_ids, max_frames=max_frames, temperature=0.9)
+    features = generated[0].detach().cpu().tolist()
+    wav_path = OUTPUT_DIR / f"{{request.get('run_id', 'genmusic_vn')}}_custom_model.wav"
+    render_generated_features(features, wav_path)
+    duration_plan["custom_model_render_duration_seconds"] = round(len(features) * codec.frame_seconds, 2)
+    duration_plan["custom_model_frame_count"] = len(features)
+    mp3_path = OUTPUT_DIR / f"{{request.get('run_id', 'genmusic_vn')}}_backing.mp3"
+    convert_wav_to_mp3(wav_path, mp3_path)
+    return mp3_path
 
 
 def render_mms_tts_vocal(request: dict, result, duration_plan: dict) -> Path:
@@ -1002,7 +1079,7 @@ def render_mms_tts_vocal(request: dict, result, duration_plan: dict) -> Path:
     sampling_rate = int(getattr(model.config, "sampling_rate", 16000))
 
     pieces = []
-    silence = np.zeros(int(sampling_rate * 0.42), dtype="float32")
+    silence = np.zeros(int(sampling_rate * 0.68), dtype="float32")
     for line in select_tts_lines_for_duration(result, duration_plan):
         clean_line = clean_tts_line(line)
         if not clean_line:
@@ -1088,7 +1165,7 @@ def render_f5_tts_vocal(request: dict, result, duration_plan: dict) -> Path:
         "--gen_text",
         gen_text,
         "--speed",
-        "0.86",
+        "0.76",
         "--vocoder_name",
         "vocos",
         "--vocab_file",
@@ -1137,7 +1214,7 @@ def apply_vocal_profile(raw_path: Path, output_path: Path, vocal, sampling_rate:
     else:
         pitch_filter = f"aresample={{sampling_rate}}"
     filter_chain = (
-        f"{{pitch_filter}},highpass=f=90,lowpass=f=8500,"
+        f"{{pitch_filter}},atempo=0.82,highpass=f=90,lowpass=f=8500,"
         "acompressor=threshold=-18dB:ratio=2.2:attack=10:release=160,"
         "aecho=0.8:0.88:45:0.06,alimiter=limit=0.86,volume=0.98"
     )
@@ -1267,13 +1344,15 @@ def main() -> None:
     result = create_music_project(
         text=request["text"],
         output_root=PIPELINE_DIR,
-        backend="custom",
+        backend="custom_text_to_music",
         duration_seconds=int(request.get("duration_seconds", 30)),
         genre=request.get("genre"),
         render_audio=False,
     )
     custom_model_error = ""
     tts_error = ""
+    custom_music_metrics = {{}}
+    custom_music_plots = {{}}
     backing_mp3_path = None
     vocal_path = None
     report = to_plain_data(result)
@@ -1285,8 +1364,33 @@ def main() -> None:
         encoding="utf-8",
     )
     try:
-        backing_mp3_path = render_custom_backing_mp3(request, result, duration_plan)
-        generation_backend = "custom_symbolic"
+        backing_mp3_path = render_custom_text_to_music_backing_mp3(request, result, duration_plan)
+        generation_backend = "custom_text_to_music_transformer"
+        try:
+            import wave
+            import numpy as np
+            from genmusic_vn.evaluation.custom_music_metrics import (
+                audio_quality_metrics,
+                build_custom_music_metric_report,
+                write_custom_music_metric_plots,
+            )
+            custom_wav = OUTPUT_DIR / f"{{request.get('run_id', 'genmusic_vn')}}_custom_model.wav"
+            with wave.open(str(custom_wav), "rb") as audio_handle:
+                sampling_rate = audio_handle.getframerate()
+                generated_audio = np.frombuffer(audio_handle.readframes(audio_handle.getnframes()), dtype="<i2")
+            sample_metrics = audio_quality_metrics(generated_audio, int(sampling_rate))
+            sample_metrics["id"] = request.get("run_id", "custom_music_sample")
+            custom_music_metrics = build_custom_music_metric_report(
+                [sample_metrics],
+                model_name=str(request.get("model") or DEFAULT_CUSTOM_MUSIC_MODEL),
+                training=False,
+            )
+            custom_music_plots = write_custom_music_metric_plots(
+                custom_music_metrics,
+                OUTPUT_DIR / "plots" / "custom_music",
+            )
+        except Exception as exc:
+            custom_music_metrics = {{"status": "metric_error", "error": str(exc)}}
     except Exception as exc:
         custom_model_error = "".join(traceback.format_exception(exc))[-4000:]
         (OUTPUT_DIR / "custom_model_error.txt").write_text(custom_model_error, encoding="utf-8")
@@ -1341,6 +1445,8 @@ def main() -> None:
         "vocal_failed": bool(tts_error),
         "custom_model_error": custom_model_error,
         "musicgen_error": "",
+        "custom_music_metrics": custom_music_metrics,
+        "custom_music_plots": custom_music_plots,
         "f5_tts_error": f5_tts_error if 'f5_tts_error' in locals() else "",
         "tts_error": tts_error,
         "prompt": result.prompt,
@@ -1459,13 +1565,13 @@ def build_duration_plan(request: dict, result) -> dict:
     word_count = sum(len(line.split()) for line in lines)
     section_count = sum(1 for line in result.lyrics.full_song if line.strip().startswith("["))
     is_existing_lyrics = getattr(getattr(result, "text_plan", None), "input_kind", "") == "lyrics"
-    seconds_per_word = 0.34 if is_existing_lyrics else 0.27
-    line_pause = 0.52 if is_existing_lyrics else 0.42
-    section_pause = 0.45 if is_existing_lyrics else 0.35
+    seconds_per_word = 0.52 if is_existing_lyrics else 0.42
+    line_pause = 0.68 if is_existing_lyrics else 0.58
+    section_pause = 0.72 if is_existing_lyrics else 0.62
     estimated_vocal = word_count * seconds_per_word + max(0, len(lines) - 1) * line_pause + section_count * section_pause
     outro_tail = 2.5 if target <= 30 else 4.0
     breathing_room = min(10.0, max(2.0, len(lines) * (0.35 if is_existing_lyrics else 0.25)))
-    soft_overrun = max(2, min(8, int(round(target * 0.18))))
+    soft_overrun = max(4, min(12, int(round(target * 0.28))))
     duration_ceiling = min(180, target + soft_overrun)
     natural_needed = int(round(max(target, estimated_vocal + breathing_room + outro_tail)))
     planned = max(6, min(180, min(natural_needed, duration_ceiling)))
@@ -1480,6 +1586,8 @@ def build_duration_plan(request: dict, result) -> dict:
         "lyric_line_count": len(lines),
         "lyric_word_count": word_count,
         "tts_seconds_per_word": seconds_per_word,
+        "tts_speed": 0.76,
+        "vocal_slowdown": 0.82,
         "input_kind": getattr(getattr(result, "text_plan", None), "input_kind", ""),
     }}
 
@@ -1490,8 +1598,8 @@ def select_tts_lines_for_duration(result, duration_plan: dict) -> list[str]:
         return []
     planned = max(6, int(duration_plan.get("planned_backing_duration_seconds", 30)))
     is_existing_lyrics = getattr(getattr(result, "text_plan", None), "input_kind", "") == "lyrics"
-    seconds_per_word = float(duration_plan.get("tts_seconds_per_word") or (0.34 if is_existing_lyrics else 0.27))
-    word_budget = max(18, int(max(6, planned - 4) / seconds_per_word))
+    seconds_per_word = float(duration_plan.get("tts_seconds_per_word") or (0.52 if is_existing_lyrics else 0.42))
+    word_budget = max(18, int(max(6, planned - 5) / seconds_per_word))
     selected: list[str] = []
     used_words = 0
     for line in all_lines:
@@ -1565,7 +1673,7 @@ def render_f5_tts_vocal(request: dict, result, duration_plan: dict) -> Path:
         "--gen_text",
         gen_text,
         "--speed",
-        "0.86",
+        "0.76",
         "--vocoder_name",
         "vocos",
         "--vocab_file",
@@ -1613,7 +1721,7 @@ def apply_vocal_profile(raw_path: Path, output_path: Path, vocal, sampling_rate:
     else:
         pitch_filter = f"aresample={{sampling_rate}}"
     filter_chain = (
-        f"{{pitch_filter}},highpass=f=90,lowpass=f=8500,"
+        f"{{pitch_filter}},atempo=0.82,highpass=f=90,lowpass=f=8500,"
         "acompressor=threshold=-18dB:ratio=2.2:attack=10:release=160,"
         "aecho=0.8:0.88:45:0.06,alimiter=limit=0.86,volume=0.98"
     )
@@ -1645,7 +1753,7 @@ def render_mms_tts_vocal(request: dict, result, duration_plan: dict) -> Path:
     sampling_rate = int(getattr(model.config, "sampling_rate", 16000))
 
     pieces = []
-    silence = np.zeros(int(sampling_rate * 0.42), dtype="float32")
+    silence = np.zeros(int(sampling_rate * 0.68), dtype="float32")
     for line in select_tts_lines_for_duration(result, duration_plan):
         clean_line = clean_tts_line(line)
         if not clean_line:
@@ -1919,6 +2027,14 @@ def _download_kernel_output(state: dict[str, Any], cli: list[str], *, expect_mp3
     backing_files = [path for path in mp3_files if path.name.endswith("_backing.mp3")]
     vocal_files = [path for path in files if path.name.endswith(("_vocal_f5.wav", "_vocal_mms.wav"))]
     state["downloaded_files"] = [str(path) for path in files]
+    state["plot_urls"] = [
+        {
+            "name": path.name,
+            "url": _output_url(state, path),
+        }
+        for path in files
+        if path.suffix.lower() in {".png", ".json"} and ("plot" in path.name.lower() or "plots" in {part.lower() for part in path.parts})
+    ]
     _apply_kaggle_result_metadata(state, files)
     if backing_files:
         state["backing_path"] = str(backing_files[0])
@@ -1927,7 +2043,7 @@ def _download_kernel_output(state: dict[str, Any], cli: list[str], *, expect_mp3
         state["vocal_path"] = str(vocal_files[0])
         state["vocal_url"] = _output_url(state, vocal_files[0])
         if not state.get("generation_backend"):
-            prefix = "tts_retry" if state.get("job_kind") == "tts_retry" else "custom_symbolic"
+            prefix = "tts_retry" if state.get("job_kind") == "tts_retry" else "custom_text_to_music_transformer"
             if vocal_files[0].name.endswith("_vocal_f5.wav"):
                 state["generation_backend"] = f"{prefix}+f5_tts_vocal_mix"
             elif vocal_files[0].name.endswith("_vocal_mms.wav"):
@@ -1964,8 +2080,8 @@ def _download_kernel_output(state: dict[str, Any], cli: list[str], *, expect_mp3
             state.get("input_received_at"), state.get("mp3_ready_at")
         )
         backend = state.get("generation_backend", "")
-        if state.get("custom_model_failed"):
-                _append_message_once(state, "Custom composer lỗi trên Kaggle; xem custom_model_error.txt.")
+        if state.get("musicgen_failed"):
+                _append_message_once(state, "Model text-to-music tự code lỗi trên Kaggle; xem musicgen_error.txt.")
         if "f5_tts_vocal_mix" in backend:
             _append_message_once(state, "Backing track and F5-TTS Vietnamese vocal were mixed into the final MP3.")
         elif "mms_tts_vocal_mix" in backend:
@@ -2092,6 +2208,12 @@ def _apply_kaggle_result_metadata(state: dict[str, Any], files: list[Path]) -> N
         scene_plan = data.get("scene_plan")
         if isinstance(scene_plan, dict):
             state["scene_plan"] = scene_plan
+        custom_music_metrics = data.get("custom_music_metrics") or data.get("musicgen_metrics")
+        if isinstance(custom_music_metrics, dict):
+            state["custom_music_metrics"] = custom_music_metrics
+        custom_music_plots = data.get("custom_music_plots") or data.get("musicgen_plots")
+        if isinstance(custom_music_plots, dict):
+            state["custom_music_plots"] = custom_music_plots
         return
 
 

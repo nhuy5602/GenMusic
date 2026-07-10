@@ -17,7 +17,7 @@ let currentJob = null;
 const DEFAULT_TTS_MODEL = "hynt/F5-TTS-Vietnamese-ViVoice";
 const DEFAULT_MMS_TTS_MODEL = "facebook/mms-tts-vie";
 const DEFAULT_TTS_VOICE = "f5_vietnamese_vivoice_reference";
-const DEFAULT_CUSTOM_MUSIC_MODEL = "genmusic-vn/custom-symbolic-composer";
+const DEFAULT_CUSTOM_MUSIC_MODEL = "genmusic-vn/custom-text-to-music-v1";
 
 duration.addEventListener("input", () => {
   durationValue.textContent = `Mục tiêu ${duration.value} giây`;
@@ -31,7 +31,7 @@ form.addEventListener("submit", async (event) => {
   statusPill.textContent = "Đang gửi";
   downloads.innerHTML = "";
   renderWarning(null);
-  audioSlot.textContent = "Đang chờ kết quả custom composer từ Kaggle...";
+  audioSlot.textContent = "Đang chờ kết quả model tự code sinh nhạc từ Kaggle...";
   lyricsOutput.textContent = "Đang chuẩn bị lời bài hát và kế hoạch vocal...";
   kaggleJobBox.textContent = "";
 
@@ -89,7 +89,7 @@ function renderJob(job) {
   const outroTail = job.outro_tail_seconds || durationPlan.outro_tail_seconds;
   const lines = [
     `Trạng thái: ${formatJobStatus(job.status)}`,
-    `Model custom: ${job.model || DEFAULT_CUSTOM_MUSIC_MODEL}`,
+    `Model tự code: ${job.model || DEFAULT_CUSTOM_MUSIC_MODEL}`,
     `TTS: ${job.tts_model || DEFAULT_TTS_MODEL}`,
     `TTS dự phòng: ${job.mms_tts_model || DEFAULT_MMS_TTS_MODEL}`,
     `Giọng TTS: ${job.tts_voice_actual || DEFAULT_TTS_VOICE}`,
@@ -207,22 +207,22 @@ function renderWarning(job) {
   const hasVocalMix = backend.includes("f5_tts_vocal_mix") || backend.includes("mms_tts_vocal_mix");
   const warnings = [];
   const customFailed = Boolean(job.custom_model_failed || job.custom_model_error);
-  const musicgenFailed = Boolean(job.musicgen_failed || job.musicgen_error || backend.includes("guide_fallback"));
+  const legacyModelFailed = Boolean(job.musicgen_failed || job.musicgen_error || backend.includes("guide_fallback"));
   const ttsFailed = Boolean(
     job.vocal_failed || job.tts_error || backend.includes("tts_failed") || backend.includes("tts_skipped"),
   );
   const f5FallbackUsed = Boolean(job.f5_tts_error && backend.includes("f5_failed_mms"));
-  if (customFailed) {
+  if (customFailed && !legacyModelFailed) {
     const detail = summarizeError(job.custom_model_error || job.last_error || "");
     warnings.push([
-      "Custom composer bị lỗi trên Kaggle. Chưa thể tạo backing track để mix vocal.",
+      "Model text-to-music tự code bị lỗi trên Kaggle. Chưa thể tạo backing track để mix vocal.",
       detail ? `Chi tiết: ${detail}` : "",
     ].filter(Boolean).join("\n"));
   }
-  if (musicgenFailed) {
+  if (legacyModelFailed) {
     const detail = summarizeError(job.musicgen_error || job.last_error || "");
     warnings.push([
-      "Job cũ dùng MusicGen bị lỗi. MP3 hiện tại có thể chỉ là fallback backing.",
+      "Model sinh nhạc bị lỗi. MP3 hiện tại có thể chỉ là fallback backing.",
       detail ? `Chi tiết: ${detail}` : "",
     ].filter(Boolean).join("\n"));
   }
@@ -279,6 +279,9 @@ function renderDownloads(job) {
   }
   if (job.backing_url) {
     links.push(`<a href="${job.backing_url}" download>Tải nhạc nền MP3</a>`);
+  }
+  for (const plot of job.plot_urls || []) {
+    if (plot.url) links.push(`<a href="${plot.url}" target="_blank" rel="noreferrer">Plot: ${plot.name}</a>`);
   }
   if (canRetryTts(job)) {
     links.push(`<button type="button" class="download-action" data-retry-tts="${job.run_id}">Thử lại TTS</button>`);
@@ -351,6 +354,7 @@ function formatJobStatus(value) {
     complete: "hoàn tất",
     failed: "lỗi",
     needs_setup: "cần cấu hình",
+    needs_training: "cần train model",
     submitting: "đang gửi",
     queued: "đang xếp hàng",
     running: "đang chạy",
