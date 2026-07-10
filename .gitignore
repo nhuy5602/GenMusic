@@ -12,6 +12,7 @@ outputs/
 models/
 kaggle/working/
 kaggle/input/
+datasets/incoming/
 *.egg-info/
 datasets/training/diverse_30000_train.jsonl
 datasets/training/diverse_1gb/

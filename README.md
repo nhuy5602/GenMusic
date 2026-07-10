@@ -443,4 +443,4 @@ This creates `project_report.json`/`.md` and plots for real input-to-MP3 latency
 
 The lyric planner now uses a repeated short chorus anchor, a full chorus for 24-30 second requests, selective vowel assonance, and varied verse cadences. It does not require lines 1-2, 3-4, 5-6, and so on to share an exact final rhyme.
 
-The user-supplied `Sóng Gió` analysis is stored only as structural/audio features in `datasets/evaluation/reference_song_patterns.jsonl`; the source MP3 and full lyric text remain outside the repository.
+The project has no dependency on any specific song, MP3, or lyric reference file. Future licensed lyric/MP3 collections can be supplied through a separate dataset manifest or ZIP import workflow.
