@@ -1,21 +1,5 @@
-"""Các model generative AI tự triển khai của GenMusic VN."""
+"""Model integration is delegated to the official DiffRhythm checkout."""
 
-from .custom_text_to_music import (
-    CUSTOM_MODEL_ID,
-    CUSTOM_CHECKPOINT_FILENAME,
-    CustomTextToMusicTransformer,
-    MusicFeatureCodec,
-    TextVocabulary,
-    load_custom_checkpoint,
-    render_generated_features,
-)
+from ..integrations.diffrhythm_official import DiffRhythmConfig, DiffRhythmError, ensure_official_checkout, run_official_inference
 
-__all__ = [
-    "CUSTOM_MODEL_ID",
-    "CUSTOM_CHECKPOINT_FILENAME",
-    "CustomTextToMusicTransformer",
-    "MusicFeatureCodec",
-    "TextVocabulary",
-    "load_custom_checkpoint",
-    "render_generated_features",
-]
+__all__ = ["DiffRhythmConfig", "DiffRhythmError", "ensure_official_checkout", "run_official_inference"]

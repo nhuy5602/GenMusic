@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import re
 import unicodedata
+import os
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 from .vietnamese_text import normalize_vietnamese_lyrics
@@ -137,6 +139,14 @@ def _fallback_syllable_to_ipa(syllable: str) -> str:
 
 def _phonemizer_syllable(syllable: str) -> str | None:
     try:
+        if os.name == "nt" and not os.environ.get("PHONEMIZER_ESPEAK_LIBRARY"):
+            for candidate in (
+                Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "eSpeak NG" / "libespeak-ng.dll",
+                Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "eSpeak NG" / "libespeak-ng.dll",
+            ):
+                if candidate.exists():
+                    os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = str(candidate)
+                    break
         from phonemizer import phonemize  # type: ignore
     except ImportError:
         return None

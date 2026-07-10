@@ -1,15 +1,14 @@
 [project]
 name = "genmusic-vn"
 version = "0.1.0"
-description = "Vietnamese text-to-music client with a project-owned Transformer and optional lyric/vocal TTS add-on."
+description = "Vietnamese text-to-music client orchestrating the official ASLP-lab DiffRhythm model."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
 kaggle = ["kaggle"]
-custom_music = ["torch", "numpy", "matplotlib", "librosa", "soundfile"]
-jam = ["torch", "numpy", "scipy", "matplotlib", "librosa", "soundfile", "faster-whisper", "phonemizer"]
+diffrhythm = ["torch", "torchaudio", "torchdiffeq", "x-transformers", "transformers", "librosa", "pyarrow", "pandas", "ema-pytorch", "prefigure", "muq", "mutagen", "phonemizer", "faster-whisper", "matplotlib", "scipy", "bitsandbytes", "kaggle"]
 dev = ["pytest"]
 
 [tool.setuptools.packages.find]

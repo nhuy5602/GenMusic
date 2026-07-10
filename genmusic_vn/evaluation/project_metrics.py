@@ -6,9 +6,6 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Any
 
-from .report_plots import generate_project_telemetry_plots
-
-
 def build_project_report(
     source_root: str | Path = "outputs",
     *,
@@ -55,12 +52,13 @@ def _job_record(state: dict[str, Any], state_path: Path) -> dict[str, Any]:
     input_received = state.get("input_received_at") or state.get("created_at")
     mp3_ready = state.get("mp3_ready_at") or state.get("completed_at")
     terminal_at = state.get("terminal_at") or state.get("failed_at") or state.get("checked_at")
-    mp3_path = str(state.get("mp3_path") or "")
+    downloaded = [str(path) for path in state.get("downloaded_files", []) if str(path).lower().endswith((".mp3", ".wav"))]
+    mp3_path = str(state.get("mp3_path") or (downloaded[0] if downloaded else ""))
     has_mp3 = bool(mp3_path) and Path(mp3_path).exists()
     end_to_end = _elapsed_seconds(input_received, mp3_ready) if has_mp3 else None
     if end_to_end is None and state.get("input_to_mp3_seconds") is not None and has_mp3:
         end_to_end = _as_float(state.get("input_to_mp3_seconds"))
-    retry_attempt = state.get("job_kind") == "tts_retry" or int(state.get("retry_count") or 0) > 0
+    retry_attempt = int(state.get("retry_count") or 0) > 0
     status = str(state.get("status") or "unknown")
     terminal_status = "complete" if status == "complete" and has_mp3 else (
         "failed_or_missing_mp3" if status == "complete" else status
@@ -95,6 +93,9 @@ def _job_record(state: dict[str, Any], state_path: Path) -> dict[str, Any]:
         "retry_attempt": retry_attempt,
         "last_error": str(state.get("last_error") or ""),
         "generation_backend": str(state.get("generation_backend") or ""),
+        "emotion": state.get("emotion") or state.get("emotion_label"),
+        "bpm": _as_float(state.get("bpm")),
+        "user_rating": _as_float(state.get("user_rating") or state.get("rating")),
     }
 
 
@@ -186,3 +187,93 @@ def _ratio(numerator: int, denominator: int) -> float:
 
 def _rounded_mean(values: list[float]) -> float:
     return round(mean(values), 6) if values else 0.0
+
+
+def generate_project_telemetry_plots(report: dict[str, Any], output_root: str | Path) -> dict[str, Any]:
+    destination = Path(output_root)
+    destination.mkdir(parents=True, exist_ok=True)
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return {"status": "unavailable", "files": {}}
+    items = report.get("items", [])
+    latency = [item.get("input_to_mp3_seconds") or 0 for item in items]
+    errors = [1 if item.get("terminal_status") != "complete" else 0 for item in items]
+    retries = [item.get("retry_count", 0) for item in items]
+    files: dict[str, str] = {}
+    charts = {
+        "duration_input_vs_processing_time.png": (latency, "Input tới WAV/MP3", "Thời gian (giây)"),
+        "success_error_rate.png": (errors, "Success/error", "1 = lỗi"),
+        "retry_rate.png": (retries, "Retry Kaggle", "Số lần retry"),
+    }
+    for name, (values, title, ylabel) in charts.items():
+        figure, axis = plt.subplots(figsize=(8, 4))
+        axis.plot(range(1, len(values) + 1), values, marker="o")
+        axis.set_title(title)
+        axis.set_xlabel("Job")
+        axis.set_ylabel(ylabel)
+        figure.tight_layout()
+        path = destination / name
+        figure.savefig(path, dpi=150)
+        plt.close(figure)
+        files[name] = str(path.resolve())
+    _write_scatter_or_placeholder(
+        destination / "emotion_vs_bpm.png",
+        [item.get("bpm") for item in items],
+        [item.get("emotion") for item in items],
+        "Emotion vs BPM",
+        "BPM",
+        "Emotion",
+        "Chưa có trường emotion/BPM trong telemetry",
+    )
+    files["emotion_vs_bpm.png"] = str((destination / "emotion_vs_bpm.png").resolve())
+    _write_rating_or_placeholder(destination / "user_rating.png", [item.get("user_rating") for item in items])
+    files["user_rating.png"] = str((destination / "user_rating.png").resolve())
+    return {"status": "created", "files": files}
+
+
+def _write_scatter_or_placeholder(
+    path: Path,
+    x_values: list[Any],
+    labels: list[Any],
+    title: str,
+    xlabel: str,
+    ylabel: str,
+    empty_message: str,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    pairs = [(float(x), str(label)) for x, label in zip(x_values, labels) if x is not None and label]
+    figure, axis = plt.subplots(figsize=(8, 4))
+    if pairs:
+        numeric_labels = {label: index for index, label in enumerate(sorted({label for _, label in pairs}))}
+        axis.scatter([x for x, _ in pairs], [numeric_labels[label] for _, label in pairs])
+        axis.set_yticks(list(numeric_labels.values()), list(numeric_labels.keys()))
+        axis.set_xlabel(xlabel)
+        axis.set_ylabel(ylabel)
+    else:
+        axis.text(0.5, 0.5, empty_message, ha="center", va="center", transform=axis.transAxes)
+        axis.set_axis_off()
+    axis.set_title(title)
+    figure.tight_layout()
+    figure.savefig(path, dpi=150)
+    plt.close(figure)
+
+
+def _write_rating_or_placeholder(path: Path, ratings: list[Any]) -> None:
+    import matplotlib.pyplot as plt
+
+    values = [float(value) for value in ratings if value is not None]
+    figure, axis = plt.subplots(figsize=(8, 4))
+    if values:
+        axis.bar(range(1, len(values) + 1), values)
+        axis.set_ylim(0, 5)
+        axis.set_xlabel("Job")
+        axis.set_ylabel("Rating (1-5)")
+    else:
+        axis.text(0.5, 0.5, "Chưa có user rating; MOS đang được bỏ qua", ha="center", va="center", transform=axis.transAxes)
+        axis.set_axis_off()
+    axis.set_title("User rating")
+    figure.tight_layout()
+    figure.savefig(path, dpi=150)
+    plt.close(figure)
