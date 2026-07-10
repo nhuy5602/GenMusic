@@ -13,6 +13,10 @@ Sinh local:
 Stage Kaggle:
   python -m genmusic_vn.cli generate --text "Một ngày mới bắt đầu." --duration 12 --no-submit
 
+Tạo và upload dataset khoảng 1 GB:
+  python -m genmusic_vn.cli make-and-upload-dataset --out datasets/random_self_diffusion_training --target-gb 1
+  (Có thể đổi dung lượng bằng --target-gb 5 hoặc đổi đường dẫn bằng --dataset-ref owner/slug.)
+
 Web:
   python -m genmusic_vn.server --port 8000
   http://127.0.0.1:8000

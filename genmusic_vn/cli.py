@@ -11,7 +11,7 @@ from .data.vietnamese_text import normalize_vietnamese_lyrics
 from .evaluation.jam_metrics import objective_metrics, write_metric_report
 from .evaluation.jam_plots import write_jam_plots
 from .evaluation.project_metrics import build_project_report
-from .integrations.kaggle_auto import DEFAULT_MODEL, KaggleJobConfig, refresh_kaggle_job, run_local_generation, submit_text_to_music_job
+from .integrations.kaggle_auto import DEFAULT_MODEL, KaggleJobConfig, refresh_kaggle_job, run_local_generation, submit_text_to_music_job, upload_dataset_to_kaggle
 from .training.self_diffusion import create_random_dataset, train_model, validate_dataset
 
 
@@ -31,6 +31,8 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--wait", action="store_true")
     generate.add_argument("--poll-seconds", type=int, default=60)
     generate.add_argument("--timeout-seconds", type=int, default=21_600)
+    generate.add_argument("--dataset-ref", default=None, help="Dataset training cố định dạng owner/slug; mặc định lấy từ Kaggle username và slug project.")
+    generate.add_argument("--dataset-gb", type=float, default=None, help="Tương thích lệnh cũ; dataset phải được tạo trước bằng make-and-upload-dataset.")
 
     refresh = sub.add_parser("refresh-kaggle", help="Cập nhật trạng thái và tải output Kaggle.")
     refresh.add_argument("--state", required=True)
@@ -50,9 +52,27 @@ def build_parser() -> argparse.ArgumentParser:
     random_data.add_argument("--count", type=int, default=16)
     random_data.add_argument("--frames", type=int, default=128)
     random_data.add_argument("--seed", type=int, default=5602)
+    random_data.add_argument("--target-gb", type=float, default=0.0, help="Mục tiêu dung lượng dataset thực trên đĩa.")
 
     validate = sub.add_parser("validate-dataset", help="Kiểm tra records.jsonl và các tensor mel.")
     validate.add_argument("--dataset", required=True)
+
+    upload = sub.add_parser("upload-dataset", help="Upload dataset self-diffusion lên Kaggle.")
+    upload.add_argument("--dataset", required=True)
+    upload.add_argument("--username", default=None)
+    upload.add_argument("--slug", default=None)
+    upload.add_argument("--dataset-ref", default=None, help="Dataset ref cố định dạng owner/slug.")
+    upload.add_argument("--timeout-seconds", type=int, default=3_600)
+
+    prepare = sub.add_parser("make-and-upload-dataset", help="Tạo dataset random theo dung lượng rồi upload vào dataset ref cố định.")
+    prepare.add_argument("--out", default="datasets/random_self_diffusion_training")
+    prepare.add_argument("--count", type=int, default=16)
+    prepare.add_argument("--frames", type=int, default=128)
+    prepare.add_argument("--seed", type=int, default=5602)
+    prepare.add_argument("--target-gb", type=float, default=1.0, help="Dung lượng dataset mục tiêu trên đĩa, ví dụ 1 hoặc 5.")
+    prepare.add_argument("--username", default=None)
+    prepare.add_argument("--dataset-ref", default=None, help="Dataset ref cố định dạng owner/slug.")
+    prepare.add_argument("--timeout-seconds", type=int, default=3_600)
 
     train = sub.add_parser("train-self", help="Train conditional diffusion model tự code.")
     train.add_argument("--dataset", required=True)
@@ -111,16 +131,24 @@ def main(argv: list[str] | None = None) -> int:
             output_root=args.out,
             duration_seconds=args.duration,
             genre=args.genre,
-            config=KaggleJobConfig(model=args.model, username=args.username, machine_shape=args.machine_shape, submit=not args.no_submit, wait=args.wait, poll_seconds=args.poll_seconds, timeout_seconds=args.timeout_seconds),
+            config=KaggleJobConfig(model=args.model, username=args.username, machine_shape=args.machine_shape, submit=not args.no_submit, wait=args.wait, poll_seconds=args.poll_seconds, timeout_seconds=args.timeout_seconds, training_dataset_ref=args.dataset_ref),
         )
     elif args.command == "refresh-kaggle":
         report = refresh_kaggle_job(args.state)
     elif args.command == "generate-local":
         report = run_local_generation(text=args.text, style=args.style, output_dir=args.out, duration_seconds=args.duration, checkpoint=args.checkpoint, steps=args.steps, seed=args.seed, device=args.device)
     elif args.command == "make-random-dataset":
-        report = create_random_dataset(args.out, count=args.count, frames=args.frames, seed=args.seed)
+        target_bytes = int(args.target_gb * (1024 ** 3)) if args.target_gb > 0 else None
+        report = create_random_dataset(args.out, count=args.count, frames=args.frames, seed=args.seed, target_bytes=target_bytes)
     elif args.command == "validate-dataset":
         report = validate_dataset(args.dataset)
+    elif args.command == "upload-dataset":
+        report = upload_dataset_to_kaggle(args.dataset, username=args.username, slug=args.slug, dataset_ref=args.dataset_ref, timeout_seconds=args.timeout_seconds)
+    elif args.command == "make-and-upload-dataset":
+        target_bytes = int(args.target_gb * (1024 ** 3)) if args.target_gb > 0 else None
+        dataset_report = create_random_dataset(args.out, count=args.count, frames=args.frames, seed=args.seed, target_bytes=target_bytes)
+        upload_report = upload_dataset_to_kaggle(args.out, username=args.username, dataset_ref=args.dataset_ref, timeout_seconds=args.timeout_seconds)
+        report = {"status": upload_report["status"], "dataset_report": dataset_report, "upload": upload_report}
     elif args.command == "train-self":
         report = train_model(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records)
     elif args.command == "normalize-lyrics":
@@ -149,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError(args.command)
 
     print(json.dumps(report, ensure_ascii=False, indent=2))
-    return 0
+    return 1 if report.get("status") in {"failed", "needs_setup", "pending", "invalid", "needs-torch"} else 0
 
 
 if __name__ == "__main__":

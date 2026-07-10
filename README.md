@@ -32,6 +32,15 @@ python -m genmusic_vn.cli make-random-dataset --out datasets/random_self_diffusi
 python -m genmusic_vn.cli validate-dataset --dataset datasets/random_self_diffusion
 ```
 
+Tạo và upload dataset training vào một đường dẫn Kaggle cố định (mặc định là `<KAGGLE_USERNAME>/genmusic-vn-self-diffusion-training`):
+
+```powershell
+python -m genmusic_vn.cli make-and-upload-dataset --out datasets/random_self_diffusion_training --target-gb 1
+```
+
+`--target-gb` dùng cache augmentation để đạt kích thước tối thiểu và kiểm tra đường ống dữ liệu. Đây không phải dữ liệu âm nhạc có chất lượng; muốn cải thiện model cần thay bằng audio/mel và lyric có quyền sử dụng.
+Có thể chọn dung lượng khác, ví dụ `--target-gb 5`. Nếu muốn chỉ rõ đường dẫn của tài khoản khác, dùng `--dataset-ref owner/slug` hoặc đặt `GENMUSIC_KAGGLE_DATASET_REF=owner/slug`.
+
 Train checkpoint:
 
 ```powershell
@@ -48,7 +57,7 @@ Không truyền `--checkpoint` để kiểm tra inference trước khi train. Kh
 
 ## Kaggle
 
-Lệnh `generate` đóng gói source project hiện tại vào dataset private rồi tạo kernel Kaggle. Kernel tự tạo random dataset, train checkpoint self-diffusion và sinh output; không clone repo ngoài và không tải model nhạc có sẵn.
+Lệnh `generate` đóng gói request/source vào dataset private, attach dataset training cố định rồi tạo kernel Kaggle. Kernel không tự tạo dataset mới theo từng request.
 
 ```powershell
 python -m genmusic_vn.cli generate --text "Một ngày mới bắt đầu trên con phố quen." --duration 12 --genre "Vietnamese indie pop, acoustic guitar" --no-submit
@@ -56,6 +65,8 @@ python -m genmusic_vn.cli generate --text "Một ngày mới bắt đầu trên 
 ```
 
 Kaggle cần `KAGGLE_USERNAME`, `KAGGLE_KEY` và CLI tương ứng. Dataset random chỉ kiểm tra pipeline; muốn model có chất lượng phải thay bằng dataset audio/mel và lyric thật có quyền sử dụng.
+Nếu dataset training cố định chưa tồn tại hoặc chưa ở trạng thái `ready`, job trả lỗi và hướng dẫn chạy `make-and-upload-dataset`.
+Khi stage hoặc submit job, web app hiển thị link bấm được tới dataset và kernel Kaggle nếu đã cấu hình credential.
 
 ## G2P và căn chỉnh lyric
 

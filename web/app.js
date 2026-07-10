@@ -5,6 +5,7 @@ const statusPill = document.querySelector("#status-pill");
 const generateButton = document.querySelector("#generate-button");
 const buttonText = generateButton.querySelector(".button-text");
 const jobBox = document.querySelector("#kaggle-job");
+const kaggleLinks = document.querySelector("#kaggle-links");
 const downloads = document.querySelector("#downloads");
 const audioSlot = document.querySelector("#audio-slot");
 const warningSlot = document.querySelector("#warning-slot");
@@ -29,6 +30,7 @@ form.addEventListener("submit", async (event) => {
   audioSlot.textContent = "Đang chuẩn bị model tự code trên Kaggle...";
   lyricsOutput.textContent = "Đang chuẩn bị LRC...";
   jobBox.textContent = "";
+  kaggleLinks.innerHTML = "";
   try {
     const response = await fetch("/api/generate", {
       method: "POST",
@@ -66,20 +68,38 @@ function renderJob(job) {
     "Backend: " + (job.backend || MODEL),
     "Model: " + (job.model || MODEL),
     "Thời lượng: " + (job.duration_seconds || "-") + " giây",
-    "Dataset: " + (job.dataset_ref || "-"),
+    "Dataset training: " + (job.training_dataset_ref || job.dataset_ref || "-"),
     "Kernel: " + (job.kernel_ref || "-"),
     "",
     ...(job.messages || []),
   ];
   if (job.last_error) lines.push("", "Lỗi: " + job.last_error);
   jobBox.textContent = lines.join("\n");
-  lyricsOutput.textContent = job.lyrics || "LRC đã được tạo trong request.";
+  lyricsOutput.textContent = typeof job.lyrics === "string" ? job.lyrics : JSON.stringify(job.lyrics || "LRC đã được tạo trong request.", null, 2);
+  renderKaggleLinks(job);
   renderAudio(job);
   renderDownloads(job);
   drawWave(job.status);
   if (job.status === "needs_setup") statusPill.textContent = "Cần cấu hình Kaggle";
   if (job.status === "failed") statusPill.textContent = "Lỗi";
   if (job.status === "complete") statusPill.textContent = "Hoàn tất";
+}
+
+function renderKaggleLinks(job) {
+  kaggleLinks.innerHTML = "";
+  const links = [
+    ["Mở dataset Kaggle", job.dataset_url],
+    ["Mở kernel Kaggle", job.kernel_url],
+  ];
+  for (const [label, url] of links) {
+    if (!url) continue;
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.target = "_blank";
+    anchor.rel = "noopener noreferrer";
+    anchor.textContent = label;
+    kaggleLinks.appendChild(anchor);
+  }
 }
 
 function renderAudio(job) {

@@ -13,3 +13,7 @@ dev = ["pytest"]
 
 [tool.setuptools.packages.find]
 include = ["genmusic_vn*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["outputs", "datasets", "models", "kaggle"]
