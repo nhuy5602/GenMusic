@@ -270,7 +270,7 @@ def load_checkpoint(path: str | Path, *, device="cpu") -> tuple[ResidualDenoiser
     return model, config, payload
 
 
-def generate_audio(model: ResidualDenoiser, text: str, style: str, destination: str | Path, *, duration_seconds: float, config: MusicDiffusionConfig, device="cpu", steps: int = 6, seed: int = 5602) -> dict[str, Any]:
+def generate_audio(model: ResidualDenoiser, text: str, style: str, destination: str | Path, *, duration_seconds: float, config: MusicDiffusionConfig, device="cpu", steps: int = 6, seed: int = 5602, mel_output: str | Path | None = None) -> dict[str, Any]:
     torch, _ = _torch()
     model.to(device)
     chunk_frames = max(8, int(config.chunk_seconds * config.sample_rate / config.hop_length))
@@ -283,8 +283,12 @@ def generate_audio(model: ResidualDenoiser, text: str, style: str, destination: 
     mel = torch.cat(rendered, dim=1)
     target_frames = max(1, int(float(duration_seconds) * config.sample_rate / config.hop_length))
     mel = mel[:, :target_frames]
+    if mel_output:
+        mel_path = Path(mel_output)
+        mel_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({"mel": mel.detach().cpu(), "text": text, "style": style}, mel_path)
     audio_path = render_mel_to_wav(mel, destination, config)
-    return {"status": "complete", "backend": "genmusic-vn-self-diffusion", "audio_path": str(audio_path), "duration_seconds": float(duration_seconds), "diffusion_steps": steps, "seed": seed}
+    return {"status": "complete", "backend": "genmusic-vn-self-diffusion", "audio_path": str(audio_path), "mel_path": str(Path(mel_output).resolve()) if mel_output else None, "duration_seconds": float(duration_seconds), "diffusion_steps": steps, "seed": seed}
 
 
 def structured_random_mel(config: MusicDiffusionConfig, frames: int, *, seed: int):

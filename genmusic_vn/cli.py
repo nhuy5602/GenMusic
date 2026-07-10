@@ -11,6 +11,7 @@ from .data.vietnamese_text import normalize_vietnamese_lyrics
 from .evaluation.jam_metrics import objective_metrics, write_metric_report
 from .evaluation.jam_plots import write_jam_plots
 from .evaluation.project_metrics import build_project_report
+from .evaluation.self_improve import run_self_improve
 from .integrations.kaggle_auto import DEFAULT_MODEL, KaggleJobConfig, refresh_kaggle_job, run_local_generation, submit_text_to_music_job, upload_dataset_to_kaggle
 from .training.self_diffusion import create_random_dataset, train_model, validate_dataset
 
@@ -110,6 +111,20 @@ def build_parser() -> argparse.ArgumentParser:
     project = sub.add_parser("project-report", help="Sinh telemetry từ các job state.")
     project.add_argument("--source", default="outputs")
     project.add_argument("--out", default="outputs/project_report")
+
+    improve = sub.add_parser("self-improve", help="Chạy nhiều input mới, đánh giá before/after và giữ checkpoint tốt hơn.")
+    improve.add_argument("--dataset", required=True)
+    improve.add_argument("--checkpoint", default="outputs/self_improve_checkpoint.pt")
+    improve.add_argument("--out", default="outputs/self_improve_10")
+    improve.add_argument("--rounds", type=int, default=10)
+    improve.add_argument("--duration", type=float, default=6.0)
+    improve.add_argument("--steps", type=int, default=4)
+    improve.add_argument("--epochs", type=int, default=1)
+    improve.add_argument("--batch-size", type=int, default=4)
+    improve.add_argument("--max-records", type=int, default=64)
+    improve.add_argument("--learning-rate", type=float, default=2e-4)
+    improve.add_argument("--device", default=None)
+    improve.add_argument("--seed", type=int, default=5602)
     return parser
 
 
@@ -173,6 +188,8 @@ def main(argv: list[str] | None = None) -> int:
         report["plots"] = write_jam_plots(report, Path(args.out) / "plots")
     elif args.command == "project-report":
         report = build_project_report(args.source, output_root=args.out)
+    elif args.command == "self-improve":
+        report = run_self_improve(dataset_dir=args.dataset, output_root=args.out, checkpoint=args.checkpoint, rounds=args.rounds, duration_seconds=args.duration, steps=args.steps, epochs=args.epochs, batch_size=args.batch_size, max_records=args.max_records, learning_rate=args.learning_rate, device=args.device, seed=args.seed)
     else:  # pragma: no cover - argparse enforces command choices
         raise ValueError(args.command)
 

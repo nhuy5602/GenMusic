@@ -24,4 +24,7 @@ Web:
 Đánh giá:
   python -m genmusic_vn.cli evaluate-self --generated outputs/local_self_music/final.wav --out outputs/self_evaluation
 
+Tự improve 10 input:
+  python -m genmusic_vn.cli self-improve --dataset datasets/random_self_diffusion_1gb --checkpoint outputs/self_music_1gb_subset.pt --out outputs/self_improve_10 --rounds 10 --duration 4 --steps 4 --max-records 64
+
 Model random chỉ dùng smoke test. Muốn cải thiện chất lượng cần train trên dataset audio/mel và lyric có quyền sử dụng.

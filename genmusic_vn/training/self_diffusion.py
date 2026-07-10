@@ -67,6 +67,21 @@ def _load_mel(path: Path, *, device="cpu"):
     return value["mel"] if isinstance(value, dict) else value
 
 
+def _record_path(root: Path, record: dict[str, Any]) -> Path:
+    path = Path(record["mel_path"])
+    return path if path.is_absolute() else root / path
+
+
+def _fit_mel_frames(mel, frames: int):
+    import torch.nn.functional as functional
+
+    if mel.shape[1] > frames:
+        return mel[:, :frames]
+    if mel.shape[1] < frames:
+        return functional.pad(mel, (0, frames - mel.shape[1]))
+    return mel
+
+
 def validate_dataset(dataset_dir: str | Path, *, report_path: str | Path | None = None) -> dict[str, Any]:
     root = Path(dataset_dir)
     report_destination = Path(report_path) if report_path else root / "validation_report.json"
@@ -83,7 +98,7 @@ def validate_dataset(dataset_dir: str | Path, *, report_path: str | Path | None 
     config_data = json.loads((root / "config.json").read_text(encoding="utf-8")) if (root / "config.json").exists() else asdict(MusicDiffusionConfig())
     expected_mels = int(config_data.get("n_mels", 64))
     for record in records:
-        path = root / record["mel_path"]
+        path = _record_path(root, record)
         if not path.exists():
             missing.append(str(path))
             continue
@@ -95,7 +110,7 @@ def validate_dataset(dataset_dir: str | Path, *, report_path: str | Path | None 
     return report
 
 
-def train_model(dataset_dir: str | Path, checkpoint_path: str | Path, *, epochs: int = 1, batch_size: int = 4, learning_rate: float = 2e-4, device: str | None = None, max_records: int | None = None) -> dict[str, Any]:
+def train_model(dataset_dir: str | Path, checkpoint_path: str | Path, *, epochs: int = 1, batch_size: int = 4, learning_rate: float = 2e-4, device: str | None = None, max_records: int | None = None, additional_records: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     import torch
 
     root = Path(dataset_dir)
@@ -105,6 +120,7 @@ def train_model(dataset_dir: str | Path, checkpoint_path: str | Path, *, epochs:
         raise ValueError("Dataset không hợp lệ; xem validation_report.json.")
     config = MusicDiffusionConfig(**json.loads((root / "config.json").read_text(encoding="utf-8")))
     records = _read_records(root)[:max_records or None]
+    records.extend(additional_records or [])
     selected_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model = make_model(config).to(selected_device)
     optimizer = torch.optim.AdamW(list(model.parameters()), lr=learning_rate)
@@ -115,7 +131,7 @@ def train_model(dataset_dir: str | Path, checkpoint_path: str | Path, *, epochs:
         random.shuffle(records)
         for start in range(0, len(records), max(1, int(batch_size))):
             batch = records[start : start + max(1, int(batch_size))]
-            mel = torch.stack([_load_mel(root / record["mel_path"], device=selected_device) for record in batch])
+            mel = torch.stack([_fit_mel_frames(_load_mel(_record_path(root, record), device=selected_device), config.frames_per_chunk) for record in batch])
             texts = [f"{record['style']}. {record['text']}" for record in batch]
             optimizer.zero_grad(set_to_none=True)
             loss = diffusion_loss(model, mel, texts, config)
@@ -128,6 +144,6 @@ def train_model(dataset_dir: str | Path, checkpoint_path: str | Path, *, epochs:
     from ..models.text_to_music_diffusion import save_checkpoint
 
     save_checkpoint(model, model_path, config, optimizer=optimizer, epoch=max(1, int(epochs)), loss=final_loss)
-    report = {"status": "complete", "backend": "genmusic-vn-self-diffusion", "dataset": str(root.resolve()), "checkpoint": str(checkpoint.resolve()), "device": selected_device, "epochs": max(1, int(epochs)), "batch_size": max(1, int(batch_size)), "step_count": len(losses), "final_loss": round(final_loss, 6), "elapsed_seconds": round(time.perf_counter() - started, 3)}
+    report = {"status": "complete", "backend": "genmusic-vn-self-diffusion", "dataset": str(root.resolve()), "checkpoint": str(checkpoint.resolve()), "device": selected_device, "epochs": max(1, int(epochs)), "batch_size": max(1, int(batch_size)), "additional_record_count": len(additional_records or []), "step_count": len(losses), "final_loss": round(final_loss, 6), "elapsed_seconds": round(time.perf_counter() - started, 3)}
     (checkpoint.parent / "training_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report
