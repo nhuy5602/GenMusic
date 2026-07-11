@@ -418,9 +418,9 @@ else:
 os.environ["PYTHONPATH"] = str(source_root) + os.pathsep + os.environ.get("PYTHONPATH", "")
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "torch", "torchaudio", "librosa", "matplotlib"], check=False)
 checkpoint = Path("/kaggle/working/self_music.pt")
-subprocess.run([sys.executable, "-m", "genmusic_vn.cli", "train-self", "--dataset", str(training_dataset), "--checkpoint", str(checkpoint), "--epochs", "1", "--batch-size", "4"], cwd=source_root, check=True)
+subprocess.run([sys.executable, "cli.py", "train-self", "--dataset", str(training_dataset), "--checkpoint", str(checkpoint), "--epochs", "1", "--batch-size", "4"], cwd=source_root, check=True)
 output = Path("/kaggle/working/genmusic_output")
-subprocess.run([sys.executable, "-m", "genmusic_vn.cli", "generate-local", "--text", request["lyrics"], "--style", request["style_prompt"], "--duration", str(request["duration_seconds"]), "--checkpoint", str(checkpoint), "--steps", "6", "--out", str(output)], cwd=source_root, check=True)
+subprocess.run([sys.executable, "cli.py", "generate-local", "--text", request["lyrics"], "--style", request["style_prompt"], "--duration", str(request["duration_seconds"]), "--checkpoint", str(checkpoint), "--steps", "6", "--out", str(output)], cwd=source_root, check=True)
 output.joinpath("request.json").write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
 if shutil.which("ffmpeg") and list(output.glob("*.wav")):
     subprocess.run(["ffmpeg", "-y", "-i", str(list(output.glob("*.wav"))[0]), str(output / "final.mp3")], check=False)

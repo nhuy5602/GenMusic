@@ -5,14 +5,14 @@ import json
 import sys
 from pathlib import Path
 
-from .data.lyric_alignment import align_wav_to_lyrics, load_segments, write_lrc
-from .data.vietnamese_g2p import vietnamese_g2p
-from .data.vietnamese_text import normalize_vietnamese_lyrics
-from .evaluation.jam_metrics import objective_metrics, write_metric_report
-from .evaluation.jam_plots import write_jam_plots
-from .evaluation.project_metrics import build_project_report
-from .integrations.kaggle_auto import DEFAULT_MODEL, KaggleJobConfig, refresh_kaggle_job, run_local_generation, submit_text_to_music_job, upload_dataset_to_kaggle
-from .training.self_diffusion import create_random_dataset, train_model, validate_dataset
+from src.data.lyric_alignment import align_wav_to_lyrics, load_segments, write_lrc
+from src.data.vietnamese_g2p import vietnamese_g2p
+from src.data.vietnamese_text import normalize_vietnamese_lyrics
+from src.evaluation.jam_metrics import objective_metrics, write_metric_report
+from src.evaluation.jam_plots import write_jam_plots
+from src.evaluation.project_metrics import build_project_report
+from src.integrations.kaggle_auto import DEFAULT_MODEL, KaggleJobConfig, refresh_kaggle_job, run_local_generation, submit_text_to_music_job, upload_dataset_to_kaggle
+from src.training.self_diffusion import create_random_dataset, train_model, validate_dataset
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -111,6 +111,11 @@ def build_parser() -> argparse.ArgumentParser:
     project.add_argument("--source", default="outputs")
     project.add_argument("--out", default="outputs/project_report")
 
+    preprocess = sub.add_parser("preprocess-raw", help="Tiền xử lý và gán nhãn dataset âm thanh thô.")
+    preprocess.add_argument("--input", default="dataset/vietnamese_songs")
+    preprocess.add_argument("--output", default="dataset/diff_rhythm_dataset")
+    preprocess.add_argument("--whisper-model", default="base")
+
     return parser
 
 
@@ -174,6 +179,36 @@ def main(argv: list[str] | None = None) -> int:
         report["plots"] = write_jam_plots(report, Path(args.out) / "plots")
     elif args.command == "project-report":
         report = build_project_report(args.source, output_root=args.out)
+    elif args.command == "preprocess-raw":
+        from src.data.preprocess_raw_vietnamese import process_file, SAMPLE_RATE, N_MELS, N_FFT, HOP_LENGTH
+        import whisper
+        raw_dir = Path(args.input)
+        output_dir = Path(args.output)
+        raw_files = list(raw_dir.glob("*.wav")) + list(raw_dir.glob("*.mp3"))
+        if not raw_files:
+            print(f"❌ No raw audio files found in {raw_dir.resolve()}.")
+            return 1
+        print(f"Loading Whisper model ({args.whisper_model})...")
+        whisper_model = whisper.load_model(args.whisper_model)
+        records = []
+        for f in raw_files:
+            try:
+                record = process_file(f, output_dir, whisper_model)
+                records.append(record)
+            except Exception as e:
+                print(f"❌ Error processing file {f.name}: {e}")
+        records_jsonl_path = output_dir / "records.jsonl"
+        with records_jsonl_path.open("w", encoding="utf-8") as out:
+            for r in records:
+                out.write(json.dumps(r, ensure_ascii=False) + "\n")
+        config_data = {
+            "sample_rate": SAMPLE_RATE,
+            "n_mels": N_MELS,
+            "n_fft": N_FFT,
+            "hop_length": HOP_LENGTH
+        }
+        (output_dir / "config.json").write_text(json.dumps(config_data, indent=2))
+        report = {"status": "completed", "dataset_path": str(output_dir.resolve()), "records_count": len(records)}
     else:  # pragma: no cover - argparse enforces command choices
         raise ValueError(args.command)
 

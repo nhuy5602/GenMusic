@@ -9,8 +9,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .integrations.kaggle_auto import DEFAULT_MODEL, KaggleJobConfig, refresh_kaggle_job, submit_text_to_music_job
-from .evaluation.project_metrics import build_project_report
+from src.integrations.kaggle_auto import DEFAULT_MODEL, KaggleJobConfig, refresh_kaggle_job, submit_text_to_music_job
+from src.evaluation.project_metrics import build_project_report
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

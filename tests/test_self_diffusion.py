@@ -6,11 +6,11 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from genmusic_vn.data.vietnamese_g2p import vietnamese_g2p
-from genmusic_vn.data.vietnamese_text import normalize_vietnamese_lyrics
-from genmusic_vn.integrations.kaggle_auto import DEFAULT_KAGGLE_DATASET_SLUG, DEFAULT_MODEL, KaggleJobConfig, resolve_training_dataset_ref, run_local_generation, stage_text_to_music_job, validate_dataset_ref
-from genmusic_vn.models.text_to_music_diffusion import build_lyric_timing, encode_text
-from genmusic_vn.training.self_diffusion import create_random_dataset, train_model, validate_dataset
+from src.data.vietnamese_g2p import vietnamese_g2p
+from src.data.vietnamese_text import normalize_vietnamese_lyrics
+from src.integrations.kaggle_auto import DEFAULT_KAGGLE_DATASET_SLUG, DEFAULT_MODEL, KaggleJobConfig, resolve_training_dataset_ref, run_local_generation, stage_text_to_music_job, validate_dataset_ref
+from src.models.text_to_music_diffusion import build_lyric_timing, encode_text
+from src.training.self_diffusion import create_random_dataset, train_model, validate_dataset
 
 
 class SelfDiffusionTests(unittest.TestCase):
@@ -45,7 +45,7 @@ class SelfDiffusionTests(unittest.TestCase):
             source_zip = Path(state["dataset_dir"], "genmusic_vn_source.zip")
             with zipfile.ZipFile(source_zip) as archive:
                 names = archive.namelist()
-                self.assertIn("genmusic_vn/models/text_to_music_diffusion.py", names)
+                self.assertIn("src/models/text_to_music_diffusion.py", names)
                 self.assertFalse(any(Path(name).name.startswith(".env") for name in names))
                 self.assertNotIn("kaggle.json", [Path(name).name for name in names])
             self.assertIn("genmusic_vn_source.zip", script)
