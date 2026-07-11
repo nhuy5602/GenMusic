@@ -16,4 +16,7 @@ kaggle.json
 /kaggle/working/
 /kaggle/input/
 /datasets/incoming/
+/dataset/diff_rhythm_dataset/
+/dataset/vietnamese_songs/
+/dataset/random_self_diffusion*/
 *.egg-info/

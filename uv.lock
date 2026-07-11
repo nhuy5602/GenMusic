@@ -437,7 +437,7 @@ wheels = [
 ]
 
 [[package]]
-name = "genmusic"
+name = "genmusic-vn"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
