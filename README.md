@@ -55,15 +55,9 @@ python -m genmusic_vn.cli generate-local --text "Mưa rơi nhẹ nhàng, em còn
 
 Không truyền `--checkpoint` để kiểm tra inference trước khi train. Khi đó model dùng trọng số random, chỉ phù hợp smoke test chứ chưa phải chất lượng sản phẩm.
 
-## Tự cải thiện qua input mới
+## Cải thiện model
 
-Chạy 10 input đa dạng không có trong dataset. Mỗi vòng sinh bản trước, train candidate bằng mel feedback, sinh bản sau và chỉ giữ checkpoint nếu điểm tổng hợp tăng:
-
-```powershell
-python -m genmusic_vn.cli self-improve --dataset datasets/random_self_diffusion_1gb --checkpoint outputs/self_music_1gb_subset.pt --out outputs/self_improve_10 --rounds 10 --duration 4 --steps 4 --max-records 64
-```
-
-Mặc định chỉ giữ checkpoint được chấp nhận ở `outputs/self_improve_10/final_checkpoint.pt`; audio/mel/report trung gian dùng thư mục tạm và tự xóa. Thêm `--keep-artifacts` nếu cần xem chẩn đoán từng vòng. Coverage và vocal presence hiện là proxy; WER/độ có vocal thật cần ASR tiếng Việt và vocal stem.
+Các cải thiện model được đưa trực tiếp vào source: text conditioner giữ thứ tự ký tự và line break, còn bộ sinh phân bổ thời lượng theo từng dòng lyric để giảm hiện tượng dồn lời. Không tạo checkpoint hay JSON riêng cho bước cải thiện source này. Coverage và vocal presence vẫn cần ASR tiếng Việt/vocal stem để đánh giá đầy đủ.
 
 ## Kaggle
 

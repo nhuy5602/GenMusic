@@ -26,7 +26,9 @@ class MusicDiffusionConfig:
     hop_length: int = 256
     frames_per_chunk: int = 128
     text_vocab_size: int = 256
+    text_max_length: int = 256
     text_dim: int = 96
+    conditioner_layers: int = 2
     hidden_dim: int = 96
     residual_layers: int = 4
     diffusion_steps: int = 32
@@ -34,7 +36,8 @@ class MusicDiffusionConfig:
 
 
 def encode_text(text: str, *, max_length: int = 256, vocab_size: int = 256) -> list[int]:
-    values = [1 + (ord(char) % max(1, vocab_size - 2)) for char in text[:max_length]]
+    character_space = max(1, vocab_size - 3)
+    values = [2 if char == "\n" else 3 + (ord(char) % character_space) for char in text[:max_length]]
     return values or [0]
 
 
@@ -61,7 +64,19 @@ def _sinusoidal_embedding(timesteps, dimension: int):
 class TextConditioner:
     def __init__(self, config: MusicDiffusionConfig):
         torch, nn = _torch()
+        self.config = config
         self.embedding = nn.Embedding(config.text_vocab_size, config.text_dim)
+        self.position = nn.Embedding(config.text_max_length, config.text_dim)
+        attention_layer = nn.TransformerEncoderLayer(
+            d_model=config.text_dim,
+            nhead=4,
+            dim_feedforward=config.text_dim * 2,
+            dropout=0.0,
+            activation="gelu",
+            batch_first=True,
+            norm_first=False,
+        )
+        self.encoder = nn.TransformerEncoder(attention_layer, num_layers=config.conditioner_layers)
         self.projection = nn.Sequential(
             nn.Linear(config.text_dim, config.text_dim),
             nn.SiLU(),
@@ -69,11 +84,15 @@ class TextConditioner:
         )
 
     def modules(self):
-        return [self.embedding, self.projection]
+        return [self.embedding, self.position, self.encoder, self.projection]
 
     def __call__(self, tokens):
+        torch, _ = _torch()
         mask = (tokens != 0).float().unsqueeze(-1)
-        values = self.embedding(tokens)
+        width = tokens.shape[1]
+        positions = torch.arange(width, device=tokens.device).clamp_max(self.config.text_max_length - 1)
+        values = self.embedding(tokens) + self.position(positions).unsqueeze(0)
+        values = self.encoder(values, src_key_padding_mask=~mask.squeeze(-1).bool())
         pooled = (values * mask).sum(1) / mask.sum(1).clamp_min(1.0)
         return self.projection(pooled)
 
@@ -111,7 +130,7 @@ class ResidualDenoiser:
         )
 
     def modules(self):
-        return [self.input, self.time, self.conditioner.embedding, self.conditioner.projection, self.blocks, self.output]
+        return [self.input, self.time, *self.conditioner.modules(), self.blocks, self.output]
 
     def parameters(self):
         for module in self.modules():
@@ -123,6 +142,8 @@ class ResidualDenoiser:
             ("input", self.input),
             ("time", self.time),
             ("conditioner.embedding", self.conditioner.embedding),
+            ("conditioner.position", self.conditioner.position),
+            ("conditioner.encoder", self.conditioner.encoder),
             ("conditioner.projection", self.conditioner.projection),
             ("blocks", self.blocks),
             ("output", self.output),
@@ -135,13 +156,17 @@ class ResidualDenoiser:
             "input": self.input,
             "time": self.time,
             "conditioner.embedding": self.conditioner.embedding,
+            "conditioner.position": self.conditioner.position,
+            "conditioner.encoder": self.conditioner.encoder,
             "conditioner.projection": self.conditioner.projection,
             "blocks": self.blocks,
             "output": self.output,
         }
         for name, module in groups.items():
             prefix = name + "."
-            module.load_state_dict({key.removeprefix(prefix): value for key, value in state.items() if key.startswith(prefix)}, strict=True)
+            values = {key.removeprefix(prefix): value for key, value in state.items() if key.startswith(prefix)}
+            if values:
+                module.load_state_dict(values, strict=False)
 
     def train(self, mode: bool = True):
         for module in self.modules():
@@ -223,6 +248,25 @@ def sample_mel(model: ResidualDenoiser, text: str, frames: int, *, config: Music
     return sample.clamp(-5.0, 3.0)
 
 
+def build_lyric_timing(text: str, duration_seconds: float) -> list[dict[str, Any]]:
+    """Allocate time by lyric line so long inputs are not compressed into one prompt."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()] or [text.strip()]
+    weights = [max(1, len(line.split())) for line in lines]
+    pause = min(0.18, max(0.0, float(duration_seconds) * 0.04))
+    total_pause = pause * max(0, len(lines) - 1)
+    available = max(0.1, float(duration_seconds) - total_pause)
+    total_weight = sum(weights)
+    timing = []
+    cursor = 0.0
+    for index, (line, weight) in enumerate(zip(lines, weights)):
+        line_duration = available * weight / total_weight
+        start = cursor
+        end = start + line_duration
+        timing.append({"line": line, "line_index": index, "start_seconds": round(start, 4), "end_seconds": round(end, 4), "duration_seconds": round(line_duration, 4), "word_count": weight})
+        cursor = end + (pause if index < len(lines) - 1 else 0.0)
+    return timing
+
+
 def render_mel_to_wav(mel, destination: str | Path, config: MusicDiffusionConfig) -> Path:
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -273,13 +317,21 @@ def load_checkpoint(path: str | Path, *, device="cpu") -> tuple[ResidualDenoiser
 def generate_audio(model: ResidualDenoiser, text: str, style: str, destination: str | Path, *, duration_seconds: float, config: MusicDiffusionConfig, device="cpu", steps: int = 6, seed: int = 5602, mel_output: str | Path | None = None) -> dict[str, Any]:
     torch, _ = _torch()
     model.to(device)
-    chunk_frames = max(8, int(config.chunk_seconds * config.sample_rate / config.hop_length))
-    chunk_count = max(1, math.ceil(float(duration_seconds) / config.chunk_seconds))
     rendered = []
-    for index in range(chunk_count):
-        chunk_text = f"{style}. {text}. section {index + 1}"
-        mel = sample_mel(model, chunk_text, chunk_frames, config=config, device=device, steps=steps, seed=seed + index)
-        rendered.append(mel.squeeze(0))
+    lyric_timing = build_lyric_timing(text, duration_seconds)
+    section_number = 0
+    for section in lyric_timing:
+        section_count = max(1, math.ceil(section["duration_seconds"] / config.chunk_seconds))
+        chunk_duration = section["duration_seconds"] / section_count
+        for chunk_index in range(section_count):
+            chunk_text = (
+                f"{style}. lyric line {section['line_index'] + 1} of {len(lyric_timing)}: {section['line']}. "
+                f"sing naturally across {chunk_duration:.2f} seconds; keep space between lyric lines."
+            )
+            chunk_frames = max(8, int(chunk_duration * config.sample_rate / config.hop_length))
+            mel = sample_mel(model, chunk_text, chunk_frames, config=config, device=device, steps=steps, seed=seed + section_number)
+            rendered.append(mel.squeeze(0))
+            section_number += 1
     mel = torch.cat(rendered, dim=1)
     target_frames = max(1, int(float(duration_seconds) * config.sample_rate / config.hop_length))
     mel = mel[:, :target_frames]
@@ -288,7 +340,7 @@ def generate_audio(model: ResidualDenoiser, text: str, style: str, destination: 
         mel_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save({"mel": mel.detach().cpu(), "text": text, "style": style}, mel_path)
     audio_path = render_mel_to_wav(mel, destination, config)
-    return {"status": "complete", "backend": "genmusic-vn-self-diffusion", "audio_path": str(audio_path), "mel_path": str(Path(mel_output).resolve()) if mel_output else None, "duration_seconds": float(duration_seconds), "diffusion_steps": steps, "seed": seed}
+    return {"status": "complete", "backend": "genmusic-vn-self-diffusion", "audio_path": str(audio_path), "mel_path": str(Path(mel_output).resolve()) if mel_output else None, "duration_seconds": float(duration_seconds), "diffusion_steps": steps, "seed": seed, "lyric_timing": lyric_timing}
 
 
 def structured_random_mel(config: MusicDiffusionConfig, frames: int, *, seed: int):

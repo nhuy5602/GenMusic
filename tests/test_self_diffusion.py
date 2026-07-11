@@ -9,6 +9,7 @@ from pathlib import Path
 from genmusic_vn.data.vietnamese_g2p import vietnamese_g2p
 from genmusic_vn.data.vietnamese_text import normalize_vietnamese_lyrics
 from genmusic_vn.integrations.kaggle_auto import DEFAULT_KAGGLE_DATASET_SLUG, DEFAULT_MODEL, KaggleJobConfig, resolve_training_dataset_ref, run_local_generation, stage_text_to_music_job, validate_dataset_ref
+from genmusic_vn.models.text_to_music_diffusion import build_lyric_timing, encode_text
 from genmusic_vn.training.self_diffusion import create_random_dataset, train_model, validate_dataset
 
 
@@ -67,6 +68,12 @@ class SelfDiffusionTests(unittest.TestCase):
         result = vietnamese_g2p("Sóng gió", use_phonemizer=False)
         self.assertEqual(result.backend, "rule-based-ipa")
         self.assertEqual(len(result.tokens), 2)
+
+    def test_model_preserves_lyric_line_structure(self) -> None:
+        self.assertEqual(encode_text("a\nb")[1], 2)
+        timing = build_lyric_timing("Một câu chậm.\nMột câu khác.", 8)
+        self.assertEqual(len(timing), 2)
+        self.assertAlmostEqual(timing[-1]["end_seconds"], 8.0, places=3)
 
 
 if __name__ == "__main__":
