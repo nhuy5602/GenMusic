@@ -1,109 +1,141 @@
-# GenMusic VN
+# GenMusic VN: Background Music & Vietnamese Vocal Generator
 
-GenMusic VN là model sinh nhạc từ văn bản do project tự code. Backend là conditional diffusion: text được mã hóa bằng character embedding, denoiser Conv1D dự đoán noise trên mel-spectrogram, sau đó mel được đổi thành WAV/MP3.
+GenMusic VN is a self-authored text-to-music conditional diffusion model.
 
-## Luồng chính
+Detailed technical documentations are located in the `docs/` folder:
+- [System Architecture](docs/architecture.md)
+- [Machine Learning Models](docs/model.md)
+- [Training & Improvement Pipelines](docs/training.md)
+
+---
+
+## 📂 Project Directory Overview
 
 ```text
-Lyric + style
-  -> chuẩn hóa tiếng Việt và timestamp LRC
-  -> text conditioner
-  -> conditional diffusion denoise
-  -> mel-to-waveform Griffin-Lim
-  -> WAV/MP3 + telemetry + objective metrics
+GenMusic/
+├── genmusic_vn/        # Main Python package (pipeline, CLI, server)
+├── data/               # Stylebanks and model checkpoints (formerly datasets)
+├── frontend/           # Web client UI (HTML, CSS, JS) (formerly web)
+├── docs/               # Detailed system documentations
+├── kaggle_deploy/      # Kaggle deployment config (formerly kaggle)
+├── outputs/            # Local and downloaded outputs
+└── tests/              # Automated unit tests
 ```
 
-Project không dùng model có sẵn, classifier, TTS hoặc source code bên ngoài làm backend. Checkpoint sinh ra từ chính trainer trong `genmusic_vn/models` và `genmusic_vn/training`.
+---
 
-## Cài đặt
+## 🛠️ Installation & Setup
 
-```powershell
-pip install -e ".[self]"
+### Install Dependencies
+
+* **Using `uv` (Recommended):**
+  ```powershell
+  uv sync
+  # Or editable install:
+  uv pip install -e ".[self]"
+  ```
+
+* **Using standard `pip`:**
+  ```powershell
+  pip install -e ".[self]"
+  ```
+
+### Setup Kaggle Credentials
+Create a `.env` or `.env.local` file in your project root:
+```env
+KAGGLE_USERNAME=your_kaggle_username
+KAGGLE_KEY=your_kaggle_api_key
 ```
 
-Nếu dùng G2P đầy đủ trên Windows, cài eSpeak NG và đặt `PHONEMIZER_ESPEAK_LIBRARY` tới `libespeak-ng.dll`. Khi thiếu binary, G2P vẫn có fallback rule-based.
+---
 
-## Chạy local
+## 🚀 Usage Guide
 
-Tạo dataset random đúng format model tự code:
+### 1. Create Dataset and Train
+* **Using `uv`:**
+  ```powershell
+  uv run python -m genmusic_vn.cli make-random-dataset --out data/random_self_diffusion --count 16 --frames 128
+  uv run python -m genmusic_vn.cli train-self --dataset data/random_self_diffusion --checkpoint outputs/self_music.pt --epochs 1 --batch-size 4
+  ```
 
-```powershell
-python -m genmusic_vn.cli make-random-dataset --out datasets/random_self_diffusion --count 16 --frames 128
-python -m genmusic_vn.cli validate-dataset --dataset datasets/random_self_diffusion
-```
+* **Without `uv`:**
+  ```powershell
+  python -m genmusic_vn.cli make-random-dataset --out data/random_self_diffusion --count 16 --frames 128
+  python -m genmusic_vn.cli train-self --dataset data/random_self_diffusion --checkpoint outputs/self_music.pt --epochs 1 --batch-size 4
+  ```
 
-Tạo và upload dataset training vào một đường dẫn Kaggle cố định (mặc định là `<KAGGLE_USERNAME>/genmusic-vn-self-diffusion-training`):
+### 2. Local Generation
+* **Using `uv`:**
+  ```powershell
+  uv run python -m genmusic_vn.cli generate-local --text "Mưa rơi nhẹ nhàng, em còn nhớ con đường xưa." --style "Vietnamese pop ballad, warm piano" --duration 4 --checkpoint outputs/self_music.pt --out outputs/local_self_music
+  ```
 
-```powershell
-python -m genmusic_vn.cli make-and-upload-dataset --out datasets/random_self_diffusion_training --target-gb 1
-```
+* **Without `uv`:**
+  ```powershell
+  python -m genmusic_vn.cli generate-local --text "Mưa rơi nhẹ nhàng, em còn nhớ con đường xưa." --style "Vietnamese pop ballad, warm piano" --duration 4 --checkpoint outputs/self_music.pt --out outputs/local_self_music
+  ```
 
-`--target-gb` dùng cache augmentation để đạt kích thước tối thiểu và kiểm tra đường ống dữ liệu. Đây không phải dữ liệu âm nhạc có chất lượng; muốn cải thiện model cần thay bằng audio/mel và lyric có quyền sử dụng.
-Có thể chọn dung lượng khác, ví dụ `--target-gb 5`. Nếu muốn chỉ rõ đường dẫn của tài khoản khác, dùng `--dataset-ref owner/slug` hoặc đặt `GENMUSIC_KAGGLE_DATASET_REF=owner/slug`.
+### 3. Stage Kaggle Job
+* **Using `uv`:**
+  ```powershell
+  uv run python -m genmusic_vn.cli generate --text "Một ngày mới bắt đầu." --duration 12 --no-submit
+  ```
 
-Train checkpoint:
+* **Without `uv`:**
+  ```powershell
+  python -m genmusic_vn.cli generate --text "Một ngày mới bắt đầu." --duration 12 --no-submit
+  ```
 
-```powershell
-python -m genmusic_vn.cli train-self --dataset datasets/random_self_diffusion --checkpoint outputs/self_music.pt --epochs 1 --batch-size 4
-```
+### 4. Create and Upload Dataset (~1 GB)
+* **Using `uv`:**
+  ```powershell
+  uv run python -m genmusic_vn.cli make-and-upload-dataset --out data/random_self_diffusion_training --target-gb 1
+  ```
 
-Sinh thử một đoạn nhạc:
+* **Without `uv`:**
+  ```powershell
+  python -m genmusic_vn.cli make-and-upload-dataset --out data/random_self_diffusion_training --target-gb 1
+  ```
+*(You can change the target size using `--target-gb 5` or change dataset reference using `--dataset-ref owner/slug`)*
 
-```powershell
-python -m genmusic_vn.cli generate-local --text "Mưa rơi nhẹ nhàng, em còn nhớ con đường xưa." --style "Vietnamese pop ballad, warm piano, clear melody" --duration 4 --checkpoint outputs/self_music.pt --steps 6 --out outputs/local_self_music
-```
+### 5. Web Interface
+* **Using `uv`:**
+  ```powershell
+  uv run python -m genmusic_vn.server --port 8000
+  ```
 
-Không truyền `--checkpoint` để kiểm tra inference trước khi train. Khi đó model dùng trọng số random, chỉ phù hợp smoke test chứ chưa phải chất lượng sản phẩm.
+* **Without `uv`:**
+  ```powershell
+  python -m genmusic_vn.server --port 8000
+  ```
+Open your browser at `http://127.0.0.1:8000`.
 
-## Cải thiện model
+### 6. Evaluation
+* **Using `uv`:**
+  ```powershell
+  uv run python -m genmusic_vn.cli evaluate-self --generated outputs/local_self_music/final.wav --out outputs/self_evaluation
+  ```
 
-Các cải thiện model được đưa trực tiếp vào source: text conditioner giữ thứ tự ký tự và line break, còn bộ sinh phân bổ thời lượng theo từng dòng lyric để giảm hiện tượng dồn lời. Không tạo checkpoint hay JSON riêng cho bước cải thiện source này. Coverage và vocal presence vẫn cần ASR tiếng Việt/vocal stem để đánh giá đầy đủ.
+* **Without `uv`:**
+  ```powershell
+  python -m genmusic_vn.cli evaluate-self --generated outputs/local_self_music/final.wav --out outputs/self_evaluation
+  ```
 
-## Kaggle
+> [!NOTE]
+> The random model is only for smoke testing. To improve the generation quality, the model needs to be trained on a licensed audio/mel and lyric dataset.
 
-Lệnh `generate` đóng gói request/source vào dataset private, attach dataset training cố định rồi tạo kernel Kaggle. Kernel không tự tạo dataset mới theo từng request.
+---
 
-```powershell
-python -m genmusic_vn.cli generate --text "Một ngày mới bắt đầu trên con phố quen." --duration 12 --genre "Vietnamese indie pop, acoustic guitar" --no-submit
-python -m genmusic_vn.cli generate --text "Một ngày mới bắt đầu trên con phố quen." --duration 12 --genre "Vietnamese indie pop, acoustic guitar" --wait
-```
+## 🧪 Testing
 
-Kaggle cần `KAGGLE_USERNAME`, `KAGGLE_KEY` và CLI tương ứng. Dataset random chỉ kiểm tra pipeline; muốn model có chất lượng phải thay bằng dataset audio/mel và lyric thật có quyền sử dụng.
-Nếu dataset training cố định chưa tồn tại hoặc chưa ở trạng thái `ready`, job trả lỗi và hướng dẫn chạy `make-and-upload-dataset`.
-Khi stage hoặc submit job, web app hiển thị link bấm được tới dataset và kernel Kaggle nếu đã cấu hình credential.
+Run the automated unit tests to verify system stability:
 
-## G2P và căn chỉnh lyric
+* **Using `uv`:**
+  ```powershell
+  uv run python -m unittest discover -s tests -v
+  ```
 
-```powershell
-python -m genmusic_vn.cli normalize-lyrics --input data/song.txt --out outputs/song.normalized.txt
-python -m genmusic_vn.cli lyrics-g2p --input outputs/song.normalized.txt --out outputs/song.g2p.json
-python -m genmusic_vn.cli align-lyrics --audio data/song.wav --lyrics outputs/song.normalized.txt --out outputs/song.lrc --allow-heuristic
-```
-
-## Đánh giá và biểu đồ
-
-MOS/CMOS tạm bỏ qua. Metric khách quan và telemetry project vẫn được ghi:
-
-```powershell
-python -m genmusic_vn.cli evaluate-self --generated outputs/local_self_music/final.wav --out outputs/self_evaluation
-python -m genmusic_vn.cli project-report --source outputs --out outputs/project_report
-```
-
-`project-report` sinh biểu đồ thời gian input tới audio, success/error, retry Kaggle, emotion/BPM và user rating. Khi chưa có dữ liệu rating hoặc emotion/BPM, biểu đồ ghi rõ thiếu dữ liệu thay vì tạo số giả.
-
-## Web app
-
-```powershell
-python -m genmusic_vn.server --port 8000
-```
-
-Mở `http://127.0.0.1:8000`.
-
-## Kiểm thử
-
-```powershell
-python -m compileall -q genmusic_vn tests
-python -m pytest -q
-```
-
-Checkpoint, audio và dataset lớn được giữ ngoài Git.
+* **Without `uv`:**
+  ```powershell
+  python -m unittest discover -s tests -v
+  ```

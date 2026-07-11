@@ -1,14 +1,21 @@
 [project]
 name = "genmusic-vn"
 version = "0.1.0"
-description = "Self-authored Vietnamese text-to-music diffusion model and Kaggle runner."
+description = "Vietnamese text-to-music diffusion model"
 readme = "README.md"
-requires-python = ">=3.10"
-dependencies = []
+requires-python = ">=3.13"
+dependencies = [
+    "torch>=2.0.0",
+    "librosa>=0.10.0",
+    "numpy>=1.20.0",
+    "matplotlib>=3.5.0",
+    "imageio-ffmpeg>=0.4.0",
+    "kaggle>=1.5.0",
+    "python-dotenv>=1.0.0",
+    "soundfile>=0.12.0",
+]
 
 [project.optional-dependencies]
-kaggle = ["kaggle"]
-self = ["torch", "torchaudio", "librosa", "numpy", "scipy", "matplotlib", "kaggle", "faster-whisper", "phonemizer"]
 dev = ["pytest"]
 
 [tool.setuptools.packages.find]
