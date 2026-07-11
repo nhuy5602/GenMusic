@@ -63,7 +63,7 @@ Chạy 10 input đa dạng không có trong dataset. Mỗi vòng sinh bản trư
 python -m genmusic_vn.cli self-improve --dataset datasets/random_self_diffusion_1gb --checkpoint outputs/self_music_1gb_subset.pt --out outputs/self_improve_10 --rounds 10 --duration 4 --steps 4 --max-records 64
 ```
 
-Kết quả nằm trong `outputs/self_improve_10/self_improve_report.json` và checkpoint được chấp nhận nằm ở `outputs/self_improve_10/final_checkpoint.pt`. Coverage và vocal presence hiện là proxy; WER/độ có vocal thật cần ASR tiếng Việt và vocal stem.
+Mặc định chỉ giữ checkpoint được chấp nhận ở `outputs/self_improve_10/final_checkpoint.pt`; audio/mel/report trung gian dùng thư mục tạm và tự xóa. Thêm `--keep-artifacts` nếu cần xem chẩn đoán từng vòng. Coverage và vocal presence hiện là proxy; WER/độ có vocal thật cần ASR tiếng Việt và vocal stem.
 
 ## Kaggle
 

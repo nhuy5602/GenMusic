@@ -125,6 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     improve.add_argument("--learning-rate", type=float, default=2e-4)
     improve.add_argument("--device", default=None)
     improve.add_argument("--seed", type=int, default=5602)
+    improve.add_argument("--keep-artifacts", action="store_true", help="Giữ audio, mel và report chẩn đoán của từng vòng.")
     return parser
 
 
@@ -189,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "project-report":
         report = build_project_report(args.source, output_root=args.out)
     elif args.command == "self-improve":
-        report = run_self_improve(dataset_dir=args.dataset, output_root=args.out, checkpoint=args.checkpoint, rounds=args.rounds, duration_seconds=args.duration, steps=args.steps, epochs=args.epochs, batch_size=args.batch_size, max_records=args.max_records, learning_rate=args.learning_rate, device=args.device, seed=args.seed)
+        report = run_self_improve(dataset_dir=args.dataset, output_root=args.out, checkpoint=args.checkpoint, rounds=args.rounds, duration_seconds=args.duration, steps=args.steps, epochs=args.epochs, batch_size=args.batch_size, max_records=args.max_records, learning_rate=args.learning_rate, device=args.device, seed=args.seed, keep_artifacts=args.keep_artifacts)
     else:  # pragma: no cover - argparse enforces command choices
         raise ValueError(args.command)
 

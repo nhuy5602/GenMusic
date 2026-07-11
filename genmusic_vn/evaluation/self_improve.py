@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-import math
 import re
 import shutil
+import tempfile
 import unicodedata
 import wave
 from pathlib import Path
@@ -151,7 +151,7 @@ def _dataset_texts(dataset_dir: str | Path) -> set[str]:
     return {normalize_vietnamese_lyrics(json.loads(line).get("text", "")).casefold() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()}
 
 
-def run_self_improve(*, dataset_dir: str | Path, output_root: str | Path, checkpoint: str | Path, rounds: int = 10, duration_seconds: float = 6.0, steps: int = 4, epochs: int = 1, batch_size: int = 4, max_records: int | None = 64, learning_rate: float = 2e-4, device: str | None = None, seed: int = 5602, inputs: Iterable[tuple[str, str]] | None = None) -> dict[str, Any]:
+def run_self_improve(*, dataset_dir: str | Path, output_root: str | Path, checkpoint: str | Path, rounds: int = 10, duration_seconds: float = 6.0, steps: int = 4, epochs: int = 1, batch_size: int = 4, max_records: int | None = 64, learning_rate: float = 2e-4, device: str | None = None, seed: int = 5602, inputs: Iterable[tuple[str, str]] | None = None, keep_artifacts: bool = False) -> dict[str, Any]:
     dataset = Path(dataset_dir).resolve()
     destination = Path(output_root).resolve()
     destination.mkdir(parents=True, exist_ok=True)
@@ -167,33 +167,51 @@ def run_self_improve(*, dataset_dir: str | Path, output_root: str | Path, checkp
     overlap = [text for text in normalized_cases if text.casefold() in dataset_texts]
     if overlap:
         raise ValueError(f"Input tự improve trùng dataset: {overlap[0]}")
+    if not keep_artifacts:
+        for stale_round in destination.glob("round_*"):
+            if stale_round.is_dir():
+                shutil.rmtree(stale_round)
+        stale_report = destination / "self_improve_report.json"
+        if stale_report.exists():
+            stale_report.unlink()
+    temporary_root = None if keep_artifacts else tempfile.TemporaryDirectory(prefix="genmusic_self_improve_")
+    work_root = destination / "rounds" if keep_artifacts else Path(temporary_root.name)
     rounds_report: list[dict[str, Any]] = []
     accepted_count = 0
-    for index, ((text, style), normalized_text) in enumerate(zip(cases, normalized_cases), start=1):
-        round_dir = destination / f"round_{index:02d}"
-        before_dir = round_dir / "before"
-        after_dir = round_dir / "after"
-        before = run_local_generation(text=normalized_text, style=style, output_dir=before_dir, duration_seconds=duration_seconds, checkpoint=current_checkpoint, steps=steps, seed=seed + index, device=device, mel_output=round_dir / "feedback_mel.pt")
-        before_eval = evaluate_input(text=normalized_text, style=style, audio_path=before["audio_path"], requested_duration=duration_seconds)
-        feedback_record = [{"id": f"feedback_{index:02d}", "text": normalized_text, "style": style, "mel_path": str(Path(before["mel_path"]).resolve()), "frames": int(torch_shape(before["mel_path"])[1])}]
-        candidate_checkpoint = round_dir / "candidate.pt"
-        training = train_model(dataset, candidate_checkpoint, epochs=epochs, batch_size=batch_size, learning_rate=learning_rate, device=device, max_records=max_records, additional_records=feedback_record)
-        after = run_local_generation(text=normalized_text, style=style, output_dir=after_dir, duration_seconds=duration_seconds, checkpoint=candidate_checkpoint, steps=steps, seed=seed + index, device=device)
-        after_eval = evaluate_input(text=normalized_text, style=style, audio_path=after["audio_path"], requested_duration=duration_seconds)
-        delta = round(after_eval["composite_score"] - before_eval["composite_score"], 6)
-        accepted = delta > 0.0
-        if accepted:
-            current_checkpoint = candidate_checkpoint.resolve()
-            accepted_count += 1
-        report = {"round": index, "input": {"text": normalized_text, "style": style}, "before": before_eval, "training": training, "after": after_eval, "score_delta": delta, "improved": accepted, "checkpoint_for_next_round": str(current_checkpoint)}
-        (round_dir / "round_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-        rounds_report.append(report)
-    stable_checkpoint = destination / "final_checkpoint.pt"
-    if current_checkpoint.resolve() != stable_checkpoint.resolve():
-        shutil.copy2(current_checkpoint, stable_checkpoint)
-    summary = {"status": "complete", "backend": "genmusic-vn-self-diffusion", "dataset": str(dataset), "initial": initial, "round_count": len(rounds_report), "accepted_rounds": accepted_count, "final_checkpoint": str(stable_checkpoint.resolve()), "rounds": rounds_report, "notes": ["Mỗi vòng train candidate trước khi đánh giá after; chỉ checkpoint có composite score tăng mới được dùng cho input kế tiếp."]}
-    (destination / "self_improve_report.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    return summary
+    try:
+        for index, ((text, style), normalized_text) in enumerate(zip(cases, normalized_cases), start=1):
+            round_dir = work_root / f"round_{index:02d}"
+            before_dir = round_dir / "before"
+            after_dir = round_dir / "after"
+            before = run_local_generation(text=normalized_text, style=style, output_dir=before_dir, duration_seconds=duration_seconds, checkpoint=current_checkpoint, steps=steps, seed=seed + index, device=device, mel_output=round_dir / "feedback_mel.pt")
+            before_eval = evaluate_input(text=normalized_text, style=style, audio_path=before["audio_path"], requested_duration=duration_seconds)
+            feedback_record = [{"id": f"feedback_{index:02d}", "text": normalized_text, "style": style, "mel_path": str(Path(before["mel_path"]).resolve()), "frames": int(torch_shape(before["mel_path"])[1])}]
+            candidate_checkpoint = round_dir / "candidate.pt"
+            training = train_model(dataset, candidate_checkpoint, epochs=epochs, batch_size=batch_size, learning_rate=learning_rate, device=device, max_records=max_records, additional_records=feedback_record)
+            after = run_local_generation(text=normalized_text, style=style, output_dir=after_dir, duration_seconds=duration_seconds, checkpoint=candidate_checkpoint, steps=steps, seed=seed + index, device=device)
+            after_eval = evaluate_input(text=normalized_text, style=style, audio_path=after["audio_path"], requested_duration=duration_seconds)
+            delta = round(after_eval["composite_score"] - before_eval["composite_score"], 6)
+            accepted = delta > 0.0
+            if accepted:
+                current_checkpoint = candidate_checkpoint.resolve()
+                accepted_count += 1
+            report = {"round": index, "input": {"text": normalized_text, "style": style}, "before": before_eval, "training": training, "after": after_eval, "score_delta": delta, "improved": accepted, "checkpoint_for_next_round": str(current_checkpoint)}
+            if keep_artifacts:
+                round_dir.mkdir(parents=True, exist_ok=True)
+                (round_dir / "round_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            rounds_report.append(report)
+        stable_checkpoint = destination / "final_checkpoint.pt"
+        if current_checkpoint.resolve() != stable_checkpoint.resolve():
+            shutil.copy2(current_checkpoint, stable_checkpoint)
+        summary = {"status": "complete", "backend": "genmusic-vn-self-diffusion", "dataset": str(dataset), "round_count": len(rounds_report), "accepted_rounds": accepted_count, "final_checkpoint": str(stable_checkpoint.resolve()), "artifacts_saved": keep_artifacts}
+        if keep_artifacts:
+            summary["initial"] = initial
+            summary["rounds"] = rounds_report
+            (destination / "self_improve_report.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        return summary
+    finally:
+        if temporary_root is not None:
+            temporary_root.cleanup()
 
 
 def torch_shape(path: str | Path) -> tuple[int, int]:

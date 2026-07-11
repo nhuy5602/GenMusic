@@ -26,5 +26,6 @@ Web:
 
 Tự improve 10 input:
   python -m genmusic_vn.cli self-improve --dataset datasets/random_self_diffusion_1gb --checkpoint outputs/self_music_1gb_subset.pt --out outputs/self_improve_10 --rounds 10 --duration 4 --steps 4 --max-records 64
+  (Mặc định chỉ giữ checkpoint cuối; thêm --keep-artifacts nếu cần giữ chẩn đoán.)
 
 Model random chỉ dùng smoke test. Muốn cải thiện chất lượng cần train trên dataset audio/mel và lyric có quyền sử dụng.
