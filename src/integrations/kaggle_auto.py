@@ -44,7 +44,7 @@ class KaggleJobConfig:
     training_dataset_ref: str | None = None
 
 
-def run_local_generation(*, text: str, style: str, output_dir: str | Path, duration_seconds: float, checkpoint: str | Path | None = None, steps: int = 6, seed: int = 5602, device: str | None = None, mel_output: str | Path | None = None, vocoder: str = "istft") -> dict[str, Any]:
+def run_local_generation(*, text: str, style: str, output_dir: str | Path, duration_seconds: float, checkpoint: str | Path | None = None, steps: int = 6, seed: int = 5602, device: str | None = None, mel_output: str | Path | None = None, vocoder: str = "istft", model_type: str = "conv1d", roberta_model: str = "xlm-roberta-base") -> dict[str, Any]:
     normalized = normalize_vietnamese_lyrics(text).strip()
     if not normalized:
         raise SelfMusicError("Văn bản input đang trống.")
@@ -52,12 +52,16 @@ def run_local_generation(*, text: str, style: str, output_dir: str | Path, durat
     destination.mkdir(parents=True, exist_ok=True)
     selected_device = device or _default_device()
     if checkpoint and Path(checkpoint).exists():
-        model, config, payload = load_checkpoint(checkpoint, device=selected_device)
+        model, config, payload = load_checkpoint(checkpoint, device=selected_device, model_type=model_type, roberta_model=roberta_model)
         checkpoint_path = str(Path(checkpoint).resolve())
         checkpoint_epoch = payload.get("epoch", 0)
     else:
         config = MusicDiffusionConfig()
-        model = make_model(config).to(selected_device)
+        if model_type == "dit":
+            from ..models.dit_transformer import MicroDiT
+            model = MicroDiT(config, roberta_model=roberta_model).to(selected_device)
+        else:
+            model = make_model(config).to(selected_device)
         checkpoint_path = ""
         checkpoint_epoch = 0
     report = generate_audio(

@@ -359,11 +359,21 @@ def save_checkpoint(model: ResidualDenoiser, path: str | Path, config: MusicDiff
     return destination.resolve()
 
 
-def load_checkpoint(path: str | Path, *, device="cpu") -> tuple[ResidualDenoiser, MusicDiffusionConfig, dict[str, Any]]:
+def load_checkpoint(path: str | Path, *, device="cpu", model_type: str | None = None, roberta_model: str = "xlm-roberta-base") -> tuple[nn.Module, MusicDiffusionConfig, dict[str, Any]]:
     torch, _ = _torch()
     payload = torch.load(path, map_location=device, weights_only=False)
     config = MusicDiffusionConfig(**payload["config"])
-    model = make_model(config).to(device)
+    
+    # Detect model type based on saved state dict keys
+    state_keys = payload["model"].keys()
+    is_dit = any("transformer_blocks" in k or "text_encoder" in k for k in state_keys)
+    
+    if model_type == "dit" or (model_type is None and is_dit):
+        from .dit_transformer import MicroDiT
+        model = MicroDiT(config, roberta_model=roberta_model).to(device)
+    else:
+        model = make_model(config).to(device)
+        
     model.load_state_dict(payload["model"])
     return model, config, payload
 
@@ -383,7 +393,12 @@ def generate_audio(model: ResidualDenoiser, text: str, style: str, destination: 
                 f"sing naturally across {chunk_duration:.2f} seconds; keep space between lyric lines."
             )
             chunk_frames = max(8, int(chunk_duration * config.sample_rate / config.hop_length))
-            mel = sample_mel(model, chunk_text, chunk_frames, config=config, device=device, steps=steps, seed=seed + section_number)
+            is_dit = model.__class__.__name__ == "MicroDiT"
+            if is_dit:
+                from .cfm_flow import sample_cfm
+                mel = sample_cfm(model, [chunk_text], chunk_frames, config=config, device=device, steps=steps, seed=seed + section_number)
+            else:
+                mel = sample_mel(model, chunk_text, chunk_frames, config=config, device=device, steps=steps, seed=seed + section_number)
             rendered.append(mel.squeeze(0))
             section_number += 1
     mel = torch.cat(rendered, dim=1)

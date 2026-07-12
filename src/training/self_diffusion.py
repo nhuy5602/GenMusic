@@ -66,7 +66,17 @@ class DiffusionTrainer:
             mel = batch["mel"].to(self.device)
             texts = batch["text"]
             self.optimizer.zero_grad(set_to_none=True)
-            loss = diffusion_loss(self.model, mel, texts, self.config)
+            
+            # Check if using the new MicroDiT model
+            is_dit = self.model.__class__.__name__ == "MicroDiT"
+            if is_dit:
+                # Transpose mel from (batch, n_mels, seq_len) to (batch, seq_len, n_mels) for DiT
+                mel_t = mel.transpose(1, 2)
+                from ..models.cfm_flow import cfm_loss
+                loss = cfm_loss(self.model, mel_t, texts, self.config)
+            else:
+                loss = diffusion_loss(self.model, mel, texts, self.config)
+                
             loss.backward()
             torch.nn.utils.clip_grad_norm_(list(self.model.parameters()), 1.0)
             self.optimizer.step()
@@ -157,7 +167,7 @@ def validate_dataset(dataset_dir: str | Path, *, report_path: str | Path | None 
     report_destination.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report
 
-def train_model(dataset_dir: str | Path, checkpoint_path: str | Path, *, epochs: int = 1, batch_size: int = 4, learning_rate: float = 2e-4, device: str | None = None, max_records: int | None = None, additional_records: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def train_model(dataset_dir: str | Path, checkpoint_path: str | Path, *, epochs: int = 1, batch_size: int = 4, learning_rate: float = 2e-4, device: str | None = None, max_records: int | None = None, additional_records: list[dict[str, Any]] | None = None, model_type: str = "conv1d", roberta_model: str = "xlm-roberta-base") -> dict[str, Any]:
     torch, _, DatasetClass, DataLoaderClass = _torch()
 
     root = Path(dataset_dir)
@@ -168,8 +178,16 @@ def train_model(dataset_dir: str | Path, checkpoint_path: str | Path, *, epochs:
     
     config = MusicDiffusionConfig(**json.loads((root / "config.json").read_text(encoding="utf-8")))
     selected_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    model = make_model(config).to(selected_device)
-    optimizer = torch.optim.AdamW(list(model.parameters()), lr=learning_rate)
+    
+    if model_type == "dit":
+        from ..models.dit_transformer import MicroDiT
+        model = MicroDiT(config, roberta_model=roberta_model).to(selected_device)
+        # Train only parameters that requires_grad (i.e. exclude frozen RoBERTa weights)
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
+        optimizer = torch.optim.AdamW(trainable_params, lr=learning_rate)
+    else:
+        model = make_model(config).to(selected_device)
+        optimizer = torch.optim.AdamW(list(model.parameters()), lr=learning_rate)
     
     # Instantiate custom Dataset and DataLoader
     dataset = MusicDiffusionDataset(root, config, max_records=max_records, additional_records=additional_records)

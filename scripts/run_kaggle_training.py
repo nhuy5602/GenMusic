@@ -91,7 +91,7 @@ try:
     shutil.copytree(source_dataset_dir, source_root, dirs_exist_ok=True)
 
     print("--- STEP 3: Installing dependencies ---")
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "torch", "torchaudio", "librosa", "matplotlib", "openai-whisper", "demucs", "imageio-ffmpeg"], check=True)
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "torch", "torchaudio", "librosa", "matplotlib", "openai-whisper", "demucs", "imageio-ffmpeg", "transformers", "vocos"], check=True)
 
     # Add source code to path
     os.environ["PYTHONPATH"] = str(source_root) + os.pathsep + os.environ.get("PYTHONPATH", "")
