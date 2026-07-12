@@ -40,20 +40,25 @@ flowchart TD
 
 ---
 
-## 🚀 Execution Guide
+## 🛠️ Setup & Prerequisites
 
-You can run the pipeline directly inside the project root namespace using the command-line interface.
+Make sure the required preprocessing dependencies are installed in your environment:
 
-### Prerequisites
+* **Using `uv`:**
+  ```powershell
+  uv pip install openai-whisper demucs
+  ```
 
-Install the processing dependencies:
-```powershell
-uv pip install openai-whisper demucs
-```
+* **Using `pip`:**
+  ```powershell
+  pip install openai-whisper demucs
+  ```
 
-### CLI Command
+---
 
-Run the pipeline using the `preprocess-raw` command:
+## 🚀 Usage Guide
+
+You can run the pipeline directly inside the project root namespace using the command-line interface:
 
 * **Using `uv`:**
   ```powershell
@@ -64,14 +69,14 @@ Run the pipeline using the `preprocess-raw` command:
   python cli.py preprocess-raw --input dataset/vietnamese_songs --output dataset/diff_rhythm_dataset --whisper-model base
   ```
 
-#### Argument Flags:
+### CLI Arguments Configuration
 * `--input`: Folder containing raw `.mp3` or `.wav` music files (default: `dataset/vietnamese_songs`).
 * `--output`: Destination directory for the generated dataset (default: `dataset/diff_rhythm_dataset`).
 * `--whisper-model`: The size of the OpenAI Whisper model to use (`tiny`, `base`, `small`, `medium`, `large-v3`) (default: `base`).
 
 ---
 
-## 📂 Output Format Specs
+## 📦 Output Format Specifications
 
 After completion, the output directory will contain:
 
