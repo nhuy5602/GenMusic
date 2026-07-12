@@ -1,4 +1,4 @@
-"""Dataset and training loop for the self-authored music diffusion model."""
+"""Dataset, DataLoader and training loop for the self-authored music diffusion model."""
 
 from __future__ import annotations
 
@@ -12,6 +12,15 @@ from typing import Any
 
 from ..models.text_to_music_diffusion import MusicDiffusionConfig, diffusion_loss, make_model, structured_random_mel
 
+# Ensure PyTorch helper works
+def _torch():
+    try:
+        import torch
+        import torch.nn as nn
+        from torch.utils.data import Dataset, DataLoader
+    except ImportError as exc:
+        raise RuntimeError("Cần cài torch để chạy model sinh nhạc tự code.") from exc
+    return torch, nn, Dataset, DataLoader
 
 DEFAULT_TEXTS = [
     ("Mưa rơi trên mái hiên, lòng nghe bình yên.", "Vietnamese soft ballad, piano, warm strings, gentle beat"),
@@ -20,6 +29,49 @@ DEFAULT_TEXTS = [
     ("Cùng nhau đi tới nơi ngày mai đang gọi.", "hopeful indie pop, steady rhythm, warm synths"),
 ]
 
+class MusicDiffusionDataset:
+    """PyTorch Dataset mapping structured Mel-spectrograms and text/style prompts."""
+    def __init__(self, dataset_dir: str | Path, config: MusicDiffusionConfig, max_records: int | None = None, additional_records: list[dict[str, Any]] | None = None):
+        _, _, Dataset, _ = _torch()
+        self.root = Path(dataset_dir)
+        self.config = config
+        self.records = _read_records(self.root)[:max_records or None]
+        if additional_records:
+            self.records.extend(additional_records)
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+    def __getitem__(self, idx: int) -> dict[str, Any]:
+        record = self.records[idx]
+        mel_path = _record_path(self.root, record)
+        mel = _load_mel(mel_path)
+        mel = _fit_mel_frames(mel, self.config.frames_per_chunk)
+        text = f"{record['style']}. {record['text']}"
+        return {"mel": mel, "text": text}
+
+class DiffusionTrainer:
+    """Trainer orchestrating optimization steps and gradient descent for the diffusion denoiser."""
+    def __init__(self, model, config: MusicDiffusionConfig, optimizer, device: str = "cpu"):
+        self.model = model
+        self.config = config
+        self.optimizer = optimizer
+        self.device = device
+
+    def train_epoch(self, dataloader) -> list[float]:
+        torch, _, _, _ = _torch()
+        self.model.train()
+        epoch_losses = []
+        for batch in dataloader:
+            mel = batch["mel"].to(self.device)
+            texts = batch["text"]
+            self.optimizer.zero_grad(set_to_none=True)
+            loss = diffusion_loss(self.model, mel, texts, self.config)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(list(self.model.parameters()), 1.0)
+            self.optimizer.step()
+            epoch_losses.append(float(loss.detach().cpu()))
+        return epoch_losses
 
 def create_random_dataset(output_dir: str | Path, *, count: int = 16, frames: int = 128, seed: int = 5602, config: MusicDiffusionConfig | None = None, target_bytes: int | None = None, payload_frames: int = 2048) -> dict[str, Any]:
     config = config or MusicDiffusionConfig(frames_per_chunk=frames)
@@ -35,7 +87,7 @@ def create_random_dataset(output_dir: str | Path, *, count: int = 16, frames: in
         text, style = DEFAULT_TEXTS[index % len(DEFAULT_TEXTS)]
         mel_path = mel_dir / f"sample_{index:05d}.pt"
         mel_path.parent.mkdir(parents=True, exist_ok=True)
-        import torch
+        torch, _, _, _ = _torch()
 
         sample = structured_random_mel(config, frames, seed=seed + index)
         if target_bytes:
@@ -49,7 +101,6 @@ def create_random_dataset(output_dir: str | Path, *, count: int = 16, frames: in
     (root / "dataset_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report
 
-
 def _read_records(root: Path) -> list[dict[str, Any]]:
     path = root / "records.jsonl"
     if not path.exists():
@@ -59,35 +110,32 @@ def _read_records(root: Path) -> list[dict[str, Any]]:
         raise ValueError("Dataset không có record nào.")
     return records
 
-
 def _load_mel(path: Path, *, device="cpu"):
-    import torch
-
+    torch, _, _, _ = _torch()
     value = torch.load(path, map_location=device, weights_only=True)
     return value["mel"] if isinstance(value, dict) else value
 
-
 def _record_path(root: Path, record: dict[str, Any]) -> Path:
-    path = Path(record["mel_path"])
+    path_str = record.get("mel_path") or record.get("backing_mel_path") or record.get("vocal_mel_path")
+    if not path_str:
+        raise KeyError("Record missing 'mel_path', 'backing_mel_path', or 'vocal_mel_path'")
+    path = Path(path_str)
     return path if path.is_absolute() else root / path
 
-
 def _fit_mel_frames(mel, frames: int):
-    import torch.nn.functional as functional
-
+    torch, _, _, _ = _torch()
     if mel.shape[1] > frames:
         return mel[:, :frames]
     if mel.shape[1] < frames:
-        return functional.pad(mel, (0, frames - mel.shape[1]))
+        return torch.nn.functional.pad(mel, (0, frames - mel.shape[1]))
     return mel
-
 
 def validate_dataset(dataset_dir: str | Path, *, report_path: str | Path | None = None) -> dict[str, Any]:
     root = Path(dataset_dir)
     report_destination = Path(report_path) if report_path else root / "validation_report.json"
     report_destination.parent.mkdir(parents=True, exist_ok=True)
     try:
-        import torch
+        torch, _, _, _ = _torch()
     except ImportError:
         report = {"status": "needs-torch", "dataset": str(root.resolve()), "missing": []}
         report_destination.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -109,41 +157,48 @@ def validate_dataset(dataset_dir: str | Path, *, report_path: str | Path | None 
     report_destination.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report
 
-
 def train_model(dataset_dir: str | Path, checkpoint_path: str | Path, *, epochs: int = 1, batch_size: int = 4, learning_rate: float = 2e-4, device: str | None = None, max_records: int | None = None, additional_records: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    import torch
+    torch, _, DatasetClass, DataLoaderClass = _torch()
 
     root = Path(dataset_dir)
     checkpoint = Path(checkpoint_path)
     validation = validate_dataset(root, report_path=checkpoint.parent / "validation_report.json")
     if validation["status"] != "valid":
         raise ValueError("Dataset không hợp lệ; xem validation_report.json.")
+    
     config = MusicDiffusionConfig(**json.loads((root / "config.json").read_text(encoding="utf-8")))
-    records = _read_records(root)[:max_records or None]
-    records.extend(additional_records or [])
     selected_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model = make_model(config).to(selected_device)
     optimizer = torch.optim.AdamW(list(model.parameters()), lr=learning_rate)
+    
+    # Instantiate custom Dataset and DataLoader
+    dataset = MusicDiffusionDataset(root, config, max_records=max_records, additional_records=additional_records)
+    
+    def collate_fn(batch):
+        mels = torch.stack([item["mel"] for item in batch])
+        texts = [item["text"] for item in batch]
+        return {"mel": mels, "text": texts}
+
+    dataloader = DataLoaderClass(
+        dataset, 
+        batch_size=max(1, int(batch_size)), 
+        shuffle=True, 
+        collate_fn=collate_fn
+    )
+    
+    trainer = DiffusionTrainer(model, config, optimizer, device=selected_device)
+    
     started = time.perf_counter()
     losses = []
-    model.train()
+    
     for epoch in range(max(1, int(epochs))):
-        random.shuffle(records)
-        for start in range(0, len(records), max(1, int(batch_size))):
-            batch = records[start : start + max(1, int(batch_size))]
-            mel = torch.stack([_fit_mel_frames(_load_mel(_record_path(root, record), device=selected_device), config.frames_per_chunk) for record in batch])
-            texts = [f"{record['style']}. {record['text']}" for record in batch]
-            optimizer.zero_grad(set_to_none=True)
-            loss = diffusion_loss(model, mel, texts, config)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(list(model.parameters()), 1.0)
-            optimizer.step()
-            losses.append(float(loss.detach().cpu()))
+        epoch_losses = trainer.train_epoch(dataloader)
+        losses.extend(epoch_losses)
+        
     final_loss = sum(losses[-min(10, len(losses)) :]) / max(1, min(10, len(losses)))
-    model_path = checkpoint
     from ..models.text_to_music_diffusion import save_checkpoint
 
-    save_checkpoint(model, model_path, config, optimizer=optimizer, epoch=max(1, int(epochs)), loss=final_loss)
+    save_checkpoint(model, checkpoint, config, optimizer=optimizer, epoch=max(1, int(epochs)), loss=final_loss)
     report = {"status": "complete", "backend": "genmusic-vn-self-diffusion", "dataset": str(root.resolve()), "checkpoint": str(checkpoint.resolve()), "device": selected_device, "epochs": max(1, int(epochs)), "batch_size": max(1, int(batch_size)), "additional_record_count": len(additional_records or []), "step_count": len(losses), "final_loss": round(final_loss, 6), "elapsed_seconds": round(time.perf_counter() - started, 3)}
     (checkpoint.parent / "training_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report
