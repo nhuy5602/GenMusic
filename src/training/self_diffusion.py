@@ -43,6 +43,7 @@ class MusicDiffusionDataset:
         return len(self.records)
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
+        torch, _, _, _ = _torch()
         record = self.records[idx]
         
         # Load vocal Mel (target x1) and backing Mel (condition cond)

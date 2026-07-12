@@ -68,12 +68,13 @@ try:
     preprocessed_dir = Path("/kaggle/working/processed_dataset")
     preprocessed_dir.mkdir(parents=True, exist_ok=True)
 
-    # Batch process all files with parent environment passed explicitly to preserve PYTHONUNBUFFERED=1
     subprocess.run([
         sys.executable, str(source_root / "cli.py"), "preprocess-raw",
         "--input", str(raw_dataset),
         "--output", str(preprocessed_dir),
-        "--whisper-model", "small"
+        "--whisper-model", "tiny",
+        "--keep-separated-count", "100",
+        "--max-files", "100"
     ], env=os.environ, check=True)
 
     print("--- STEP 5: Creating and Uploading Processed Dataset to Kaggle ---")

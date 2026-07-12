@@ -54,7 +54,7 @@ def run_demucs_separation(audio_path: Path, output_dir: Path) -> tuple[Path, Pat
     
     return None, None
 
-def process_file(audio_path: Path, output_dir: Path, whisper_model) -> dict:
+def process_file(audio_path: Path, output_dir: Path, whisper_model, keep_separated: bool = False) -> dict:
     sample_id = audio_path.stem
     print(f"\n==================== PROCESSING {sample_id} ====================", flush=True)
     
@@ -127,6 +127,12 @@ def process_file(audio_path: Path, output_dir: Path, whisper_model) -> dict:
     vocal_pt_path = mels_dir / f"{sample_id}_vocal.pt"
     torch.save(vocal_tensor, vocal_pt_path)
 
+    # Clean up intermediate Demucs wav files to conserve disk space unless keeping it for post-evaluation
+    if not keep_separated and vocals_wav and vocals_wav.exists():
+        song_folder = vocals_wav.parent
+        if song_folder.exists() and song_folder.name == sample_id:
+            shutil.rmtree(song_folder, ignore_errors=True)
+
     return {
         "id": sample_id,
         "text": lyrics,
@@ -138,11 +144,14 @@ def process_file(audio_path: Path, output_dir: Path, whisper_model) -> dict:
         "f0_path": f"pitch/{sample_id}_f0.npy"
     }
 
-def preprocess_raw_audio(input_path: str | Path, output_path: str | Path, whisper_model_name: str = "base") -> dict:
+def preprocess_raw_audio(input_path: str | Path, output_path: str | Path, whisper_model_name: str = "base", keep_separated_count: int = 10, max_files: int | None = None) -> dict:
     raw_dir = Path(input_path)
     output_dir = Path(output_path)
     
     raw_files = list(raw_dir.glob("*.wav")) + list(raw_dir.glob("*.mp3"))
+    if max_files is not None:
+        raw_files = raw_files[:max_files]
+        
     total_files = len(raw_files)
     print(f"Found {total_files} files to process.", flush=True)
     if not raw_files:
@@ -156,7 +165,7 @@ def preprocess_raw_audio(input_path: str | Path, output_path: str | Path, whispe
     for idx, f in enumerate(raw_files, start=1):
         try:
             print(f"\n-> [{idx}/{total_files}] Processing: {f.name}", flush=True)
-            record = process_file(f, output_dir, whisper_model)
+            record = process_file(f, output_dir, whisper_model, keep_separated=(idx <= keep_separated_count))
             records.append(record)
         except Exception as e:
             print(f"[ERROR] processing [{idx}/{total_files}] {f.name}: {e}", flush=True)
