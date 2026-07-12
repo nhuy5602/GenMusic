@@ -88,6 +88,16 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--model-type", default="conv1d", choices=["conv1d", "dit"], help="Chọn kiến trúc mô hình khuếch tán.")
     train.add_argument("--roberta-model", default="xlm-roberta-base", help="Tên model RoBERTa dùng làm Text Encoder.")
 
+    distill = sub.add_parser("train-distill", help="Huấn luyện chưng cất tri thức từ DiffRhythm gốc sang MicroDiT.")
+    distill.add_argument("--dataset", required=True)
+    distill.add_argument("--student-checkpoint", required=True)
+    distill.add_argument("--teacher-checkpoint", required=True)
+    distill.add_argument("--epochs", type=int, default=5)
+    distill.add_argument("--batch-size", type=int, default=4)
+    distill.add_argument("--learning-rate", type=float, default=1e-4)
+    distill.add_argument("--device", default=None)
+    distill.add_argument("--alpha-feature", type=float, default=0.5)
+
     normalize = sub.add_parser("normalize-lyrics", help="Chuẩn hóa lyric tiếng Việt.")
     normalize.add_argument("--input", required=True)
     normalize.add_argument("--out", required=True)
@@ -162,6 +172,9 @@ def main(argv: list[str] | None = None) -> int:
         report = {"status": upload_report["status"], "dataset_report": dataset_report, "upload": upload_report}
     elif args.command == "train-self":
         report = train_model(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, model_type=args.model_type, roberta_model=args.roberta_model)
+    elif args.command == "train-distill":
+        from src.training.distill_training import run_distillation_training
+        report = run_distillation_training(args.dataset, args.student_checkpoint, args.teacher_checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, alpha_feature=args.alpha_feature)
     elif args.command == "normalize-lyrics":
         output = Path(args.out)
         output.parent.mkdir(parents=True, exist_ok=True)
