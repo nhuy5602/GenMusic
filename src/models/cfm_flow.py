@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from .text_to_music_diffusion import MusicDiffusionConfig
 
-def cfm_loss(model, clean_mel: torch.Tensor, texts: list[str], config: MusicDiffusionConfig) -> torch.Tensor:
+def cfm_loss(model, clean_mel: torch.Tensor, backing_mel: torch.Tensor, texts: list[str], config: MusicDiffusionConfig) -> torch.Tensor:
     """Computes the Conditional Flow Matching (CFM) velocity prediction loss."""
     device = clean_mel.device
     batch_size = clean_mel.shape[0]
@@ -21,8 +21,8 @@ def cfm_loss(model, clean_mel: torch.Tensor, texts: list[str], config: MusicDiff
     # 4. Target velocity field vt = x1 - x0
     target_velocity = x1 - x0
     
-    # 5. Cond is zero (no prior context) or clean mel masked (for infilling)
-    cond = torch.zeros_like(x1) # Standard unconditional generation
+    # 5. Cond is the backing track Mel spectrogram (acting as musical context)
+    cond = backing_mel
     
     # 6. Predict velocity field using MicroDiT
     predicted_velocity = model(
@@ -37,7 +37,7 @@ def cfm_loss(model, clean_mel: torch.Tensor, texts: list[str], config: MusicDiff
 
 
 @torch.no_grad()
-def sample_cfm(model, texts: list[str], frames: int, config: MusicDiffusionConfig, device, steps: int = 32, seed: int | None = None) -> torch.Tensor:
+def sample_cfm(model, texts: list[str], frames: int, config: MusicDiffusionConfig, device, steps: int = 32, seed: int | None = None, backing_mel: torch.Tensor | None = None) -> torch.Tensor:
     """Samples a mel spectrogram from Gaussian noise using Euler ODE integration."""
     model.eval()
     
@@ -49,7 +49,17 @@ def sample_cfm(model, texts: list[str], frames: int, config: MusicDiffusionConfi
     
     # 1. Start with Gaussian noise x0 at t = 0
     xt = torch.randn((batch_size, frames, config.n_mels), device=device)
-    cond = torch.zeros_like(xt)
+    
+    # Use backing mel as condition, or fallback to zeros if not provided
+    if backing_mel is not None:
+        cond = backing_mel.transpose(1, 2) if backing_mel.shape[1] == config.n_mels else backing_mel
+        # Pad or slice cond to match frames dimension of x0
+        if cond.shape[1] > frames:
+            cond = cond[:, :frames]
+        elif cond.shape[1] < frames:
+            cond = F.pad(cond, (0, 0, 0, frames - cond.shape[1]))
+    else:
+        cond = torch.zeros_like(xt)
     
     dt = 1.0 / steps
     

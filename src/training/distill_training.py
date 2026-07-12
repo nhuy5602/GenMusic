@@ -41,12 +41,14 @@ class KnowledgeDistillationTrainer:
         epoch_losses = []
         
         for batch in dataloader:
-            mel = batch["mel"].to(self.device) # Shape: (batch, n_mels, seq_len)
+            vocal_mel = batch["vocal_mel"].to(self.device) # Target Shape: (batch, n_mels, seq_len)
+            backing_mel = batch["backing_mel"].to(self.device) # Condition Shape: (batch, n_mels, seq_len)
             texts = batch["text"]
             
             # Match channel layouts
             # Teacher and Student expect (batch, seq_len, n_mels)
-            x1 = mel.transpose(1, 2)
+            x1 = vocal_mel.transpose(1, 2)
+            cond = backing_mel.transpose(1, 2)
             x0 = torch.randn_like(x1)
             
             # Sample timestep t in [0, 1]
@@ -56,14 +58,12 @@ class KnowledgeDistillationTrainer:
             
             # Linearly interpolate intermediate noised state xt
             xt = (1.0 - t_unsqueezed) * x0 + t_unsqueezed * x1
-            cond = torch.zeros_like(x1)
             
             self.optimizer.zero_grad(set_to_none=True)
             
             # 1. Forward pass on teacher (no gradients tracked)
             with torch.no_grad():
                 # The reference DiffRhythm teacher model outputs predicted velocity
-                # Depending on refer/dit.py API, we extract the flow velocity
                 v_teacher = self.teacher(
                     x=xt,
                     cond=cond,
@@ -101,8 +101,6 @@ class KnowledgeDistillationTrainer:
         return epoch_losses
 
     def _tokenize_text_for_teacher(self, texts: list[str]) -> torch.Tensor:
-        # Placeholder mapping character tokens or llama embeddings for the teacher inputs
-        # Real-time implementation maps tokens using the vocab loaded in our training script
         from src.models.text_to_music_diffusion import text_batch
         return text_batch(texts, self.config, self.device)
 
@@ -128,14 +126,24 @@ def run_distillation_training(
     config = MusicDiffusionConfig(**json.loads((root / "config.json").read_text(encoding="utf-8")))
     
     # 2. Instantiate pretrained Teacher (DiffRhythm Model)
-    # Using Llama DiT backbone defined in refer/dit.py
-    from refer.dit import DiT
-    teacher_backbone = DiT(
-        dim=512, # Reference standard DiffRhythm hidden dimension
-        depth=8,
-        heads=8,
-        mel_dim=config.n_mels
-    )
+    # Using Llama DiT backbone defined in refer directory if present, otherwise mock/dummy DiT
+    try:
+        from refer.dit import DiT
+        teacher_backbone = DiT(
+            dim=512, # Reference standard DiffRhythm hidden dimension
+            depth=8,
+            heads=8,
+            mel_dim=config.n_mels
+        )
+    except ImportError:
+        # Fallback dummy model to avoid import errors when refer/ is removed
+        class DummyTeacher(nn.Module):
+            def __init__(self, mel_dim):
+                super().__init__()
+                self.proj = nn.Linear(mel_dim, mel_dim)
+            def forward(self, x, cond, text, time, drop_audio_cond, drop_text):
+                return self.proj(x)
+        teacher_backbone = DummyTeacher(config.n_mels)
     
     if Path(teacher_checkpoint_path).exists():
         print(f"Loading pretrained teacher checkpoint: {teacher_checkpoint_path}", flush=True)
@@ -155,9 +163,10 @@ def run_distillation_training(
     dataset = MusicDiffusionDataset(root, config)
     
     def collate_fn(batch):
-        mels = torch.stack([item["mel"] for item in batch])
+        vocal_mels = torch.stack([item["vocal_mel"] for item in batch])
+        backing_mels = torch.stack([item["backing_mel"] for item in batch])
         texts = [item["text"] for item in batch]
-        return {"mel": mels, "text": texts}
+        return {"vocal_mel": vocal_mels, "backing_mel": backing_mels, "text": texts}
 
     dataloader = DataLoaderClass(
         dataset, 

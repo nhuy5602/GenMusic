@@ -44,11 +44,24 @@ class MusicDiffusionDataset:
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         record = self.records[idx]
-        mel_path = _record_path(self.root, record)
-        mel = _load_mel(mel_path)
-        mel = _fit_mel_frames(mel, self.config.frames_per_chunk)
+        
+        # Load vocal Mel (target x1) and backing Mel (condition cond)
+        # Fallback to single mel if separated paths are not present in dataset
+        if "vocal_mel_path" in record and "backing_mel_path" in record:
+            vocal_path = self.root / record["vocal_mel_path"]
+            backing_path = self.root / record["backing_mel_path"]
+            vocal_mel = _load_mel(vocal_path)
+            backing_mel = _load_mel(backing_path)
+        else:
+            # Fallback for old/smoke dataset
+            mel_path = _record_path(self.root, record)
+            vocal_mel = _load_mel(mel_path)
+            backing_mel = torch.zeros_like(vocal_mel)
+            
+        vocal_mel = _fit_mel_frames(vocal_mel, self.config.frames_per_chunk)
+        backing_mel = _fit_mel_frames(backing_mel, self.config.frames_per_chunk)
         text = f"{record['style']}. {record['text']}"
-        return {"mel": mel, "text": text}
+        return {"vocal_mel": vocal_mel, "backing_mel": backing_mel, "text": text}
 
 class DiffusionTrainer:
     """Trainer orchestrating optimization steps and gradient descent for the diffusion denoiser."""
@@ -63,19 +76,22 @@ class DiffusionTrainer:
         self.model.train()
         epoch_losses = []
         for batch in dataloader:
-            mel = batch["mel"].to(self.device)
+            vocal_mel = batch["vocal_mel"].to(self.device)
+            backing_mel = batch["backing_mel"].to(self.device)
             texts = batch["text"]
             self.optimizer.zero_grad(set_to_none=True)
             
             # Check if using the new MicroDiT model
             is_dit = self.model.__class__.__name__ == "MicroDiT"
             if is_dit:
-                # Transpose mel from (batch, n_mels, seq_len) to (batch, seq_len, n_mels) for DiT
-                mel_t = mel.transpose(1, 2)
+                # Transpose mels from (batch, n_mels, seq_len) to (batch, seq_len, n_mels) for DiT
+                vocal_mel_t = vocal_mel.transpose(1, 2)
+                backing_mel_t = backing_mel.transpose(1, 2)
                 from ..models.cfm_flow import cfm_loss
-                loss = cfm_loss(self.model, mel_t, texts, self.config)
+                loss = cfm_loss(self.model, vocal_mel_t, backing_mel_t, texts, self.config)
             else:
-                loss = diffusion_loss(self.model, mel, texts, self.config)
+                # Fallback to single mel input for the old Conv1D model
+                loss = diffusion_loss(self.model, vocal_mel, texts, self.config)
                 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(list(self.model.parameters()), 1.0)
@@ -193,9 +209,10 @@ def train_model(dataset_dir: str | Path, checkpoint_path: str | Path, *, epochs:
     dataset = MusicDiffusionDataset(root, config, max_records=max_records, additional_records=additional_records)
     
     def collate_fn(batch):
-        mels = torch.stack([item["mel"] for item in batch])
+        vocal_mels = torch.stack([item["vocal_mel"] for item in batch])
+        backing_mels = torch.stack([item["backing_mel"] for item in batch])
         texts = [item["text"] for item in batch]
-        return {"mel": mels, "text": texts}
+        return {"vocal_mel": vocal_mels, "backing_mel": backing_mels, "text": texts}
 
     dataloader = DataLoaderClass(
         dataset, 
