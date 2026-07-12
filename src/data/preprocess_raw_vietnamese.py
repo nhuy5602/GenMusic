@@ -30,7 +30,7 @@ HOP_LENGTH = 256
 
 def run_demucs_separation(audio_path: Path, output_dir: Path) -> tuple[Path, Path]:
     """Separate vocals and backing using Demucs CLI."""
-    print(f"-> Separating vocal/backing stems for: {audio_path.name}...")
+    print(f"-> Separating vocal/backing stems for: {audio_path.name}...", flush=True)
     try:
         subprocess.run(
             ["demucs", "--two-stems=vocals", "-o", str(output_dir), str(audio_path)],
@@ -50,13 +50,13 @@ def run_demucs_separation(audio_path: Path, output_dir: Path) -> tuple[Path, Pat
             return vocals_file, backing_file
             
     except Exception as e:
-        print(f"⚠️ Demucs separation failed/not found: {e}. Falling back to treating audio as instrumental (no vocal split).")
+        print(f"[WARNING] Demucs separation failed/not found: {e}. Falling back to treating audio as instrumental (no vocal split).", flush=True)
     
     return None, None
 
 def process_file(audio_path: Path, output_dir: Path, whisper_model) -> dict:
     sample_id = audio_path.stem
-    print(f"\n==================== PROCESSING {sample_id} ====================")
+    print(f"\n==================== PROCESSING {sample_id} ====================", flush=True)
     
     separated_dir = output_dir / "separated"
     mels_dir = output_dir / "mels"
@@ -72,7 +72,7 @@ def process_file(audio_path: Path, output_dir: Path, whisper_model) -> dict:
     if backing_wav and backing_wav.exists():
         y_backing, sr = librosa.load(backing_wav, sr=SAMPLE_RATE)
     else:
-        print("-> Using raw audio as backing track...")
+        print("-> Using raw audio as backing track...", flush=True)
         y_backing, sr = librosa.load(audio_path, sr=SAMPLE_RATE)
         vocals_wav = None
         
@@ -98,12 +98,12 @@ def process_file(audio_path: Path, output_dir: Path, whisper_model) -> dict:
         y_vocal, _ = librosa.load(vocals_wav, sr=SAMPLE_RATE)
         
         # Whisper Transcription
-        print("-> Transcribing lyrics using Whisper ASR...")
+        print("-> Transcribing lyrics using Whisper ASR...", flush=True)
         asr_res = whisper_model.transcribe(str(vocals_wav), language="vi", word_timestamps=True)
         lyrics = asr_res["text"].strip()
         
         # Pitch tracking via pYIN
-        print("-> Tracking F0 pitch melody contour...")
+        print("-> Tracking F0 pitch melody contour...", flush=True)
         fmin = librosa.note_to_hz('C2')
         fmax = librosa.note_to_hz('C7')
         f0, voiced_flag, _ = librosa.pyin(y_vocal, fmin=fmin, fmax=fmax, sr=SAMPLE_RATE, hop_length=HOP_LENGTH)
@@ -138,35 +138,28 @@ def process_file(audio_path: Path, output_dir: Path, whisper_model) -> dict:
         "f0_path": f"pitch/{sample_id}_f0.npy"
     }
 
-def main():
-    import sys
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
-
-    parser = argparse.ArgumentParser(description="Dataset preprocessing and auto-labeling for DiffRhythm-style models.")
-    parser.add_argument("--input", default="dataset/vietnamese_songs", help="Path to raw audio folder.")
-    parser.add_argument("--output", default="dataset/diff_rhythm_dataset", help="Output dataset path.")
-    parser.add_argument("--whisper-model", default="base", help="Size of Whisper model to use.")
-    args = parser.parse_args()
-
-    raw_dir = Path(args.input)
-    output_dir = Path(args.output)
+def preprocess_raw_audio(input_path: str | Path, output_path: str | Path, whisper_model_name: str = "base") -> dict:
+    raw_dir = Path(input_path)
+    output_dir = Path(output_path)
     
     raw_files = list(raw_dir.glob("*.wav")) + list(raw_dir.glob("*.mp3"))
+    total_files = len(raw_files)
+    print(f"Found {total_files} files to process.", flush=True)
     if not raw_files:
-        print(f"❌ No raw audio files found in {raw_dir.resolve()}. Please supply input wav/mp3 files.")
-        return
+        print(f"[ERROR] No raw audio files found in {raw_dir.resolve()}. Please supply input wav/mp3 files.", flush=True)
+        return {"status": "failed", "error": "No raw audio files found"}
 
-    print(f"Loading Whisper model ({args.whisper_model})...")
-    whisper_model = whisper.load_model(args.whisper_model)
+    print(f"Loading Whisper model ({whisper_model_name})...", flush=True)
+    whisper_model = whisper.load_model(whisper_model_name)
     
     records = []
-    for f in raw_files:
+    for idx, f in enumerate(raw_files, start=1):
         try:
+            print(f"\n-> [{idx}/{total_files}] Processing: {f.name}", flush=True)
             record = process_file(f, output_dir, whisper_model)
             records.append(record)
         except Exception as e:
-            print(f"❌ Error processing file {f.name}: {e}")
+            print(f"[ERROR] processing [{idx}/{total_files}] {f.name}: {e}", flush=True)
             
     # Write metadata index
     records_jsonl_path = output_dir / "records.jsonl"
@@ -183,7 +176,22 @@ def main():
     }
     (output_dir / "config.json").write_text(json.dumps(config_data, indent=2))
     
-    print(f"\n🎉 Preprocessing completed! Dataset generated at: {output_dir.resolve()}")
+    print(f"\n🎉 Preprocessing completed! Dataset generated at: {output_dir.resolve()}", flush=True)
+    return {"status": "completed", "dataset_path": str(output_dir.resolve()), "records_count": len(records)}
+
+
+def main():
+    import sys
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+
+    parser = argparse.ArgumentParser(description="Dataset preprocessing and auto-labeling for DiffRhythm-style models.")
+    parser.add_argument("--input", default="dataset/vietnamese_songs", help="Path to raw audio folder.")
+    parser.add_argument("--output", default="dataset/diff_rhythm_dataset", help="Output dataset path.")
+    parser.add_argument("--whisper-model", default="base", help="Size of Whisper model to use.")
+    args = parser.parse_args()
+
+    preprocess_raw_audio(args.input, args.output, args.whisper_model)
 
 if __name__ == "__main__":
     main()

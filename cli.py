@@ -46,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     local.add_argument("--seed", type=int, default=5602)
     local.add_argument("--device", default=None)
     local.add_argument("--out", required=True)
+    local.add_argument("--vocoder", default="istft", choices=["istft", "vocos"], help="Chọn bộ giải mã spectrogram thành âm thanh.")
 
     random_data = sub.add_parser("make-random-dataset", help="Tạo dataset mel random cho smoke training.")
     random_data.add_argument("--out", required=True)
@@ -142,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "refresh-kaggle":
         report = refresh_kaggle_job(args.state)
     elif args.command == "generate-local":
-        report = run_local_generation(text=args.text, style=args.style, output_dir=args.out, duration_seconds=args.duration, checkpoint=args.checkpoint, steps=args.steps, seed=args.seed, device=args.device)
+        report = run_local_generation(text=args.text, style=args.style, output_dir=args.out, duration_seconds=args.duration, checkpoint=args.checkpoint, steps=args.steps, seed=args.seed, device=args.device, vocoder=args.vocoder)
     elif args.command == "make-random-dataset":
         target_bytes = int(args.target_gb * (1024 ** 3)) if args.target_gb > 0 else None
         report = create_random_dataset(args.out, count=args.count, frames=args.frames, seed=args.seed, target_bytes=target_bytes)
@@ -180,35 +181,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "project-report":
         report = build_project_report(args.source, output_root=args.out)
     elif args.command == "preprocess-raw":
-        from src.data.preprocess_raw_vietnamese import process_file, SAMPLE_RATE, N_MELS, N_FFT, HOP_LENGTH
-        import whisper
-        raw_dir = Path(args.input)
-        output_dir = Path(args.output)
-        raw_files = list(raw_dir.glob("*.wav")) + list(raw_dir.glob("*.mp3"))
-        if not raw_files:
-            print(f"❌ No raw audio files found in {raw_dir.resolve()}.")
-            return 1
-        print(f"Loading Whisper model ({args.whisper_model})...")
-        whisper_model = whisper.load_model(args.whisper_model)
-        records = []
-        for f in raw_files:
-            try:
-                record = process_file(f, output_dir, whisper_model)
-                records.append(record)
-            except Exception as e:
-                print(f"❌ Error processing file {f.name}: {e}")
-        records_jsonl_path = output_dir / "records.jsonl"
-        with records_jsonl_path.open("w", encoding="utf-8") as out:
-            for r in records:
-                out.write(json.dumps(r, ensure_ascii=False) + "\n")
-        config_data = {
-            "sample_rate": SAMPLE_RATE,
-            "n_mels": N_MELS,
-            "n_fft": N_FFT,
-            "hop_length": HOP_LENGTH
-        }
-        (output_dir / "config.json").write_text(json.dumps(config_data, indent=2))
-        report = {"status": "completed", "dataset_path": str(output_dir.resolve()), "records_count": len(records)}
+        from src.data.preprocess_raw_vietnamese import preprocess_raw_audio
+        report = preprocess_raw_audio(args.input, args.output, args.whisper_model)
     else:  # pragma: no cover - argparse enforces command choices
         raise ValueError(args.command)
 
