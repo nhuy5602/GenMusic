@@ -44,7 +44,7 @@ class KaggleJobConfig:
     training_dataset_ref: str | None = None
 
 
-def run_local_generation(*, text: str, style: str, output_dir: str | Path, duration_seconds: float, checkpoint: str | Path | None = None, steps: int = 6, seed: int = 5602, device: str | None = None, mel_output: str | Path | None = None) -> dict[str, Any]:
+def run_local_generation(*, text: str, style: str, output_dir: str | Path, duration_seconds: float, checkpoint: str | Path | None = None, steps: int = 6, seed: int = 5602, device: str | None = None, mel_output: str | Path | None = None, vocoder: str = "istft") -> dict[str, Any]:
     normalized = normalize_vietnamese_lyrics(text).strip()
     if not normalized:
         raise SelfMusicError("Văn bản input đang trống.")
@@ -71,6 +71,7 @@ def run_local_generation(*, text: str, style: str, output_dir: str | Path, durat
         steps=max(1, int(steps)),
         seed=int(seed),
         mel_output=mel_output,
+        vocoder_type=vocoder,
     )
     report.update({"text": normalized, "style": style, "checkpoint": checkpoint_path, "checkpoint_epoch": checkpoint_epoch, "device": selected_device})
     mp3_path = _convert_to_mp3(Path(report["audio_path"]))

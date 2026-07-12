@@ -267,9 +267,63 @@ def build_lyric_timing(text: str, duration_seconds: float) -> list[dict[str, Any
     return timing
 
 
-def render_mel_to_wav(mel, destination: str | Path, config: MusicDiffusionConfig) -> Path:
+def render_mel_to_wav(mel, destination: str | Path, config: MusicDiffusionConfig, vocoder_type: str = "istft") -> Path:
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
+    
+    if vocoder_type == "vocos":
+        try:
+            from vocos import Vocos
+            import torch
+            import torch.nn.functional as F
+            
+            # Load pretrained model
+            vocos_model = Vocos.from_pretrained("charactr/vocos-mel-24khz")
+            
+            # Get raw mel as torch tensor
+            if not isinstance(mel, torch.Tensor):
+                mel_tensor = torch.tensor(mel, dtype=torch.float32)
+            else:
+                mel_tensor = mel.detach().cpu().float()
+                
+            # Shape is [n_mels, time_steps]
+            n_mels, time_steps = mel_tensor.shape
+            
+            # Calculate target time steps (resample to 24000 Hz frame rate)
+            # Vocos expects 24000 Hz sample rate, 256 hop length.
+            # Original has config.sample_rate and config.hop_length.
+            original_fps = config.sample_rate / config.hop_length
+            vocos_fps = 24000 / 256
+            time_scale = vocos_fps / original_fps
+            target_time_steps = max(8, int(time_steps * time_scale))
+            
+            # Interpolate to shape [1, 100, target_time_steps]
+            mel_tensor = mel_tensor.unsqueeze(0).unsqueeze(0) # [1, 1, n_mels, time_steps]
+            mel_tensor = F.interpolate(
+                mel_tensor, 
+                size=(100, target_time_steps), 
+                mode='bilinear', 
+                align_corners=False
+            ).squeeze(0) # [1, 100, target_time_steps]
+            
+            # Vocos expects log-mel in range matching its training distribution.
+            # Our model output is in similar scale, so we pass it directly.
+            with torch.no_grad():
+                audio_tensor = vocos_model.decode(mel_tensor) # [1, audio_len]
+                
+            audio = audio_tensor.squeeze(0).cpu().numpy()
+            audio = audio / max(1e-6, float(np.max(np.abs(audio)))) * 0.8
+            pcm = (audio.clip(-1.0, 1.0) * 32767.0).astype(np.int16)
+            
+            with wave.open(str(destination), "wb") as stream:
+                stream.setnchannels(1)
+                stream.setsampwidth(2)
+                stream.setframerate(24000) # Output sample rate of Vocos
+                stream.writeframes(pcm.tobytes())
+            return destination.resolve()
+        except Exception as e:
+            print(f"⚠️ Warning: Vocos decoding failed ({e}). Falling back to iSTFT...")
+
     try:
         import librosa
     except ImportError as exc:  # pragma: no cover - dependency boundary
@@ -314,7 +368,7 @@ def load_checkpoint(path: str | Path, *, device="cpu") -> tuple[ResidualDenoiser
     return model, config, payload
 
 
-def generate_audio(model: ResidualDenoiser, text: str, style: str, destination: str | Path, *, duration_seconds: float, config: MusicDiffusionConfig, device="cpu", steps: int = 6, seed: int = 5602, mel_output: str | Path | None = None) -> dict[str, Any]:
+def generate_audio(model: ResidualDenoiser, text: str, style: str, destination: str | Path, *, duration_seconds: float, config: MusicDiffusionConfig, device="cpu", steps: int = 6, seed: int = 5602, mel_output: str | Path | None = None, vocoder_type: str = "istft") -> dict[str, Any]:
     torch, _ = _torch()
     model.to(device)
     rendered = []
@@ -339,7 +393,7 @@ def generate_audio(model: ResidualDenoiser, text: str, style: str, destination: 
         mel_path = Path(mel_output)
         mel_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save({"mel": mel.detach().cpu(), "text": text, "style": style}, mel_path)
-    audio_path = render_mel_to_wav(mel, destination, config)
+    audio_path = render_mel_to_wav(mel, destination, config, vocoder_type=vocoder_type)
     return {"status": "complete", "backend": "genmusic-vn-self-diffusion", "audio_path": str(audio_path), "mel_path": str(Path(mel_output).resolve()) if mel_output else None, "duration_seconds": float(duration_seconds), "diffusion_steps": steps, "seed": seed, "lyric_timing": lyric_timing}
 
 
