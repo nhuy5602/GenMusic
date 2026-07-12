@@ -91,12 +91,13 @@ def build_parser() -> argparse.ArgumentParser:
     distill = sub.add_parser("train-distill", help="Huấn luyện chưng cất tri thức từ DiffRhythm gốc sang MicroDiT.")
     distill.add_argument("--dataset", required=True)
     distill.add_argument("--student-checkpoint", required=True)
-    distill.add_argument("--teacher-checkpoint", required=True)
+    distill.add_argument("--teacher-checkpoint", default=None)
     distill.add_argument("--epochs", type=int, default=5)
     distill.add_argument("--batch-size", type=int, default=4)
     distill.add_argument("--learning-rate", type=float, default=1e-4)
     distill.add_argument("--device", default=None)
     distill.add_argument("--alpha-feature", type=float, default=0.5)
+    distill.add_argument("--repo-id", default="ASLP-lab/DiffRhythm2")
 
     normalize = sub.add_parser("normalize-lyrics", help="Chuẩn hóa lyric tiếng Việt.")
     normalize.add_argument("--input", required=True)
@@ -129,7 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
     preprocess = sub.add_parser("preprocess-raw", help="Tiền xử lý và gán nhãn dataset âm thanh thô.")
     preprocess.add_argument("--input", default="dataset/vietnamese_songs")
     preprocess.add_argument("--output", default="dataset/diff_rhythm_dataset")
-    preprocess.add_argument("--whisper-model", default="tiny")
+    preprocess.add_argument("--whisper-model", default="small")
     preprocess.add_argument("--keep-separated-count", type=int, default=10, help="Số lượng bài hát giữ lại thư mục âm thanh đã tách để hậu kiểm.")
     preprocess.add_argument("--max-files", type=int, default=None, help="Giới hạn số lượng bài hát tối đa sẽ xử lý.")
 
@@ -176,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
         report = train_model(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, model_type=args.model_type, roberta_model=args.roberta_model)
     elif args.command == "train-distill":
         from src.training.distill_training import run_distillation_training
-        report = run_distillation_training(args.dataset, args.student_checkpoint, args.teacher_checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, alpha_feature=args.alpha_feature)
+        report = run_distillation_training(args.dataset, args.student_checkpoint, args.teacher_checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, alpha_feature=args.alpha_feature, repo_id=args.repo_id)
     elif args.command == "normalize-lyrics":
         output = Path(args.out)
         output.parent.mkdir(parents=True, exist_ok=True)

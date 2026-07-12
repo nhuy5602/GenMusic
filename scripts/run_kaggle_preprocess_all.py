@@ -72,7 +72,7 @@ try:
         sys.executable, str(source_root / "cli.py"), "preprocess-raw",
         "--input", str(raw_dataset),
         "--output", str(preprocessed_dir),
-        "--whisper-model", "tiny",
+        "--whisper-model", "small",
         "--keep-separated-count", "100",
         "--max-files", "100"
     ], env=os.environ, check=True)
