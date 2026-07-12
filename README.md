@@ -1,143 +1,143 @@
 # GenMusic VN: Background Music & Vietnamese Vocal Generator
 
-GenMusic VN là dự án phát triển mô hình khuếch tán điều kiện (conditional diffusion model) tự huấn luyện nhằm sinh lời hát tiếng Việt và nhạc nền.
+GenMusic VN is a self-authored conditional diffusion and flow matching model designed for generating Vietnamese vocals and background music.
 
-Các tài liệu kỹ thuật chi tiết nằm trong thư mục `docs/`:
-- [Kiến trúc hệ thống (System Architecture)](docs/architecture.md)
-- [Mô hình máy học (Machine Learning Models)](docs/model.md)
-- [Quy trình huấn luyện & Cải tiến (Training Pipelines)](docs/training.md)
+Detailed technical documentations are located in the `docs/` folder:
+- [System Architecture](docs/architecture.md)
+- [Machine Learning Models](docs/model.md)
+- [Training & Improvement Pipelines](docs/training.md)
 
 ---
 
-## 📂 Tổng quan cấu trúc thư mục Dự án
+## 📂 Project Directory Structure
 
 ```text
 GenMusic/
-├── src/                # Gói mã nguồn chính (xử lý dữ liệu, mô hình, huấn luyện)
-│   ├── data/           # Tiền xử lý âm thanh, Whisper ASR, tách Demucs, G2P tiếng Việt
-│   ├── models/         # Kiến trúc mạng khuếch tán (ResidualDenoiser, TextConditioner)
-│   ├── training/       # Quy trình Dataset, DataLoader và Trainer
-│   ├── evaluation/     # Bộ chỉ số đánh giá khách quan phổ âm thanh
-│   └── integrations/   # Tích hợp dịch vụ đám mây Kaggle API
-├── scripts/            # Các kịch bản chạy tự động (huấn luyện Kaggle, tiền xử lý mây)
-├── web/                # Giao diện Web Client demo (HTML, CSS, JS)
-├── docs/               # Tài liệu đặc tả hệ thống
-├── dataset/            # Thư mục chứa dữ liệu thô (được bỏ qua khi đẩy lên git)
-├── outputs/            # Checkpoints mô hình và tệp âm thanh đầu ra
-├── cli.py              # Dòng lệnh điều khiển chính của dự án
-└── server.py           # Web server API Backend
+├── src/                # Core Python package (data processing, model, training)
+│   ├── data/           # Audio preprocessing, Whisper ASR, Demucs split, Vietnamese G2P
+│   ├── models/         # Diffusion architectures (ResidualDenoiser, MicroDiT, CFM)
+│   ├── training/       # PyTorch Dataset, DataLoader, Trainer, and Distillation loop
+│   ├── evaluation/     # Objective evaluation metrics for audio spectrograms
+│   └── integrations/   # Kaggle API cloud integrations and job submitters
+├── scripts/            # Automated automation scripts (Kaggle training, batch prep)
+├── web/                # Interactive Web Client front-end UI (HTML, CSS, JS)
+├── docs/               # System architecture design documentations
+├── dataset/            # Local raw audio input folder (git-ignored)
+├── outputs/            # Model checkpoints and generated audio waveforms
+├── cli.py              # Main CLI entry point
+└── server.py           # API Web backend server
 ```
 
 ---
 
-## 🛠️ Cài đặt & Thiết lập môi trường
+## 🛠️ Installation & Setup
 
-### 1. Cài đặt các thư viện cần thiết
+### 1. Install Dependencies
 
-* **Sử dụng công cụ `uv` (Khuyên dùng - nhanh và bảo mật):**
+* **Using `uv` (Recommended - extremely fast and secure):**
   ```powershell
   uv sync
   ```
 
-* **Sử dụng Pip tiêu chuẩn:**
+* **Using Standard `pip`:**
   ```powershell
   pip install -r requirements.txt
   ```
 
-### 2. Thiết lập Biến môi trường (.env)
-Tạo tệp `.env` ở thư mục gốc của dự án dựa trên mẫu `.env.example`:
+### 2. Setup Environment Variables (.env)
+Create a `.env` file in the root directory based on the `.env.example` template:
 ```env
-# Môi trường chạy local
+# Local Environment variables
 RAW_AUDIO_INPUT_DIR=dataset/vietnamese_songs
 PROCESSED_DATASET_DIR=dataset/diff_rhythm_dataset
 MODEL_CHECKPOINT_PATH=outputs/my_trained_model.pt
 GENMUSIC_OUTPUT_DIR=outputs
 
-# Tài khoản Kaggle (để đẩy tác vụ huấn luyện lên GPU mây)
-KAGGLE_USERNAME=ten_tai_khoan_kaggle
-KAGGLE_KEY=api_key_cua_ban
+# Kaggle API tokens (For scheduling training tasks to GPU Cloud)
+KAGGLE_USERNAME=your_kaggle_username
+KAGGLE_KEY=your_kaggle_api_key
 KAGGLE_RAW_DATASET_REF=sonlest/vietnamese-music-dataset-version3-part6
-KAGGLE_PROCESSED_DATASET_REF=ten_tai_khoan_kaggle/vietnamese-music-processed-dataset
+KAGGLE_PROCESSED_DATASET_REF=your_kaggle_username/vietnamese-music-processed-dataset
 ```
 
 ---
 
-## 🚀 Hướng dẫn Sử dụng các Kịch bản (Scripts)
+## 🚀 Usage Guide for Automated Scripts
 
-Toàn bộ các quy trình đã được đóng gói thành các tệp lệnh chạy tự động trong thư mục `scripts/`:
+All key workflows are packaged into automated shell scripts in the `scripts/` directory:
 
-### 1. Chạy thử nghiệm toàn bộ luồng ở máy Local
-Chạy chuỗi các bước: *Quét nhạc thô ➔ Tiền xử lý ➔ Huấn luyện mô hình mini ➔ Sinh thử nhạc ➔ Đánh giá kết quả*:
+### 1. Run Complete Local Pipeline Test
+Verify the whole end-to-end flow locally (Data scanning ➔ Prep ➔ Model training ➔ Sampling ➔ Evaluation):
 ```powershell
 uv run python scripts/run_pipeline.py
 ```
 
-### 2. Chạy thử nghiệm Huấn luyện trên Kaggle GPU (1 file nhạc)
-Tự động đẩy code lên Kaggle, trích xuất 1 file nhạc từ bộ dữ liệu của bạn, tiền xử lý và huấn luyện thử trên GPU T4 của Kaggle, sau đó tải model checkpoint `.pt` về máy local:
+### 2. Run Kaggle GPU Single-File Smoke Test
+Upload source files to Kaggle, isolate a single audio track, run preprocessing and a 1-epoch training test on Kaggle's T4 GPU, then download the resulting `.pt` model checkpoint automatically:
 ```powershell
 uv run python scripts/run_kaggle_training.py
 ```
 
-### 3. Tiền xử lý HÀNG LOẠT toàn bộ dataset trên mây Kaggle
-Tách âm thanh (Demucs) + Chép lời (Whisper) + Tính F0 (pYIN) cho toàn bộ 250 file nhạc thô trên mây Kaggle và tự động tải lên tài khoản Kaggle của bạn làm một Dataset sạch mới:
+### 3. Run Batch Preprocessing on Kaggle
+Perform full stem separation (Demucs), transcribing (Whisper), and pitch contour tracking (pYIN) on all 250 raw audio tracks on Kaggle. Automatically uploads the result directly to your Kaggle profile as a clean dataset:
 ```powershell
 uv run python scripts/run_kaggle_preprocess_all.py
 ```
 
 ---
 
-## 🎹 Dòng lệnh CLI nâng cao (`cli.py`)
+## 🎹 Advanced CLI Operations (`cli.py`)
 
-### 1. Sinh nhạc thủ công (Local Generation)
-Bạn có thể chọn giữa bộ giải mã toán học cổ điển (`istft` - siêu nhẹ) hoặc bộ giải mã chất lượng cao **Vocos** (`vocos` - khuyên dùng):
+### 1. Local Generation (Inference)
+You can choose between the fast mathematical `istft` decoder or the high-fidelity neural vocoder **Vocos** (`vocos` - highly recommended):
 ```powershell
-# Sử dụng Vocos Vocoder cho chất lượng âm thanh hát tự nhiên hơn:
+# Generate audio using the Vocos Vocoder for natural voice reconstruction:
 uv run python cli.py generate-local --text "Đêm nay Hà Nội ngập tràn tiếng mưa rơi." --duration 8.0 --vocoder vocos --out outputs/my_song
 ```
 
-### 2. Tiền xử lý dữ liệu thủ công
+### 2. Manual Preprocessing
 ```powershell
 uv run python cli.py preprocess-raw --input dataset/vietnamese_songs --output dataset/diff_rhythm_dataset --whisper-model small
 ```
 
-### 3. Huấn luyện mô hình & Chưng cất tri thức (Knowledge Distillation)
-Bạn có thể tự huấn luyện mạng khuếch tán từ đầu, hoặc chưng cất tri thức từ mô hình DiffRhythm gốc (Teacher) sang mô hình MicroDiT của bạn (Student):
+### 3. Model Training & Knowledge Distillation
+You can train the diffusion denoiser from scratch or perform knowledge distillation from the pretrained DiffRhythm Teacher to your student MicroDiT model:
 
-* **Tự huấn luyện mạng tích chập (Conv1D) hoặc MicroDiT:**
+* **Train Model from Scratch:**
   ```powershell
-  # Mặc định tự huấn luyện mạng Conv1D:
+  # Train standard Conv1D denoiser model:
   uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/my_model.pt --epochs 5 --batch-size 4
   
-  # Tự huấn luyện mạng MicroDiT (sử dụng Transformer):
+  # Train MicroDiT (Transformer-based) model:
   uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/my_dit_model.pt --epochs 5 --batch-size 4 --model-type dit
   ```
 
-* **Huấn luyện Chưng cất tri thức (Khuyên dùng cho dữ liệu nhỏ):**
-  Phương pháp này giúp mô hình Student của bạn học trực tiếp từ trường vận tốc dự báo của mô hình DiffRhythm Teacher đã huấn luyện sẵn trên hàng triệu giờ nhạc:
+* **Knowledge Distillation (Recommended for small datasets):**
+  This maps predictions from a pretrained DiffRhythm Teacher to your student MicroDiT, bypassing the need for huge datasets:
   ```powershell
   uv run python cli.py train-distill --dataset dataset/diff_rhythm_dataset --student-checkpoint outputs/distilled_student.pt --teacher-checkpoint outputs/pretrained_teacher.pt --epochs 5 --batch-size 4
   ```
 
-### 4. Đánh giá chất lượng tệp nhạc sinh ra
+### 4. Audio Quality Evaluation
 ```powershell
 uv run python cli.py evaluate-self --generated outputs/my_song/final.wav --out outputs/evaluation_report
 ```
 
 ---
 
-## 🖥️ Giao diện Web Demo trực quan
+## 🖥️ Interactive Web UI Demo
 
-Khởi động Web server API:
+Start the FastAPI backend server:
 ```powershell
 uv run python server.py
 ```
-Mở trình duyệt web của bạn và truy cập địa chỉ: `http://127.0.0.1:8000` để bắt đầu nhập văn bản tiếng Việt và nghe thử nhạc trực quan.
+Open your browser and navigate to `http://127.0.0.1:8000` to enter custom Vietnamese prompts and listen to generated musical tracks.
 
 ---
 
-## 🧪 Chạy Kiểm thử tự động (Unit Tests)
+## 🧪 Unit Testing
 
-Đảm bảo tính ổn định của mã nguồn bằng cách chạy kiểm thử:
+Run automated tests to verify model math and system stability:
 ```powershell
 uv run python -m unittest discover -s tests -v
 ```
