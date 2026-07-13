@@ -11,6 +11,16 @@ from src.models.text_to_music_diffusion import MusicDiffusionConfig
 from src.models.dit_transformer import MicroDiT
 from src.training.self_diffusion import MusicDiffusionDataset, _torch
 
+class _FallbackTeacher(nn.Module):
+    """Shape-compatible teacher used only when the optional teacher is unavailable."""
+    def __init__(self, mel_dim: int):
+        super().__init__()
+        self.proj = nn.Linear(mel_dim, mel_dim)
+
+    def forward(self, x, cond=None, text=None, time=None, drop_audio_cond=False, drop_text=False, **kwargs):
+        return self.proj(x)
+
+
 class KnowledgeDistillationTrainer:
     """Orchestrates distillation transfer from a pretrained DiffRhythm teacher to a MicroDiT student."""
     def __init__(
@@ -74,6 +84,8 @@ class KnowledgeDistillationTrainer:
                     drop_audio_cond=False,
                     drop_text=False
                 )
+                if isinstance(v_teacher, (tuple, list)):
+                    v_teacher = v_teacher[0]
                 
             # 2. Forward pass on student (gradients tracked)
             v_student = self.student(
@@ -160,13 +172,7 @@ def run_distillation_training(
         )
     except ImportError:
         # Fallback dummy model if imports are not configured
-        class DummyTeacher(nn.Module):
-            def __init__(self, mel_dim):
-                super().__init__()
-                self.proj = nn.Linear(mel_dim, mel_dim)
-            def forward(self, x, time, position_ids, style_prompt, attn_mask):
-                return self.proj(x), None, None
-        teacher_backbone = DummyTeacher(config.n_mels)
+        teacher_backbone = _FallbackTeacher(config.n_mels)
     
     if actual_teacher_path is not None and actual_teacher_path.exists():
         print(f"Loading pretrained teacher weights from: {actual_teacher_path}", flush=True)
@@ -192,8 +198,9 @@ def run_distillation_training(
     def collate_fn(batch):
         vocal_mels = torch.stack([item["vocal_mel"] for item in batch])
         backing_mels = torch.stack([item["backing_mel"] for item in batch])
+        style_anchors = torch.stack([item["style_anchor"] for item in batch])
         texts = [item["text"] for item in batch]
-        return {"vocal_mel": vocal_mels, "backing_mel": backing_mels, "text": texts}
+        return {"vocal_mel": vocal_mels, "backing_mel": backing_mels, "style_anchor": style_anchors, "text": texts}
 
     dataloader = DataLoaderClass(
         dataset, 

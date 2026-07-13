@@ -35,7 +35,8 @@ class MusicDiffusionDataset:
         _, _, Dataset, _ = _torch()
         self.root = Path(dataset_dir)
         self.config = config
-        self.records = _read_records(self.root)[:max_records or None]
+        records = _read_records(self.root)
+        self.records = records[:max_records] if max_records is not None else records
         if additional_records:
             self.records.extend(additional_records)
 
@@ -163,6 +164,17 @@ def _record_path(root: Path, record: dict[str, Any]) -> Path:
     path = Path(path_str)
     return path if path.is_absolute() else root / path
 
+def _record_paths(root: Path, record: dict[str, Any]) -> list[tuple[str, Path]]:
+    """Return every tensor path required by a record, including separated stems."""
+    separated = (("vocal", "vocal_mel_path"), ("backing", "backing_mel_path"))
+    if all(record.get(key) for _, key in separated):
+        return [(name, _resolve_record_path(root, record[key])) for name, key in separated]
+    return [("mel", _record_path(root, record))]
+
+def _resolve_record_path(root: Path, path_str: str) -> Path:
+    path = Path(path_str)
+    return path if path.is_absolute() else root / path
+
 def _fit_mel_frames(mel, frames: int):
     torch, _, _, _ = _torch()
     if mel.shape[1] > frames:
@@ -187,13 +199,13 @@ def validate_dataset(dataset_dir: str | Path, *, report_path: str | Path | None 
     config_data = json.loads((root / "config.json").read_text(encoding="utf-8")) if (root / "config.json").exists() else asdict(MusicDiffusionConfig())
     expected_mels = int(config_data.get("n_mels", 64))
     for record in records:
-        path = _record_path(root, record)
-        if not path.exists():
-            missing.append(str(path))
-            continue
-        tensor = _load_mel(path)
-        if tuple(tensor.shape) != (expected_mels, int(record["frames"])):
-            invalid.append({"path": str(path), "shape": list(tensor.shape), "expected": [expected_mels, int(record["frames"])]})
+        for stem_name, path in _record_paths(root, record):
+            if not path.exists():
+                missing.append({"stem": stem_name, "path": str(path)})
+                continue
+            tensor = _load_mel(path)
+            if tuple(tensor.shape) != (expected_mels, int(record["frames"])):
+                invalid.append({"stem": stem_name, "path": str(path), "shape": list(tensor.shape), "expected": [expected_mels, int(record["frames"])]})
     report = {"status": "valid" if not missing and not invalid else "invalid", "dataset": str(root.resolve()), "record_count": len(records), "missing": missing, "invalid": invalid, "format": "genmusic-self-diffusion-v1"}
     report_destination.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report

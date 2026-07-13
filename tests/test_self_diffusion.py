@@ -10,7 +10,9 @@ from src.data.vietnamese_g2p import vietnamese_g2p
 from src.data.vietnamese_text import normalize_vietnamese_lyrics
 from src.integrations.kaggle_auto import DEFAULT_KAGGLE_DATASET_SLUG, DEFAULT_MODEL, KaggleJobConfig, resolve_training_dataset_ref, run_local_generation, stage_text_to_music_job, validate_dataset_ref
 from src.models.text_to_music_diffusion import build_lyric_timing, encode_text
+from src.training.distill_training import _FallbackTeacher
 from src.training.self_diffusion import create_random_dataset, train_model, validate_dataset
+from server import PROJECT_ROOT, WEB_ROOT, _is_relative_to
 
 
 class SelfDiffusionTests(unittest.TestCase):
@@ -20,6 +22,30 @@ class SelfDiffusionTests(unittest.TestCase):
             self.assertEqual(report["backend"], "genmusic-vn-self-diffusion")
             validation = validate_dataset(Path(temp) / "dataset")
             self.assertEqual(validation["status"], "valid")
+
+    def test_validation_checks_both_separated_stems(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "dataset"
+            create_random_dataset(root, count=1, frames=32)
+            import torch
+
+            backing_path = root / "mels" / "backing.pt"
+            tensor = torch.load(root / "mels" / "sample_00000.pt", weights_only=True)
+            torch.save(tensor, backing_path)
+            (root / "records.jsonl").write_text(
+                json.dumps({
+                    "id": "separated",
+                    "text": "Mot cau hat.",
+                    "style": "pop",
+                    "frames": 32,
+                    "vocal_mel_path": "mels/vocal.pt",
+                    "backing_mel_path": "mels/backing.pt",
+                }) + "\n",
+                encoding="utf-8",
+            )
+            validation = validate_dataset(root)
+            self.assertEqual(validation["status"], "invalid")
+            self.assertTrue(any(item["stem"] == "vocal" for item in validation["missing"]))
 
     def test_training_and_local_generation(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -54,14 +80,34 @@ class SelfDiffusionTests(unittest.TestCase):
             self.assertIn("records.jsonl", script)
             self.assertIn("copytree", script)
             self.assertNotIn("make-random-dataset", script)
+            self.assertNotIn("git clone", script.lower())
+            self.assertNotIn("raw.", script.lower())
 
     def test_dataset_ref_contract(self) -> None:
         self.assertEqual(resolve_training_dataset_ref("alice/music-data"), "alice/music-data")
         self.assertEqual(validate_dataset_ref("alice/music-data"), "alice/music-data")
         with self.assertRaises(ValueError):
             validate_dataset_ref("not-a-dataset-ref")
-            self.assertNotIn("git clone", script.lower())
-            self.assertNotIn("raw.", script.lower())
+
+    def test_server_uses_project_root_and_rejects_escape(self) -> None:
+        self.assertEqual(PROJECT_ROOT, Path(__file__).resolve().parents[1])
+        self.assertEqual(WEB_ROOT, PROJECT_ROOT / "web")
+        self.assertTrue(_is_relative_to(WEB_ROOT / "index.html", WEB_ROOT))
+        self.assertFalse(_is_relative_to(WEB_ROOT.parent / "secret.txt", WEB_ROOT))
+
+    def test_distillation_fallback_matches_teacher_call_contract(self) -> None:
+        import torch
+
+        teacher = _FallbackTeacher(4)
+        output = teacher(
+            x=torch.randn(2, 3, 4),
+            cond=torch.randn(2, 3, 4),
+            text=torch.zeros(2, 3, dtype=torch.long),
+            time=torch.rand(2),
+            drop_audio_cond=False,
+            drop_text=False,
+        )
+        self.assertEqual(tuple(output.shape), (2, 3, 4))
 
     def test_vietnamese_text_contract(self) -> None:
         self.assertIn("mười hai", normalize_vietnamese_lyrics("Mưa 12 ngày, ko về."))

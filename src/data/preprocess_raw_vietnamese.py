@@ -28,7 +28,7 @@ N_MELS = 64
 N_FFT = 512
 HOP_LENGTH = 256
 
-def run_demucs_separation(audio_path: Path, output_dir: Path) -> tuple[Path, Path]:
+def run_demucs_separation(audio_path: Path, output_dir: Path) -> tuple[Path | None, Path | None]:
     """Separate vocals and backing using Demucs CLI."""
     print(f"-> Separating vocal/backing stems for: {audio_path.name}...", flush=True)
     try:
@@ -104,6 +104,10 @@ def process_file(audio_path: Path, output_dir: Path, whisper_model, keep_separat
         mel_vocal = librosa.feature.melspectrogram(
             y=y_vocal[:frames * HOP_LENGTH], sr=sr, n_fft=N_FFT, hop_length=HOP_LENGTH, n_mels=N_MELS, power=2.0
         )
+        if mel_vocal.shape[1] < frames:
+            mel_vocal = np.pad(mel_vocal, ((0, 0), (0, frames - mel_vocal.shape[1])))
+        elif mel_vocal.shape[1] > frames:
+            mel_vocal = mel_vocal[:, :frames]
         log_mel_vocal = np.clip(np.log(np.clip(mel_vocal, 1e-5, None)), -5.0, 3.0)
         vocal_tensor = torch.from_numpy(log_mel_vocal).float()
         
@@ -123,6 +127,8 @@ def process_file(audio_path: Path, output_dir: Path, whisper_model, keep_separat
         "style": f"Vietnamese music, {bpm} BPM, emotional melody",
         "bpm": bpm,
         "frames": frames,
+        "has_vocal": bool(vocals_wav and vocals_wav.exists()),
+        "vocal_source": "demucs" if vocals_wav and vocals_wav.exists() else "zero_fallback",
         "backing_mel_path": f"mels/{sample_id}_backing.pt",
         "vocal_mel_path": f"mels/{sample_id}_vocal.pt"
     }
@@ -130,8 +136,12 @@ def process_file(audio_path: Path, output_dir: Path, whisper_model, keep_separat
 def preprocess_raw_audio(input_path: str | Path, output_path: str | Path, whisper_model_name: str = "base", keep_separated_count: int = 10, max_files: int | None = None) -> dict:
     raw_dir = Path(input_path)
     output_dir = Path(output_path)
+    output_dir.mkdir(parents=True, exist_ok=True)
     
-    raw_files = list(raw_dir.glob("*.wav")) + list(raw_dir.glob("*.mp3"))
+    raw_files = sorted(
+        {path for pattern in ("*.wav", "*.mp3") for path in raw_dir.rglob(pattern)},
+        key=lambda path: str(path).lower(),
+    )
     if max_files is not None:
         raw_files = raw_files[:max_files]
         
@@ -145,6 +155,7 @@ def preprocess_raw_audio(input_path: str | Path, output_path: str | Path, whispe
     whisper_model = whisper.load_model(whisper_model_name)
     
     records = []
+    failures = []
     for idx, f in enumerate(raw_files, start=1):
         try:
             print(f"\n-> [{idx}/{total_files}] Processing: {f.name}", flush=True)
@@ -152,6 +163,7 @@ def preprocess_raw_audio(input_path: str | Path, output_path: str | Path, whispe
             records.append(record)
         except Exception as e:
             print(f"[ERROR] processing [{idx}/{total_files}] {f.name}: {e}", flush=True)
+            failures.append({"file": str(f), "error": str(e)})
             
     # Write metadata index
     records_jsonl_path = output_dir / "records.jsonl"
@@ -166,10 +178,22 @@ def preprocess_raw_audio(input_path: str | Path, output_path: str | Path, whispe
         "n_fft": N_FFT,
         "hop_length": HOP_LENGTH
     }
-    (output_dir / "config.json").write_text(json.dumps(config_data, indent=2))
+    (output_dir / "config.json").write_text(json.dumps(config_data, indent=2), encoding="utf-8")
     
-    print(f"\n🎉 Preprocessing completed! Dataset generated at: {output_dir.resolve()}", flush=True)
-    return {"status": "completed", "dataset_path": str(output_dir.resolve()), "records_count": len(records)}
+    if not records:
+        status = "failed"
+    elif failures:
+        status = "completed_with_warnings"
+    else:
+        status = "completed"
+    print(f"\nPreprocessing {status}. Dataset generated at: {output_dir.resolve()}", flush=True)
+    return {
+        "status": status,
+        "dataset_path": str(output_dir.resolve()),
+        "records_count": len(records),
+        "failed_count": len(failures),
+        "failures": failures,
+    }
 
 
 def main():

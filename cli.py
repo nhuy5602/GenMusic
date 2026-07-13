@@ -207,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError(args.command)
 
     print(json.dumps(report, ensure_ascii=False, indent=2))
-    return 1 if report.get("status") in {"failed", "needs_setup", "pending", "invalid", "needs-torch"} else 0
+    return 1 if report.get("status") in {"failed", "completed_with_warnings", "needs_setup", "pending", "invalid", "needs-torch"} else 0
 
 
 if __name__ == "__main__":
