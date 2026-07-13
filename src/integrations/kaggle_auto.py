@@ -470,6 +470,13 @@ def _default_device() -> str:
 def _convert_to_mp3(wav_path: Path) -> Path | None:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
+        try:
+            import imageio_ffmpeg
+
+            ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        except ImportError:
+            return None
+    if not ffmpeg:
         return None
     destination = wav_path.with_suffix(".mp3")
     result = subprocess.run([ffmpeg, "-y", "-i", str(wav_path), str(destination)], capture_output=True, text=True, check=False)
