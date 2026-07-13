@@ -267,6 +267,14 @@ def build_lyric_timing(text: str, duration_seconds: float) -> list[dict[str, Any
     return timing
 
 
+def estimate_minimum_lyric_duration(text: str, *, words_per_second: float = 2.2, line_pause_seconds: float = 0.25) -> float:
+    """Estimate a non-rushed minimum duration from lyric word count."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()] or [text.strip()]
+    word_count = sum(max(1, len(line.split())) for line in lines)
+    pauses = max(0, len(lines) - 1) * max(0.0, float(line_pause_seconds))
+    return round(max(1.0, word_count / max(0.1, float(words_per_second)) + pauses), 3)
+
+
 def render_mel_to_wav(mel, destination: str | Path, config: MusicDiffusionConfig, vocoder_type: str = "istft") -> Path:
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -381,6 +389,7 @@ def load_checkpoint(path: str | Path, *, device="cpu", model_type: str | None = 
 def generate_audio(model: ResidualDenoiser, text: str, style: str, destination: str | Path, *, duration_seconds: float, config: MusicDiffusionConfig, device="cpu", steps: int = 6, seed: int = 5602, mel_output: str | Path | None = None, vocoder_type: str = "istft") -> dict[str, Any]:
     torch, _ = _torch()
     model.to(device)
+    duration_seconds = max(float(duration_seconds), estimate_minimum_lyric_duration(text))
     rendered = []
     lyric_timing = build_lyric_timing(text, duration_seconds)
     section_number = 0
