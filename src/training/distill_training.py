@@ -43,12 +43,14 @@ class KnowledgeDistillationTrainer:
         for batch in dataloader:
             vocal_mel = batch["vocal_mel"].to(self.device) # Target Shape: (batch, n_mels, seq_len)
             backing_mel = batch["backing_mel"].to(self.device) # Condition Shape: (batch, n_mels, seq_len)
+            style_anchor = batch["style_anchor"].to(self.device)
             texts = batch["text"]
             
             # Match channel layouts
             # Teacher and Student expect (batch, seq_len, n_mels)
             x1 = vocal_mel.transpose(1, 2)
             cond = backing_mel.transpose(1, 2)
+            style_anchor_t = style_anchor.transpose(1, 2)
             x0 = torch.randn_like(x1)
             
             # Sample timestep t in [0, 1]
@@ -63,22 +65,51 @@ class KnowledgeDistillationTrainer:
             
             # 1. Forward pass on teacher (no gradients tracked)
             with torch.no_grad():
-                # The reference DiffRhythm teacher model outputs predicted velocity
-                v_teacher = self.teacher(
-                    x=xt,
-                    cond=cond,
-                    text=self._tokenize_text_for_teacher(texts),
-                    time=t,
-                    drop_audio_cond=False,
-                    drop_text=False
+                seq_len = xt.shape[1]
+                
+                # Build position_ids and noncausal attention mask for SDPA
+                pos_ids = torch.arange(seq_len, device=self.device).unsqueeze(0).repeat(batch_size, 1)
+                attn_mask = torch.ones((batch_size, seq_len), dtype=torch.bool, device=self.device)
+                attn_mask_4d = attn_mask.unsqueeze(1).unsqueeze(2).repeat(1, 1, seq_len, 1)
+                attn_mask_inverted = (~attn_mask_4d).float() * torch.finfo(xt.dtype).min
+                
+                # Expand 1D timestep to 2D time representation (batch, seq_len)
+                time_2d = t[:, None].repeat(1, seq_len)
+                
+                # Project x to latent dimension (512) using teacher's latent_embed
+                x_latent = self.teacher.latent_embed(xt)
+                
+                # The official DiffRhythm 2 teacher DiT expects style_prompt as a 512-dim embedding.
+                # In distillation, we can project style_anchor_t to 512-dim embedding or average text embedding.
+                # Project the style anchor to 512 dimensions for the teacher
+                if hasattr(self.teacher, "latent_embed"):
+                    # Use student's style projection averaged or text pool for teacher style prompt
+                    style_in = style_anchor_t.mean(dim=1)
+                    if style_in.shape[-1] != 512:
+                        # Match 512 dimension
+                        style_in = torch.nn.functional.interpolate(style_in.unsqueeze(1), size=512, mode="linear", align_corners=False).squeeze(dim=1)
+                else:
+                    style_in = torch.zeros(batch_size, 512, device=self.device)
+                
+                # Call teacher DiT forward
+                outputs = self.teacher(
+                    x=x_latent,
+                    time=time_2d,
+                    position_ids=pos_ids,
+                    style_prompt=style_in,
+                    attn_mask=attn_mask_inverted
                 )
+                
+                # Teacher DiT outputs (output, attn_weights, past_key_value)
+                v_teacher = outputs[0] if isinstance(outputs, tuple) else outputs
                 
             # 2. Forward pass on student (gradients tracked)
             v_student = self.student(
                 x=xt,
                 cond=cond,
                 texts=texts,
-                timestep=t
+                timestep=t,
+                style_prompt=style_anchor_t
             )
             
             # 3. Compute joint distillation losses
@@ -108,13 +139,14 @@ class KnowledgeDistillationTrainer:
 def run_distillation_training(
     dataset_dir: str | Path,
     student_checkpoint_path: str | Path,
-    teacher_checkpoint_path: str | Path,
+    teacher_checkpoint_path: str | Path | None = None,
     *,
     epochs: int = 5,
     batch_size: int = 4,
     learning_rate: float = 1e-4,
     device: str | None = None,
-    alpha_feature: float = 0.5
+    alpha_feature: float = 0.5,
+    repo_id: str = "ASLP-lab/DiffRhythm2"
 ) -> dict[str, Any]:
     torch, _, _, DataLoaderClass = _torch()
     
@@ -125,10 +157,32 @@ def run_distillation_training(
     # 1. Load config
     config = MusicDiffusionConfig(**json.loads((root / "config.json").read_text(encoding="utf-8")))
     
-    # 2. Instantiate pretrained Teacher (DiffRhythm Model)
-    # Using Llama DiT backbone defined in refer directory if present, otherwise mock/dummy DiT
+    # 2. Download and load Teacher (DiffRhythm 2 Model)
+    # Determine the teacher checkpoint path (local or download from HF)
+    actual_teacher_path = None
+    if teacher_checkpoint_path is not None and Path(teacher_checkpoint_path).exists():
+        actual_teacher_path = Path(teacher_checkpoint_path)
+        print(f"Using local teacher checkpoint: {actual_teacher_path}", flush=True)
+    else:
+        print(f"Downloading pretrained teacher from Hugging Face repo '{repo_id}'...", flush=True)
+        try:
+            from huggingface_hub import hf_hub_download
+            actual_teacher_path = Path(hf_hub_download(
+                repo_id=repo_id,
+                filename="model.safetensors",
+                local_dir="./ckpt",
+                local_files_only=False
+            ))
+            print(f"Downloaded teacher model: {actual_teacher_path}", flush=True)
+        except Exception as e:
+            print(f"[WARNING] Failed to download from Hugging Face: {e}. Falling back to initialized weights.", flush=True)
+
+    # Instantiate Llama DiT backbone of DiffRhythm 2
     try:
-        from refer.dit import DiT
+        try:
+            from diffrhythm2.backbones.dit import DiT
+        except ImportError:
+            from DiffRhythm2_main.diffrhythm2.backbones.dit import DiT
         teacher_backbone = DiT(
             dim=512, # Reference standard DiffRhythm hidden dimension
             depth=8,
@@ -136,21 +190,25 @@ def run_distillation_training(
             mel_dim=config.n_mels
         )
     except ImportError:
-        # Fallback dummy model to avoid import errors when refer/ is removed
+        # Fallback dummy model if imports are not configured
         class DummyTeacher(nn.Module):
             def __init__(self, mel_dim):
                 super().__init__()
                 self.proj = nn.Linear(mel_dim, mel_dim)
-            def forward(self, x, cond, text, time, drop_audio_cond, drop_text):
-                return self.proj(x)
+            def forward(self, x, time, position_ids, style_prompt, attn_mask):
+                return self.proj(x), None, None
         teacher_backbone = DummyTeacher(config.n_mels)
     
-    if Path(teacher_checkpoint_path).exists():
-        print(f"Loading pretrained teacher checkpoint: {teacher_checkpoint_path}", flush=True)
-        teacher_payload = torch.load(teacher_checkpoint_path, map_location=selected_device)
-        teacher_backbone.load_state_dict(teacher_payload["model"] if "model" in teacher_payload else teacher_payload)
+    if actual_teacher_path is not None and actual_teacher_path.exists():
+        print(f"Loading pretrained teacher weights from: {actual_teacher_path}", flush=True)
+        if actual_teacher_path.name.endswith(".safetensors"):
+            from safetensors.torch import load_file
+            teacher_payload = load_file(str(actual_teacher_path))
+        else:
+            teacher_payload = torch.load(actual_teacher_path, map_location="cpu")
+        teacher_backbone.load_state_dict(teacher_payload["model"] if "model" in teacher_payload else teacher_payload, strict=False)
     else:
-        print("[WARNING] Pretrained teacher checkpoint not found. Distilling using initialized weights.", flush=True)
+        print("[WARNING] Teacher checkpoint not loaded. Distilling using initialized weights.", flush=True)
         
     # 3. Instantiate Student (MicroDiT)
     model_student = MicroDiT(config, dim=256, depth=4, heads=4).to(selected_device)
@@ -165,8 +223,9 @@ def run_distillation_training(
     def collate_fn(batch):
         vocal_mels = torch.stack([item["vocal_mel"] for item in batch])
         backing_mels = torch.stack([item["backing_mel"] for item in batch])
+        style_anchors = torch.stack([item["style_anchor"] for item in batch])
         texts = [item["text"] for item in batch]
-        return {"vocal_mel": vocal_mels, "backing_mel": backing_mels, "text": texts}
+        return {"vocal_mel": vocal_mels, "backing_mel": backing_mels, "style_anchor": style_anchors, "text": texts}
 
     dataloader = DataLoaderClass(
         dataset, 

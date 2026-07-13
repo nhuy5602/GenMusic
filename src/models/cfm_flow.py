@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from .text_to_music_diffusion import MusicDiffusionConfig
 
-def cfm_loss(model, clean_mel: torch.Tensor, backing_mel: torch.Tensor, texts: list[str], config: MusicDiffusionConfig) -> torch.Tensor:
+def cfm_loss(model, clean_mel: torch.Tensor, backing_mel: torch.Tensor, style_anchor: torch.Tensor, texts: list[str], config: MusicDiffusionConfig) -> torch.Tensor:
     """Computes the Conditional Flow Matching (CFM) velocity prediction loss."""
     device = clean_mel.device
     batch_size = clean_mel.shape[0]
@@ -29,7 +29,8 @@ def cfm_loss(model, clean_mel: torch.Tensor, backing_mel: torch.Tensor, texts: l
         x=xt,
         cond=cond,
         texts=texts,
-        timestep=t
+        timestep=t,
+        style_prompt=style_anchor
     )
     
     # Compute MSE loss
@@ -37,7 +38,7 @@ def cfm_loss(model, clean_mel: torch.Tensor, backing_mel: torch.Tensor, texts: l
 
 
 @torch.no_grad()
-def sample_cfm(model, texts: list[str], frames: int, config: MusicDiffusionConfig, device, steps: int = 32, seed: int | None = None, backing_mel: torch.Tensor | None = None) -> torch.Tensor:
+def sample_cfm(model, texts: list[str], frames: int, config: MusicDiffusionConfig, device, steps: int = 32, seed: int | None = None, backing_mel: torch.Tensor | None = None, style_prompt: torch.Tensor | None = None) -> torch.Tensor:
     """Samples a mel spectrogram from Gaussian noise using Euler ODE integration."""
     model.eval()
     
@@ -73,7 +74,8 @@ def sample_cfm(model, texts: list[str], frames: int, config: MusicDiffusionConfi
             x=xt,
             cond=cond,
             texts=texts,
-            timestep=t
+            timestep=t,
+            style_prompt=style_prompt
         )
         
         # Euler update step

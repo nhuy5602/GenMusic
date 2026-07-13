@@ -80,6 +80,25 @@ class InputEmbedding(nn.Module):
         return self.proj(merged)
 
 
+class AudioStyleEncoder(nn.Module):
+    """Encodes a Mel spectrogram style anchor (audio prompt) into a style representation vector."""
+    def __init__(self, n_mels: int, dim: int):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv1d(n_mels, dim, kernel_size=3, padding=1),
+            nn.SiLU(),
+            nn.AdaptiveAvgPool1d(1)
+        )
+        self.fc = nn.Linear(dim, dim)
+        
+    def forward(self, style_anchor: torch.Tensor) -> torch.Tensor:
+        # Expected input shape: (batch_size, seq_len, n_mels)
+        # Transpose to channel-first (batch_size, n_mels, seq_len) for Conv1D
+        x = style_anchor.transpose(1, 2)
+        x = self.conv(x).squeeze(-1) # (batch_size, dim)
+        return self.fc(x)
+
+
 class AdaLayerNormZeroFinal(nn.Module):
     """Adaptive layer norm for modulating output feature maps using timestep features."""
     def __init__(self, dim: int, cond_dim: int):
@@ -112,6 +131,7 @@ class MicroDiT(nn.Module):
         # Core embeddings and adapters
         self.text_encoder = PretrainedRobertaEncoder(model_name=roberta_model, out_dim=dim)
         self.time_embed = TimestepEmbedding(self.cond_dim)
+        self.audio_style_encoder = AudioStyleEncoder(config.n_mels, dim)
         self.style_embed = nn.Sequential(
             nn.Linear(dim, self.cond_dim),
             nn.SiLU(),
@@ -159,19 +179,24 @@ class MicroDiT(nn.Module):
         cond: torch.Tensor,
         texts: list[str],
         timestep: torch.Tensor,
-        style_vector: torch.Tensor | None = None
+        style_prompt: torch.Tensor | None = None
     ) -> torch.Tensor:
         device = x.device
         batch_size, seq_len = x.shape[0], x.shape[1]
         
         # 1. Encode text via RoBERTa (frozen)
         text_embeds, _ = self.text_encoder(texts, device) # (batch_size, text_seq_len, dim)
-        # Pool text sequence dimension to get style prompt if not provided
         pooled_text = text_embeds.mean(dim=1)
         
         # 2. Compute conditional vectors
         t_emb = self.time_embed(timestep) # (batch_size, cond_dim)
-        s_emb = self.style_embed(style_vector if style_vector is not None else pooled_text) # (batch_size, cond_dim)
+        
+        if style_prompt is not None:
+            style_vector = self.audio_style_encoder(style_prompt)
+        else:
+            style_vector = pooled_text
+            
+        s_emb = self.style_embed(style_vector) # (batch_size, cond_dim)
         c = t_emb + s_emb
         
         # Align text embedding length to seq_len for feature merging
@@ -188,8 +213,6 @@ class MicroDiT(nn.Module):
         
         # Build self-attention mask (noncausal)
         attention_mask = torch.ones((batch_size, seq_len), dtype=torch.bool, device=device)
-        # Convert to 4D attention mask format compatible with transformers SDPA
-        # [batch_size, 1, seq_len, seq_len]
         attention_mask_4d = attention_mask.unsqueeze(1).unsqueeze(2).repeat(1, 1, seq_len, 1)
         attention_mask_inverted = (~attention_mask_4d).float() * torch.finfo(x.dtype).min
         

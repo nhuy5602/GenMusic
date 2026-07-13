@@ -61,8 +61,20 @@ class MusicDiffusionDataset:
             
         vocal_mel = _fit_mel_frames(vocal_mel, self.config.frames_per_chunk)
         backing_mel = _fit_mel_frames(backing_mel, self.config.frames_per_chunk)
+        
+        # Crop random style anchor representing the Audio Anchor style prompt
+        anchor_len = 64
+        mel_len = backing_mel.shape[1]
+        import random
+        if mel_len > anchor_len:
+            start = random.randint(0, mel_len - anchor_len)
+            style_anchor = backing_mel[:, start:start + anchor_len]
+        else:
+            import torch.nn.functional as F
+            style_anchor = F.pad(backing_mel, (0, anchor_len - mel_len))
+            
         text = f"{record['style']}. {record['text']}"
-        return {"vocal_mel": vocal_mel, "backing_mel": backing_mel, "text": text}
+        return {"vocal_mel": vocal_mel, "backing_mel": backing_mel, "style_anchor": style_anchor, "text": text}
 
 class DiffusionTrainer:
     """Trainer orchestrating optimization steps and gradient descent for the diffusion denoiser."""
@@ -79,6 +91,7 @@ class DiffusionTrainer:
         for batch in dataloader:
             vocal_mel = batch["vocal_mel"].to(self.device)
             backing_mel = batch["backing_mel"].to(self.device)
+            style_anchor = batch["style_anchor"].to(self.device)
             texts = batch["text"]
             self.optimizer.zero_grad(set_to_none=True)
             
@@ -88,8 +101,9 @@ class DiffusionTrainer:
                 # Transpose mels from (batch, n_mels, seq_len) to (batch, seq_len, n_mels) for DiT
                 vocal_mel_t = vocal_mel.transpose(1, 2)
                 backing_mel_t = backing_mel.transpose(1, 2)
+                style_anchor_t = style_anchor.transpose(1, 2)
                 from ..models.cfm_flow import cfm_loss
-                loss = cfm_loss(self.model, vocal_mel_t, backing_mel_t, texts, self.config)
+                loss = cfm_loss(self.model, vocal_mel_t, backing_mel_t, style_anchor_t, texts, self.config)
             else:
                 # Fallback to single mel input for the old Conv1D model
                 loss = diffusion_loss(self.model, vocal_mel, texts, self.config)
@@ -212,8 +226,9 @@ def train_model(dataset_dir: str | Path, checkpoint_path: str | Path, *, epochs:
     def collate_fn(batch):
         vocal_mels = torch.stack([item["vocal_mel"] for item in batch])
         backing_mels = torch.stack([item["backing_mel"] for item in batch])
+        style_anchors = torch.stack([item["style_anchor"] for item in batch])
         texts = [item["text"] for item in batch]
-        return {"vocal_mel": vocal_mels, "backing_mel": backing_mels, "text": texts}
+        return {"vocal_mel": vocal_mels, "backing_mel": backing_mels, "style_anchor": style_anchors, "text": texts}
 
     dataloader = DataLoaderClass(
         dataset, 

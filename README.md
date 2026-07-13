@@ -1,6 +1,6 @@
 # GenMusic VN: Background Music & Vietnamese Vocal Generator
 
-GenMusic VN is a self-authored conditional diffusion and flow matching model designed for generating Vietnamese vocals and background music.
+GenMusic VN is a semi-autoregressive Conditional Flow Matching (CFM) diffusion transformer model inspired by DiffRhythm 2. It is engineered to generate high-fidelity Vietnamese vocals conditioned on both a text lyric prompt and an **Audio Style Anchor** extracted from the backing track.
 
 Detailed technical documentations are located in the `docs/` folder:
 - [System Architecture](docs/architecture.md)
@@ -64,7 +64,7 @@ KAGGLE_PROCESSED_DATASET_REF=your_kaggle_username/vietnamese-music-processed-dat
 
 ## 🚀 Usage Guide for Automated Scripts
 
-All key workflows are packaged into automated shell scripts in the `scripts/` directory:
+All key workflows are packaged into automated scripts in the `scripts/` directory:
 
 ### 1. Run Complete Local Pipeline Test
 Verify the whole end-to-end flow locally (Data scanning ➔ Prep ➔ Model training ➔ Sampling ➔ Evaluation):
@@ -79,7 +79,7 @@ uv run python scripts/run_kaggle_training.py
 ```
 
 ### 3. Run Batch Preprocessing on Kaggle
-Perform full stem separation (Demucs), transcribing (Whisper), and pitch contour tracking (pYIN) on all 250 raw audio tracks on Kaggle. Automatically uploads the result directly to your Kaggle profile as a clean dataset:
+Perform stem separation (Demucs) and transcription (Whisper) on raw audio tracks on Kaggle. Automatically cleans up intermediate heavy WAV files to prevent Disk OOM.
 ```powershell
 uv run python scripts/run_kaggle_preprocess_all.py
 ```
@@ -96,9 +96,12 @@ uv run python cli.py generate-local --text "Đêm nay Hà Nội ngập tràn ti�
 ```
 
 ### 2. Manual Preprocessing
+Preprocess audio files with Demucs stem separation and Whisper lyric transcription. pYIN F0 extraction is removed to dramatically speed up data preparation:
 ```powershell
-uv run python cli.py preprocess-raw --input dataset/vietnamese_songs --output dataset/diff_rhythm_dataset --whisper-model small
+uv run python cli.py preprocess-raw --input dataset/vietnamese_songs --output dataset/diff_rhythm_dataset --whisper-model small --max-files 100 --keep-separated-count 100
 ```
+- `--max-files`: Limits the maximum number of files to process.
+- `--keep-separated-count`: Determines how many separated demuxed WAV files are kept in the final output directory for inspection/evaluation.
 
 ### 3. Model Training & Knowledge Distillation
 You can train the diffusion denoiser from scratch or perform knowledge distillation from the pretrained DiffRhythm Teacher to your student MicroDiT model:
@@ -108,13 +111,18 @@ You can train the diffusion denoiser from scratch or perform knowledge distillat
   # Train standard Conv1D denoiser model:
   uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/my_model.pt --epochs 5 --batch-size 4
   
-  # Train MicroDiT (Transformer-based) model:
+  # Train MicroDiT (Transformer-based) model with Audio Style Anchor conditioning:
   uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/my_dit_model.pt --epochs 5 --batch-size 4 --model-type dit
   ```
 
-* **Knowledge Distillation (Recommended for small datasets):**
-  This maps predictions from a pretrained DiffRhythm Teacher to your student MicroDiT, bypassing the need for huge datasets:
+* **Knowledge Distillation (Recommended):**
+  This maps predictions from a pretrained DiffRhythm Teacher to your student MicroDiT model.
+  - If `--teacher-checkpoint` is omitted, the script automatically downloads the latest model weights (`model.safetensors`) from the Hugging Face repo: `ASLP-lab/DiffRhythm2`.
   ```powershell
+  # Using automatic Hugging Face model download:
+  uv run python cli.py train-distill --dataset dataset/diff_rhythm_dataset --student-checkpoint outputs/distilled_student.pt --epochs 5 --batch-size 4
+  
+  # Using a local teacher checkpoint file:
   uv run python cli.py train-distill --dataset dataset/diff_rhythm_dataset --student-checkpoint outputs/distilled_student.pt --teacher-checkpoint outputs/pretrained_teacher.pt --epochs 5 --batch-size 4
   ```
 
@@ -137,7 +145,7 @@ Open your browser and navigate to `http://127.0.0.1:8000` to enter custom Vietna
 
 ## 🧪 Unit Testing
 
-Run automated tests to verify model math and system stability:
+Run automated tests to verify model math, audio anchor slicing, and system stability:
 ```powershell
 uv run python -m unittest discover -s tests -v
 ```

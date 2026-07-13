@@ -89,9 +89,8 @@ def process_file(audio_path: Path, output_dir: Path, whisper_model, keep_separat
     tempo, _ = librosa.beat.beat_track(y=y_backing, sr=sr)
     bpm = int(tempo[0]) if hasattr(tempo, "__len__") else int(tempo)
 
-    # 3. Vocal transcription & F0 pitch extraction
+    # 3. Vocal transcription & features extraction
     lyrics = "Instrumental track."
-    f0_clean = np.zeros(frames)
     vocal_tensor = torch.zeros_like(backing_tensor)
     
     if vocals_wav and vocals_wav.exists():
@@ -102,18 +101,6 @@ def process_file(audio_path: Path, output_dir: Path, whisper_model, keep_separat
         asr_res = whisper_model.transcribe(str(vocals_wav), language="vi", word_timestamps=True)
         lyrics = asr_res["text"].strip()
         
-        # Pitch tracking via pYIN
-        print("-> Tracking F0 pitch melody contour...", flush=True)
-        fmin = librosa.note_to_hz('C2')
-        fmax = librosa.note_to_hz('C7')
-        f0, voiced_flag, _ = librosa.pyin(y_vocal, fmin=fmin, fmax=fmax, sr=SAMPLE_RATE, hop_length=HOP_LENGTH)
-        f0_clean = np.nan_to_num(f0)
-        
-        if len(f0_clean) > frames:
-            f0_clean = f0_clean[:frames]
-        elif len(f0_clean) < frames:
-            f0_clean = np.pad(f0_clean, (0, frames - len(f0_clean)))
-            
         mel_vocal = librosa.feature.melspectrogram(
             y=y_vocal[:frames * HOP_LENGTH], sr=sr, n_fft=N_FFT, hop_length=HOP_LENGTH, n_mels=N_MELS, power=2.0
         )
@@ -121,9 +108,6 @@ def process_file(audio_path: Path, output_dir: Path, whisper_model, keep_separat
         vocal_tensor = torch.from_numpy(log_mel_vocal).float()
         
     # Save outputs
-    pitch_npy_path = pitch_dir / f"{sample_id}_f0.npy"
-    np.save(pitch_npy_path, f0_clean)
-    
     vocal_pt_path = mels_dir / f"{sample_id}_vocal.pt"
     torch.save(vocal_tensor, vocal_pt_path)
 
@@ -140,8 +124,7 @@ def process_file(audio_path: Path, output_dir: Path, whisper_model, keep_separat
         "bpm": bpm,
         "frames": frames,
         "backing_mel_path": f"mels/{sample_id}_backing.pt",
-        "vocal_mel_path": f"mels/{sample_id}_vocal.pt",
-        "f0_path": f"pitch/{sample_id}_f0.npy"
+        "vocal_mel_path": f"mels/{sample_id}_vocal.pt"
     }
 
 def preprocess_raw_audio(input_path: str | Path, output_path: str | Path, whisper_model_name: str = "base", keep_separated_count: int = 10, max_files: int | None = None) -> dict:
