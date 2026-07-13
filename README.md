@@ -96,7 +96,7 @@ uv run python cli.py generate-local --text "Đêm nay Hà Nội ngập tràn ti�
 ```
 
 ### 2. Manual Preprocessing
-Preprocess audio files with Demucs stem separation and Whisper lyric transcription. pYIN F0 extraction is removed to dramatically speed up data preparation:
+Preprocess audio files with Demucs stem separation and Whisper lyric transcription:
 ```powershell
 uv run python cli.py preprocess-raw --input dataset/vietnamese_songs --output dataset/diff_rhythm_dataset --whisper-model small --max-files 100 --keep-separated-count 100
 ```
