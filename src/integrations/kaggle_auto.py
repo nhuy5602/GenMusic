@@ -336,15 +336,7 @@ def load_kaggle_api_tokens() -> dict[str, str]:
 
 
 def kaggle_cli_command() -> list[str] | None:
-    candidates = [shutil.which("kaggle")]
-    scripts = Path(site.USER_BASE) / ("Scripts" if os.name == "nt" else "bin")
-    candidates.append(str(scripts / ("kaggle.exe" if os.name == "nt" else "kaggle")))
-    runtime_scripts = Path(sys.executable).resolve().parent / "Scripts"
-    candidates.append(str(runtime_scripts / ("kaggle.exe" if os.name == "nt" else "kaggle")))
-    for candidate in candidates:
-        if candidate and Path(candidate).exists():
-            return [candidate]
-    return None
+    return [sys.executable, "-m", "kaggle"]
 
 
 def resolve_kaggle_username(username: str | None) -> str | None:
