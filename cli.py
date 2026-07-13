@@ -133,6 +133,8 @@ def build_parser() -> argparse.ArgumentParser:
     preprocess.add_argument("--whisper-model", default="small")
     preprocess.add_argument("--keep-separated-count", type=int, default=10, help="Số lượng bài hát giữ lại thư mục âm thanh đã tách để hậu kiểm.")
     preprocess.add_argument("--max-files", type=int, default=None, help="Giới hạn số lượng bài hát tối đa sẽ xử lý.")
+    preprocess.add_argument("--skip-demucs", action="store_true", help="Bỏ tách vocal, dùng bản phối thật làm mục tiêu nhanh.")
+    preprocess.add_argument("--skip-asr", action="store_true", help="Bỏ Whisper ASR và dùng nhãn text mặc định.")
 
     return parser
 
@@ -202,7 +204,15 @@ def main(argv: list[str] | None = None) -> int:
         report = build_project_report(args.source, output_root=args.out)
     elif args.command == "preprocess-raw":
         from src.data.preprocess_raw_vietnamese import preprocess_raw_audio
-        report = preprocess_raw_audio(args.input, args.output, args.whisper_model, keep_separated_count=args.keep_separated_count, max_files=args.max_files)
+        report = preprocess_raw_audio(
+            args.input,
+            args.output,
+            args.whisper_model,
+            keep_separated_count=args.keep_separated_count,
+            max_files=args.max_files,
+            use_demucs=not args.skip_demucs,
+            transcribe=not args.skip_asr,
+        )
     else:  # pragma: no cover - argparse enforces command choices
         raise ValueError(args.command)
 

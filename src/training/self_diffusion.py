@@ -178,7 +178,8 @@ def _resolve_record_path(root: Path, path_str: str) -> Path:
 def _fit_mel_frames(mel, frames: int):
     torch, _, _, _ = _torch()
     if mel.shape[1] > frames:
-        return mel[:, :frames]
+        start = random.randint(0, mel.shape[1] - frames)
+        return mel[:, start:start + frames]
     if mel.shape[1] < frames:
         return torch.nn.functional.pad(mel, (0, frames - mel.shape[1]))
     return mel

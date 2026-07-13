@@ -73,8 +73,7 @@ try:
         "--input", str(raw_dataset),
         "--output", str(preprocessed_dir),
         "--whisper-model", "small",
-        "--keep-separated-count", "100",
-        "--max-files", "100"
+        "--keep-separated-count", "100"
     ], env=os.environ, check=True)
 
     print("--- STEP 5: Creating and Uploading Processed Dataset to Kaggle ---")
@@ -106,6 +105,14 @@ def main():
     # Resolved parent because it is located inside the scripts/ directory
     project_root = Path(__file__).resolve().parents[1]
     tokens = load_kaggle_api_tokens()
+    kaggle_config = Path.home() / ".kaggle" / "kaggle.json"
+    if kaggle_config.exists():
+        try:
+            config = json.loads(kaggle_config.read_text(encoding="utf-8"))
+            tokens.setdefault("KAGGLE_USERNAME", str(config.get("username", "")))
+            tokens.setdefault("KAGGLE_KEY", str(config.get("key", "")))
+        except (OSError, json.JSONDecodeError):
+            pass
     username = resolve_kaggle_username(tokens.get("KAGGLE_USERNAME"))
     cli = kaggle_cli_command()
 
@@ -126,10 +133,10 @@ def main():
     except Exception as e:
         print(f"⚠️ Warning: {e}")
 
-    raw_dataset_ref = tokens.get("KAGGLE_RAW_DATASET_REF", "sonlest/vietnamese-music-dataset-version3-part6")
+    raw_dataset_ref = os.getenv("KAGGLE_RAW_DATASET_REF") or tokens.get("KAGGLE_RAW_DATASET_REF", "sonlest/vietnamese-music-dataset-version3-part6")
     raw_dataset_slug = raw_dataset_ref.split("/")[-1]
     
-    output_dataset_ref = tokens.get("KAGGLE_PROCESSED_DATASET_REF", f"{username}/vietnamese-music-processed-dataset")
+    output_dataset_ref = os.getenv("KAGGLE_PROCESSED_DATASET_REF") or tokens.get("KAGGLE_PROCESSED_DATASET_REF", f"{username}/vietnamese-music-processed-dataset")
 
     run_id = f"preprocess-all-{int(time.time())}"
     job_dir = project_root / "outputs" / "kaggle_preprocess" / run_id

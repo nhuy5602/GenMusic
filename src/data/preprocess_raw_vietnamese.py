@@ -7,7 +7,10 @@ from pathlib import Path
 import numpy as np
 import librosa
 import torch
-import whisper
+try:
+    import whisper
+except ImportError:  # Optional for the fast full-mix preprocessing mode.
+    whisper = None
 
 # Configure FFMPEG path using imageio_ffmpeg so that whisper/demucs can find it on Windows
 try:
@@ -54,7 +57,15 @@ def run_demucs_separation(audio_path: Path, output_dir: Path) -> tuple[Path | No
     
     return None, None
 
-def process_file(audio_path: Path, output_dir: Path, whisper_model, keep_separated: bool = False) -> dict:
+def process_file(
+    audio_path: Path,
+    output_dir: Path,
+    whisper_model,
+    keep_separated: bool = False,
+    *,
+    use_demucs: bool = True,
+    transcribe: bool = True,
+) -> dict:
     sample_id = audio_path.stem
     print(f"\n==================== PROCESSING {sample_id} ====================", flush=True)
     
@@ -66,7 +77,7 @@ def process_file(audio_path: Path, output_dir: Path, whisper_model, keep_separat
         d.mkdir(parents=True, exist_ok=True)
         
     # 1. Stem separation
-    vocals_wav, backing_wav = run_demucs_separation(audio_path, separated_dir)
+    vocals_wav, backing_wav = run_demucs_separation(audio_path, separated_dir) if use_demucs else (None, None)
     
     # 2. Backing processing
     if backing_wav and backing_wav.exists():
@@ -90,16 +101,17 @@ def process_file(audio_path: Path, output_dir: Path, whisper_model, keep_separat
     bpm = int(tempo[0]) if hasattr(tempo, "__len__") else int(tempo)
 
     # 3. Vocal transcription & features extraction
-    lyrics = "Instrumental track."
-    vocal_tensor = torch.zeros_like(backing_tensor)
+    lyrics = f"Vietnamese music track {sample_id}."
+    vocal_tensor = backing_tensor.clone()
     
     if vocals_wav and vocals_wav.exists():
         y_vocal, _ = librosa.load(vocals_wav, sr=SAMPLE_RATE)
         
         # Whisper Transcription
-        print("-> Transcribing lyrics using Whisper ASR...", flush=True)
-        asr_res = whisper_model.transcribe(str(vocals_wav), language="vi", word_timestamps=True)
-        lyrics = asr_res["text"].strip()
+        if transcribe and whisper_model is not None:
+            print("-> Transcribing lyrics using Whisper ASR...", flush=True)
+            asr_res = whisper_model.transcribe(str(vocals_wav), language="vi", word_timestamps=True)
+            lyrics = asr_res["text"].strip()
         
         mel_vocal = librosa.feature.melspectrogram(
             y=y_vocal[:frames * HOP_LENGTH], sr=sr, n_fft=N_FFT, hop_length=HOP_LENGTH, n_mels=N_MELS, power=2.0
@@ -128,12 +140,21 @@ def process_file(audio_path: Path, output_dir: Path, whisper_model, keep_separat
         "bpm": bpm,
         "frames": frames,
         "has_vocal": bool(vocals_wav and vocals_wav.exists()),
-        "vocal_source": "demucs" if vocals_wav and vocals_wav.exists() else "zero_fallback",
+        "vocal_source": "demucs" if vocals_wav and vocals_wav.exists() else "raw_mix_fallback",
         "backing_mel_path": f"mels/{sample_id}_backing.pt",
         "vocal_mel_path": f"mels/{sample_id}_vocal.pt"
     }
 
-def preprocess_raw_audio(input_path: str | Path, output_path: str | Path, whisper_model_name: str = "base", keep_separated_count: int = 10, max_files: int | None = None) -> dict:
+def preprocess_raw_audio(
+    input_path: str | Path,
+    output_path: str | Path,
+    whisper_model_name: str = "base",
+    keep_separated_count: int = 10,
+    max_files: int | None = None,
+    *,
+    use_demucs: bool = True,
+    transcribe: bool = True,
+) -> dict:
     raw_dir = Path(input_path)
     output_dir = Path(output_path)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -151,15 +172,26 @@ def preprocess_raw_audio(input_path: str | Path, output_path: str | Path, whispe
         print(f"[ERROR] No raw audio files found in {raw_dir.resolve()}. Please supply input wav/mp3 files.", flush=True)
         return {"status": "failed", "error": "No raw audio files found"}
 
-    print(f"Loading Whisper model ({whisper_model_name})...", flush=True)
-    whisper_model = whisper.load_model(whisper_model_name)
+    whisper_model = None
+    if transcribe:
+        if whisper is None:
+            raise RuntimeError("Cần cài openai-whisper hoặc dùng --skip-asr.")
+        print(f"Loading Whisper model ({whisper_model_name})...", flush=True)
+        whisper_model = whisper.load_model(whisper_model_name)
     
     records = []
     failures = []
     for idx, f in enumerate(raw_files, start=1):
         try:
             print(f"\n-> [{idx}/{total_files}] Processing: {f.name}", flush=True)
-            record = process_file(f, output_dir, whisper_model, keep_separated=(idx <= keep_separated_count))
+            record = process_file(
+                f,
+                output_dir,
+                whisper_model,
+                keep_separated=(idx <= keep_separated_count),
+                use_demucs=use_demucs,
+                transcribe=transcribe,
+            )
             records.append(record)
         except Exception as e:
             print(f"[ERROR] processing [{idx}/{total_files}] {f.name}: {e}", flush=True)
@@ -205,9 +237,17 @@ def main():
     parser.add_argument("--input", default="dataset/vietnamese_songs", help="Path to raw audio folder.")
     parser.add_argument("--output", default="dataset/diff_rhythm_dataset", help="Output dataset path.")
     parser.add_argument("--whisper-model", default="base", help="Size of Whisper model to use.")
+    parser.add_argument("--skip-demucs", action="store_true", help="Bỏ tách vocal, dùng bản phối thật làm mục tiêu nhanh.")
+    parser.add_argument("--skip-asr", action="store_true", help="Bỏ Whisper ASR và dùng nhãn text mặc định.")
     args = parser.parse_args()
 
-    preprocess_raw_audio(args.input, args.output, args.whisper_model)
+    preprocess_raw_audio(
+        args.input,
+        args.output,
+        args.whisper_model,
+        use_demucs=not args.skip_demucs,
+        transcribe=not args.skip_asr,
+    )
 
 if __name__ == "__main__":
     main()
