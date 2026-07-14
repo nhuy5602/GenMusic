@@ -74,10 +74,58 @@ try:
     print("--- STEP 3: Installing dependencies ---")
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "librosa", "imageio-ffmpeg"], check=True)
 
+    print("--- STEP 4: Checking CUDA compatibility ---")
+    torch_probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import torch; print('torch=%s cuda=%s available=%s' % (torch.__version__, torch.version.cuda, torch.cuda.is_available())); print(torch.randn((2, 2), device='cuda') @ torch.randn((2, 2), device='cuda')) if torch.cuda.is_available() else None",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    torch_probe_output = (torch_probe.stdout or "") + chr(10) + (torch_probe.stderr or "")
+    print(torch_probe_output, flush=True)
+    if torch_probe.returncode != 0:
+        print("CUDA smoke test failed; installing P100-compatible Torch.", flush=True)
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "--no-cache-dir",
+                "--force-reinstall",
+                "--extra-index-url",
+                "https://download.pytorch.org/whl/cu121",
+                "torch==2.5.1+cu121",
+                "torchaudio==2.5.1+cu121",
+            ],
+            check=True,
+        )
+        repaired_probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import torch; print('torch=%s cuda=%s available=%s' % (torch.__version__, torch.version.cuda, torch.cuda.is_available())); print(torch.randn((2, 2), device='cuda') @ torch.randn((2, 2), device='cuda')) if torch.cuda.is_available() else None",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        repaired_output = (repaired_probe.stdout or "") + chr(10) + (repaired_probe.stderr or "")
+        print(repaired_output, flush=True)
+        if repaired_probe.returncode != 0 or "available=True" not in repaired_output:
+            raise RuntimeError("CUDA is unavailable after P100 Torch repair.")
+
     # Add source code to path
     os.environ["PYTHONPATH"] = str(source_root) + os.pathsep + os.environ.get("PYTHONPATH", "")
 
-    print("--- STEP 4: Training model on ALL processed records ---")
+    print("--- STEP 5: Training model on ALL processed records ---")
     checkpoint_path = Path("/kaggle/working/my_trained_model.pt")
     subprocess.run([
         sys.executable, str(source_root / "cli.py"), "train-self",
