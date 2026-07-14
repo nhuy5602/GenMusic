@@ -11,6 +11,7 @@ diff_rhythm_dataset/
   config.json
   mels/<id>_backing.pt
   mels/<id>_vocal.pt
+  mels/<id>_style.pt   # MuQ-MuLan style embedding, see src/data/README.md
 ```
 
 Create a synthetic smoke dataset with:

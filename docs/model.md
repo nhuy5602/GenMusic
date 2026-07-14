@@ -1,40 +1,72 @@
 # Model Details
 
-## Conv1D Diffusion Model
+See `docs/PROJECT_REPORT.md` for the full architecture writeup with citations and
+rationale; this file is a shorter reference. `docs/experiments/vocoder_fix.md`
+and `docs/experiments/distillation_fix.md` cover the specific bugs found and
+fixed in the areas below — read those before changing this code again, several
+non-obvious pitfalls (wrong mel format, wrong teacher call signature, guessed
+architecture dims) are documented there in detail.
 
-The default model is a self-authored conditional diffusion denoiser. It predicts
-the denoising direction for a log-Mel spectrogram using a text/style condition
-and a continuous diffusion timestep. It is implemented in
-`src/models/text_to_music_diffusion.py` and trained by
-`src/training/self_diffusion.py`.
+## Conv1D Diffusion Model (legacy/default for `train-self` without `--model-type dit`)
 
-The model is intentionally small enough for a local smoke run. Generated Mel
-features can be rendered with the deterministic ISTFT path or the optional Vocos
-neural vocoder.
+A self-authored conditional diffusion denoiser predicting the denoising
+direction for a log-mel spectrogram from a text/style condition and a
+continuous diffusion timestep. Implemented in
+`src/models/text_to_music_diffusion.py` (`ResidualDenoiser`), trained by
+`src/training/self_diffusion.py`. Small, toy-scale text conditioning
+(per-character hash embedding) — this is a smoke-test baseline, not the
+recommended path for quality work; use `--model-type dit` instead.
 
-## MicroDiT and CFM
+## MicroDiT and CFM (recommended path: `--model-type dit`)
 
-The optional `MicroDiT` path uses a frozen pretrained text encoder, a compact
-Transformer backbone, and an audio-style anchor encoder. Its training target is
-Conditional Flow Matching: a noisy Mel state is interpolated between Gaussian
-noise and a clean vocal target, and the network learns the velocity field.
+`MicroDiT` (`src/models/dit_transformer.py`) conditions on: (1) lyric text via
+a frozen `xlm-roberta-base` encoder (genuinely multilingual, unlike the
+DiffRhythm2 teacher's Chinese/English-only tokenizer); (2) a single 512-dim
+**MuQ-MuLan style embedding**, precomputed once per song at preprocessing time
+(`AudioStyleEncoder`, a small 2-layer MLP adapter — *not* an audio encoder
+itself, see `docs/PROJECT_REPORT.md` §2.1) — this replaced an earlier version
+that average-pooled a raw mel crop through an untrained Conv1D, which had no
+learned notion of musical style at all. Training target is Conditional Flow
+Matching (`src/models/cfm_flow.py`): a noisy mel state is interpolated between
+Gaussian noise and the clean vocal target, and the network learns the velocity
+field, integrated at sample time with fixed-step Euler ODE integration.
 
-`src/models/cfm_flow.py` contains the loss and Euler sampler. Separated datasets
-provide the backing Mel as the audio condition and a cropped backing segment as
-the style anchor. Legacy and synthetic records retain a zero backing fallback,
-so they are useful for smoke tests but are not evidence of vocal quality.
+The student's mel representation (100 mels, 24kHz, n_fft=1024, hop=256) is
+chosen to exactly match the pretrained Vocos vocoder's own native format, not
+any dimension DiffRhythm2 itself uses — this was the single highest-impact fix
+in this project's history (see `docs/experiments/vocoder_fix.md`).
+
+Architecture size is configurable: `--dim`/`--depth`/`--heads`/`--ff-mult` on
+both `train-self --model-type dit` and `train-distill`. Default
+`dim=256, depth=4, heads=4` is ~5.6M trainable parameters (plus 278M frozen
+RoBERTa weights, never trained, re-downloaded fresh from HuggingFace on
+checkpoint load rather than saved).
 
 ## Distillation
 
-`src/training/distill_training.py` contains the optional teacher-to-MicroDiT
-training loop. A local teacher checkpoint is preferred; if the external teacher
-package/checkpoint is unavailable, the code uses its initialized fallback only
-to keep the training path executable. That fallback is a smoke-test teacher, not
-a quality baseline.
+`src/training/distill_training.py` replicates the *real* DiffRhythm2 teacher's
+call contract (reverse-engineered from its actual GitHub source — not guessed
+from class defaults, which was the previous approach and was wrong: the
+teacher's real checkpoint uses `mel_dim=64`, not the `100` its Python default
+suggested). A small trainable linear adapter bridges the teacher's 64-mel space
+and the student's 100-mel space for the distillation loss only. If the teacher
+(or its lyric tokenizer) can't be loaded — no internet, DiffRhythm2 repo not
+cloned onto `PYTHONPATH` (only works inside a Kaggle kernel that clones it) —
+training falls back to ground-truth CFM loss alone and reports this plainly via
+`teacher_status`/`distillation_active` in the returned report, rather than
+silently substituting a fake teacher (the previous behavior).
+
+**As of this writing, `distillation_active: true` has not been confirmed at
+Kaggle scale** — see `docs/experiments/kaggle_runs.md` and
+`docs/PROJECT_REPORT.md` §3.6 for exactly what happened (a hung kernel burned
+GPU quota before it could be re-verified) and what to run next.
 
 ## Important Evaluation Boundary
 
-Random Mel data can verify tensor shapes, optimization, checkpoint loading, and
-audio rendering. It cannot demonstrate natural singing, Vietnamese intelligibility,
-rhyme quality, or vocal pacing. Those claims require real audio with a valid vocal
-stem and lyric/alignment metadata.
+Random mel data can verify tensor shapes, optimization, checkpoint loading, and
+audio rendering. It cannot demonstrate natural singing, Vietnamese
+intelligibility, rhyme quality, or vocal pacing. Those claims require real
+audio with a valid vocal stem and lyric/alignment metadata, and — even then —
+a human listening to the output; automated sanity stats (peak amplitude, RMS,
+silence ratio, NaN/Inf checks) catch crashes and degenerate output, not
+musical quality.

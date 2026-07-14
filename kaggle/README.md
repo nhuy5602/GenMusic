@@ -1,7 +1,17 @@
 # Kaggle Integration
 
-Kaggle is an optional GPU backend for the self-authored conditional diffusion
-model. The local project stages a request dataset containing the lyric request,
+Kaggle is the required GPU backend for real preprocessing/training/distillation
+work on this project (local execution is CPU-only, for smoke tests). **See
+`docs/guides/run_full_pipeline.md` for the current recommended workflow** —
+`scripts/run_kaggle_full_experiment.py` and
+`scripts/run_kaggle_experiment_matrix.py` run the whole
+preprocess→train→distill→generate sequence in one Kaggle kernel, which matters
+for GPU quota (Kaggle gives ~30 GPU-hours/week; one consolidated kernel per
+experiment burns far less than five separate round trips). This file documents
+the older, narrower single-song "generate" job flow below, which still exists
+for the legacy Conv1D model path.
+
+The local project stages a request dataset containing the lyric request,
 LRC timing, source code, and links to the fixed training dataset.
 
 ## Dataset

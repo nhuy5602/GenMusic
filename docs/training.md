@@ -39,22 +39,50 @@ uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoi
 The MicroDiT path may download its text encoder on first use and therefore
 requires network access unless the encoder is already cached.
 
-## 4. Optional Distillation
+## 4. Distillation
 
 ```powershell
-uv run python cli.py train-distill --dataset dataset/diff_rhythm_dataset --student-checkpoint outputs/distilled_student.pt --teacher-checkpoint outputs/teacher.pt --epochs 5 --batch-size 4
+uv run python cli.py train-distill --dataset dataset/diff_rhythm_dataset --student-checkpoint outputs/distilled_student.pt --epochs 5 --batch-size 4 --alpha-feature 0.5 --dim 256 --depth 4 --heads 4
 ```
 
-Provide a local teacher checkpoint for a reproducible run. The fallback teacher
-exists for smoke testing and does not improve musical quality by itself.
+Without `--teacher-checkpoint`, this downloads the real teacher from
+`ASLP-lab/DiffRhythm2` on HuggingFace. **This only works inside a Kaggle kernel
+that has cloned the DiffRhythm2 GitHub repo onto `PYTHONPATH`** (see
+`scripts/run_kaggle_distill.py` / `scripts/run_kaggle_experiment_matrix.py`) —
+running it locally without that clone falls back to ground-truth CFM loss
+alone, and says so explicitly via the `teacher_status`/`distillation_active`
+fields in the returned report (never a silent fake teacher). `--alpha-feature`
+blends teacher-matching loss vs. ground-truth loss (`1.0` = ground-truth only).
+See `docs/experiments/distillation_fix.md` for the real teacher call contract
+this replicates, and `docs/PROJECT_REPORT.md` §3.5 for the comparison
+experiment (`scripts/run_experiment_matrix.py`) meant to answer whether this
+actually helps a small model — not yet completed at Kaggle scale as of this
+writing.
 
 ## 5. Generate and Evaluate
 
 ```powershell
-uv run python cli.py generate-local --text "Dem nay thanh pho ngu quen trong tieng mua." --style "soft Vietnamese ballad" --duration 8 --checkpoint outputs/self_music_checkpoint.pt --out outputs/demo
+uv run python cli.py generate-local --text "Dem nay thanh pho ngu quen trong tieng mua." --style "soft Vietnamese ballad" --duration 8 --checkpoint outputs/self_music_checkpoint.pt --vocoder vocos --out outputs/demo
 uv run python cli.py evaluate-self --generated outputs/demo/final.wav --out outputs/demo/evaluation
 uv run python cli.py project-report --source outputs --out outputs/project_report
 ```
+
+`--vocoder vocos` (the default) requires the mel format to match Vocos's native
+convention exactly, which `preprocess-raw`'s output always does now; `griffinlim`
+is the fallback if Vocos is unavailable. There is no `istft` option anymore —
+that path fabricated a fake phase spectrum and produced badly distorted audio
+regardless of model quality (see `docs/experiments/vocoder_fix.md`).
+
+## 6. Consolidated Kaggle experiment scripts (recommended over the steps above)
+
+Rather than running preprocess/train/distill/generate as separate Kaggle round
+trips, `scripts/run_kaggle_full_experiment.py` and
+`scripts/run_kaggle_experiment_matrix.py` run the whole sequence in one Kaggle
+kernel (one GPU-quota session, not several). See
+`docs/guides/run_full_pipeline.md` for exact commands and how to read the
+results, and `docs/experiments/kaggle_runs.md` for the run log this project
+has already accumulated using them (including a real ~11-hour hang and its
+fix — worth reading before submitting a new large run).
 
 Evaluation writes objective metrics and plots. MOS/CMOS remain skipped unless a
 human listening survey is supplied.

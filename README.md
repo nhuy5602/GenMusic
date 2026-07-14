@@ -3,9 +3,12 @@
 GenMusic VN is a semi-autoregressive Conditional Flow Matching (CFM) diffusion transformer model inspired by DiffRhythm 2. It is engineered to generate high-fidelity Vietnamese vocals conditioned on both a text lyric prompt and an **Audio Style Anchor** extracted from the backing track.
 
 Detailed technical documentations are located in the `docs/` folder:
+- [Project Report](docs/PROJECT_REPORT.md) — related work, architecture, experiments, conclusion (start here)
+- [Run Guide](docs/guides/run_full_pipeline.md) — practical step-by-step commands
 - [System Architecture](docs/architecture.md)
 - [Machine Learning Models](docs/model.md)
 - [Training & Improvement Pipelines](docs/training.md)
+- [Experiment write-ups](docs/experiments/) — specific bugs found and fixed (vocoder distortion, non-functional distillation, a Kaggle-quota-burning hang)
 
 ---
 
@@ -84,15 +87,27 @@ Perform stem separation (Demucs) and transcription (Whisper) on raw audio tracks
 uv run python scripts/run_kaggle_preprocess_all.py
 ```
 
+### 4. Run the Full Pipeline in One Kaggle Kernel (recommended)
+Preprocess → vocoder sanity check → baseline training → distillation attempt → generate → sanity stats, all in a single Kaggle kernel session (matters for GPU quota — see [docs/guides/run_full_pipeline.md](docs/guides/run_full_pipeline.md)):
+```powershell
+uv run python scripts/run_kaggle_full_experiment.py --max-files 40 --whisper-model tiny --baseline-epochs 60 --distill-epochs 30
+```
+
+### 5. Run the Distillation-vs-Baseline Comparison Experiment
+Trains several configs (baseline; distillation at a few `alpha_feature` values; a smaller architecture variant) against one shared preprocessed dataset, to answer whether distillation actually helps this small model — see [docs/PROJECT_REPORT.md](docs/PROJECT_REPORT.md) §3.5:
+```powershell
+uv run python scripts/run_kaggle_experiment_matrix.py --max-files 40 --whisper-model tiny --epochs 60
+```
+
 ---
 
 ## 🎹 Advanced CLI Operations (`cli.py`)
 
 ### 1. Local Generation (Inference)
-You can choose between the fast mathematical `istft` decoder or the high-fidelity neural vocoder **Vocos** (`vocos` - highly recommended):
+`vocos` (default, recommended) decodes with the pretrained Vocos neural vocoder; `griffinlim` is a real iterative-phase-estimation fallback if Vocos is unavailable. Both require the mel format to match Vocos's native convention exactly, which this project's default `MusicDiffusionConfig` and `preprocess-raw` output always do (see [docs/experiments/vocoder_fix.md](docs/experiments/vocoder_fix.md) for why this specific detail mattered a lot in practice):
 ```powershell
 # Generate audio using the Vocos Vocoder for natural voice reconstruction:
-uv run python cli.py generate-local --text "Đêm nay Hà Nội ngập tràn tiếng mưa rơi." --duration 8.0 --vocoder vocos --out outputs/my_song
+uv run python cli.py generate-local --text "Đêm nay Hà Nội ngập tràn tiếng mưa rơi." --duration 8.0 --vocoder vocos --model-type dit --out outputs/my_song
 ```
 
 ### 2. Manual Preprocessing
@@ -108,23 +123,21 @@ You can train the diffusion denoiser from scratch or perform knowledge distillat
 
 * **Train Model from Scratch:**
   ```powershell
-  # Train standard Conv1D denoiser model:
+  # Train standard Conv1D denoiser model (legacy/smoke-test baseline):
   uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/my_model.pt --epochs 5 --batch-size 4
   
-  # Train MicroDiT (Transformer-based) model with Audio Style Anchor conditioning:
-  uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/my_dit_model.pt --epochs 5 --batch-size 4 --model-type dit
+  # Train MicroDiT (Transformer-based) model with real MuQ-MuLan Audio Style Anchor conditioning (recommended):
+  uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/my_dit_model.pt --epochs 5 --batch-size 4 --model-type dit --dim 256 --depth 4 --heads 4
   ```
+  `--dim`/`--depth`/`--heads`/`--ff-mult` control MicroDiT's architecture size (default: ~5.6M trainable params).
 
-* **Knowledge Distillation (Recommended):**
-  This maps predictions from a pretrained DiffRhythm Teacher to your student MicroDiT model.
+* **Knowledge Distillation:**
+  Replicates the real DiffRhythm2 teacher's call contract (see [docs/experiments/distillation_fix.md](docs/experiments/distillation_fix.md)) — this only works inside a Kaggle kernel that has cloned the DiffRhythm2 repo onto `PYTHONPATH` (see `scripts/run_kaggle_distill.py`). Running it without that clone, or without internet, falls back to ground-truth-only training and reports this explicitly via `teacher_status`/`distillation_active` in the output — never a silent fake teacher.
   - If `--teacher-checkpoint` is omitted, the script automatically downloads the latest model weights (`model.safetensors`) from the Hugging Face repo: `ASLP-lab/DiffRhythm2`.
   ```powershell
-  # Using automatic Hugging Face model download:
-  uv run python cli.py train-distill --dataset dataset/diff_rhythm_dataset --student-checkpoint outputs/distilled_student.pt --epochs 5 --batch-size 4
-  
-  # Using a local teacher checkpoint file:
-  uv run python cli.py train-distill --dataset dataset/diff_rhythm_dataset --student-checkpoint outputs/distilled_student.pt --teacher-checkpoint outputs/pretrained_teacher.pt --epochs 5 --batch-size 4
+  uv run python cli.py train-distill --dataset dataset/diff_rhythm_dataset --student-checkpoint outputs/distilled_student.pt --epochs 5 --batch-size 4 --alpha-feature 0.5
   ```
+  Whether this actually improves quality over training from scratch has **not yet been verified at Kaggle scale** — see [docs/PROJECT_REPORT.md](docs/PROJECT_REPORT.md) §3.5/§4 and [docs/guides/run_full_pipeline.md](docs/guides/run_full_pipeline.md) for the comparison experiment designed to answer this.
 
 ### 4. Audio Quality Evaluation
 ```powershell
