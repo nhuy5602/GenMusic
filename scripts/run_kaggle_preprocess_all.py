@@ -142,7 +142,7 @@ try:
                 "1",
                 "librosa",
                 "openai-whisper",
-                "demucs",
+                "demucs==4.0.1",
                 "imageio-ffmpeg",
                 "vocos",
                 "encodec",
