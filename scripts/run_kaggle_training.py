@@ -164,6 +164,12 @@ def main():
     # Set up Kaggle API Token for the new Kaggle CLI format (OAuth/access_token/KAGGLE_API_TOKEN)
     api_token = tokens.get("KAGGLE_KEY")
     tokens["KAGGLE_API_TOKEN"] = api_token
+    kaggle_env = {
+        **os.environ,
+        **tokens,
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
+    }
     
     try:
         kaggle_home = Path.home() / ".kaggle"
@@ -225,12 +231,12 @@ def main():
     }, indent=2))
 
     print(f"📤 Uploading source code to Kaggle Dataset '{source_dataset_ref}'...")
-    subprocess.run(cli + ["datasets", "create", "-p", str(dataset_dir), "-r", "zip"], env={**os.environ, **tokens}, check=True)
+    subprocess.run(cli + ["datasets", "create", "-p", str(dataset_dir), "-r", "zip"], env=kaggle_env, check=True)
 
     # Wait until dataset is ready on Kaggle
     print("⏳ Waiting for source dataset to be ready...")
     for _ in range(60):
-        res = subprocess.run(cli + ["datasets", "status", source_dataset_ref], env={**os.environ, **tokens}, capture_output=True, text=True)
+        res = subprocess.run(cli + ["datasets", "status", source_dataset_ref], env=kaggle_env, capture_output=True, text=True)
         if "ready" in res.stdout.lower():
             break
         time.sleep(5)
@@ -261,13 +267,13 @@ def main():
 
     # 4. Push Kernel to Kaggle
     print(f"🚀 Pushing training Kernel '{kernel_ref}' to Kaggle (GPU: T4)...")
-    subprocess.run(cli + ["kernels", "push", "-p", str(kernel_dir)], env={**os.environ, **tokens}, check=True)
+    subprocess.run(cli + ["kernels", "push", "-p", str(kernel_dir)], env=kaggle_env, check=True)
 
     # 5. Poll Kernel status
     print("⏳ Monitoring training execution status on Kaggle...")
     completed = False
     for _ in range(240): # Poll for up to 40 minutes (Whisper/Demucs on 1 file + GPU train is fast, ~5-8 mins)
-        res = subprocess.run(cli + ["kernels", "status", kernel_ref], env={**os.environ, **tokens}, capture_output=True, text=True)
+        res = subprocess.run(cli + ["kernels", "status", kernel_ref], env=kaggle_env, capture_output=True, text=True)
         status_text = res.stdout.strip().lower()
         print(f"   Current Status: {status_text}")
         if "complete" in status_text:
@@ -280,7 +286,7 @@ def main():
 
     if completed:
         print("📥 Training complete! Downloading trained model checkpoint...")
-        subprocess.run(cli + ["kernels", "output", kernel_ref, "-p", str(download_dir), "-o"], env={**os.environ, **tokens}, check=True)
+        subprocess.run(cli + ["kernels", "output", kernel_ref, "-p", str(download_dir), "-o"], env=kaggle_env, check=True)
         checkpoint = download_dir / "my_trained_model.pt"
         if checkpoint.exists():
             # Copy checkpoint to outputs/
