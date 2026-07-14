@@ -33,19 +33,12 @@ try:
     source_root = Path("/kaggle/working/GenMusic")
     shutil.copytree(source_dataset_dir, source_root, dirs_exist_ok=True)
 
-    print("--- STEP 1.5: Cloning DiffRhythm2 official repository ---")
-    subprocess.run(["git", "clone", "https://github.com/ASLP-lab/DiffRhythm2.git", str(source_root / "DiffRhythm2-main")], check=True)
-
-    print("--- STEP 1.8: Installing system packages (espeak-ng) ---")
-    # Skip apt-get update to avoid NVIDIA mirror sync failures; use cached package lists
-    import subprocess as _sp
-    _sp.run(["apt-get", "install", "-y", "-q", "--no-install-recommends", "espeak-ng"], check=False)
-
+    # Student inference now decodes with Vocos (matching the student's own native
+    # mel format) instead of the teacher's BigVGAN, so we no longer need to clone
+    # the DiffRhythm2 repo or its requirements for this test -- only `muq` for
+    # the real MuQ-MuLan style embedding (see docs/experiments/vocoder_fix.md).
     print("--- STEP 2: Installing dependencies ---")
-    # First install official requirements.txt of DiffRhythm2
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", str(source_root / "DiffRhythm2-main/requirements.txt")], check=True)
-    # Then install additional test dependencies
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "pedalboard", "muq"], check=True)
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "torch", "torchaudio", "librosa", "transformers", "vocos", "muq"], check=True)
 
     # Add source code to path
     os.environ["PYTHONPATH"] = str(source_root) + os.pathsep + os.environ.get("PYTHONPATH", "")
@@ -66,7 +59,7 @@ try:
     ], env=os.environ, check=True)
 
     print("STUDENT INFERENCE TEST COMPLETED SUCCESSFULLY!")
-    print("Output song saved at: /kaggle/working/student_generated_song.mp3")
+    print("Output song saved at: /kaggle/working/student_generated_song.wav")
 except Exception as e:
     import traceback
     print("ERROR OCCURRED DURING KERNEL EXECUTION:")

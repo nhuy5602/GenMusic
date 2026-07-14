@@ -1,139 +1,310 @@
-import os
+"""Knowledge distillation from the real DiffRhythm2 teacher into the MicroDiT student.
+
+This implementation replicates the *exact* call contract of the official teacher
+(`diffrhythm2.backbones.dit.DiT.forward`, as used in `diffrhythm2/cfm.py`'s
+`sample_block_cache`), instead of guessing architecture dimensions or fabricating
+inputs. See docs/experiments/distillation_fix.md for the reverse-engineering
+notes this is based on. In short, the teacher's DiT processes lyric tokens and
+the noisy mel latent as ONE shared sequence (lyric tokens get `time=-1` as a
+sentinel, noisy frames get their real flow-matching `t`); style conditioning is
+a single 512-dim MuQ-MuLan embedding added at every position. We replicate that
+by concatenating [text_tokens; noisy_latent] and running one non-cached forward
+pass (the KV-cache in the original is a streaming/perf optimization only, not a
+semantic difference from a single full-context forward pass).
+
+If the teacher (or its lyric tokenizer) cannot be loaded -- e.g. no internet, or
+the DiffRhythm2 repo isn't vendored on PYTHONPATH -- this trains the student on
+the ground-truth CFM loss alone and says so plainly in the report, rather than
+silently distilling against a randomly-initialized stand-in (the previous
+"DummyTeacher" behavior, which produced a meaningless training signal with no
+error surfaced to the user).
+"""
+
 import json
 import time
-import math
-import torch
-from torch import nn
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Any
+
+import torch
+import torch.nn.functional as F
+from torch import nn
 
 from src.models.text_to_music_diffusion import MusicDiffusionConfig
 from src.models.dit_transformer import MicroDiT
 from src.training.self_diffusion import MusicDiffusionDataset, _torch
 
+TEACHER_COND_DIM = 512
+
+
+def _load_teacher(repo_id: str, teacher_checkpoint_path: str | Path | None, device: str) -> tuple[nn.Module | None, dict | None, str]:
+    """Downloads/loads the real DiffRhythm2 DiT backbone with its own config.json
+    dimensions (not guessed). Returns (module_or_None, model_config_or_None, status_message).
+    """
+    try:
+        from huggingface_hub import hf_hub_download
+        from safetensors.torch import load_file
+    except ImportError as exc:
+        return None, None, f"huggingface_hub/safetensors not installed: {exc}"
+
+    try:
+        from diffrhythm2.backbones.dit import DiT
+    except ImportError as exc:
+        return None, None, (
+            f"diffrhythm2 package not importable ({exc}). The DiffRhythm2 repo must be cloned and "
+            "added to PYTHONPATH (see scripts/run_kaggle_distill.py) -- this only works on Kaggle."
+        )
+
+    try:
+        config_path = hf_hub_download(repo_id=repo_id, filename="config.json", local_dir="./ckpt")
+        with open(config_path) as f:
+            model_config = json.load(f)
+        model_config["use_flex_attn"] = False
+
+        teacher = DiT(**model_config)
+
+        if teacher_checkpoint_path is not None and Path(teacher_checkpoint_path).exists():
+            ckpt_path = Path(teacher_checkpoint_path)
+        else:
+            ckpt_path = Path(hf_hub_download(repo_id=repo_id, filename="model.safetensors", local_dir="./ckpt"))
+
+        if ckpt_path.name.endswith(".safetensors"):
+            payload = load_file(str(ckpt_path))
+        else:
+            payload = torch.load(ckpt_path, map_location="cpu")
+        # Checkpoint is for the full CFM(transformer=DiT(...)) wrapper; the DiT's
+        # own weights live under the "transformer." prefix.
+        state_dict = payload["model"] if "model" in payload else payload
+        stripped = {k.removeprefix("transformer."): v for k, v in state_dict.items() if k.startswith("transformer.")}
+        if not stripped:
+            stripped = state_dict
+        missing, unexpected = teacher.load_state_dict(stripped, strict=False)
+        if missing or unexpected:
+            print(f"[WARNING] Teacher weight load: {len(missing)} missing, {len(unexpected)} unexpected keys.", flush=True)
+        teacher.to(device)
+        return teacher, model_config, "ok"
+    except Exception as e:
+        return None, None, f"failed to load real teacher: {e}"
+
+
+_STRUCT_INFO = {
+    "[start]": 500, "[end]": 501, "[intro]": 502, "[verse]": 503, "[chorus]": 504,
+    "[outro]": 505, "[inst]": 506, "[solo]": 507, "[bridge]": 508, "[hook]": 509,
+    "[break]": 510, "[stop]": 511, "[space]": 512,
+}
+
+
+def _load_lyric_tokenizer():
+    """Ports DiffRhythm2's CNENTokenizer/parse_lyrics logic (from inference.py)
+    WITHOUT importing that module. `inference.py`'s top-level imports pull in
+    `bigvgan`, whose CUDA extension (`bigvgan/alias_free_activation/cuda/activation1d.py`)
+    calls `torch.utils.cpp_extension.load()` -- a JIT compile -- as a bare
+    module-level statement executed at *import time*, not lazily. This hung for
+    10+ hours in testing on Kaggle (see docs/experiments/distillation_fix.md) and
+    has nothing to do with tokenization; only `g2p.g2p_generation.chn_eng_g2p`
+    (a lightweight ONNX-based G2P, no CUDA) is actually needed here.
+
+    Note this tokenizer's G2P frontend targets Chinese/English lyrics; Vietnamese
+    text will still tokenize deterministically (so it's a valid, if imprecise,
+    conditioning signal for the *teacher's* audio prior) but has no linguistic
+    grounding for Vietnamese. The student's own text conditioning (frozen
+    xlm-roberta-base, which does understand Vietnamese) is what actually
+    carries lyric semantics -- the teacher's role in distillation is to transfer
+    its general music/audio generation prior, not lyric understanding.
+    """
+    try:
+        import re
+
+        from g2p.g2p_generation import chn_eng_g2p
+
+        struct_pattern = re.compile(r"^\[.*?\]$")
+
+        def parse_lyrics(lyrics: str):
+            lyrics_with_time = []
+            get_start = False
+            for line in lyrics.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                if struct_pattern.match(line):
+                    struct_idx = _STRUCT_INFO.get(line.lower())
+                    if struct_idx is not None:
+                        if struct_idx == _STRUCT_INFO["[start]"]:
+                            get_start = True
+                        lyrics_with_time.append([struct_idx, _STRUCT_INFO["[stop]"]])
+                    continue
+                _, token = chn_eng_g2p(line)
+                lyrics_with_time.append([t + 1 for t in token] + [_STRUCT_INFO["[stop]"]])
+            if lyrics_with_time and not get_start:
+                lyrics_with_time = [[_STRUCT_INFO["[start]"], _STRUCT_INFO["[stop]"]]] + lyrics_with_time
+            return lyrics_with_time
+
+        return parse_lyrics, "ok"
+    except Exception as e:
+        return None, f"failed to load lyric tokenizer: {e}"
+
+
+def _tokenize_lyrics_batch(parse_lyrics_fn, texts: list[str], device) -> tuple[torch.Tensor, torch.Tensor]:
+    """Tokenizes each lyric string with the real teacher tokenizer and
+    right-pads (filler token 0, per TextEmbedding's own convention) to a
+    common length. Returns (token_ids [B, T], valid_mask [B, T])."""
+    token_lists = []
+    for text in texts:
+        wrapped = f"[start]\n[verse]\n{text.strip()}\n[stop]"
+        try:
+            grouped = parse_lyrics_fn(wrapped)
+            token_lists.append([int(t) for t in sum(grouped, [])] or [0])
+        except Exception:
+            token_lists.append([0])
+    max_len = max(len(t) for t in token_lists)
+    batch = len(token_lists)
+    ids = torch.zeros(batch, max_len, dtype=torch.long, device=device)
+    valid = torch.zeros(batch, max_len, dtype=torch.bool, device=device)
+    for i, toks in enumerate(token_lists):
+        ids[i, : len(toks)] = torch.tensor(toks, dtype=torch.long, device=device)
+        valid[i, : len(toks)] = True
+    return ids, valid
+
+
 class KnowledgeDistillationTrainer:
-    """Orchestrates distillation transfer from a pretrained DiffRhythm teacher to a MicroDiT student."""
+    """Orchestrates distillation transfer from the real (or unavailable) DiffRhythm2
+    teacher to a MicroDiT student."""
+
     def __init__(
         self,
-        teacher_model: nn.Module,
+        teacher_model: nn.Module | None,
         student_model: MicroDiT,
         config: MusicDiffusionConfig,
-        optimizer: torch.optim.Optimizer,
+        optimizer: torch.optim.Optimizer | None,
         device: str = "cpu",
-        temperature: float = 2.0,
-        alpha_feature: float = 0.5
+        alpha_feature: float = 0.5,
+        parse_lyrics_fn=None,
+        teacher_mel_dim: int | None = None,
     ):
-        self.teacher = teacher_model.to(device)
+        self.teacher = teacher_model.to(device) if teacher_model is not None else None
         self.student = student_model.to(device)
         self.config = config
         self.optimizer = optimizer
         self.device = device
-        self.temperature = temperature
-        self.alpha_feature = alpha_feature
-        
-        # Freeze the teacher parameters completely
-        self.teacher.eval()
-        for param in self.teacher.parameters():
-            param.requires_grad = False
+        self.parse_lyrics_fn = parse_lyrics_fn
+        # If the teacher (or its tokenizer) is unavailable, there is no
+        # distillation signal to blend in -- fall back to pure ground-truth CFM.
+        self.alpha_feature = 1.0 if (self.teacher is None or parse_lyrics_fn is None) else alpha_feature
 
-    def train_epoch(self, dataloader) -> list[float]:
+        # The teacher's real checkpoint (mel_dim=64, read from its own config.json)
+        # does not match our student's Vocos-native mel space (mel_dim=100, chosen
+        # to fix the vocoder distortion bug -- see docs/experiments/vocoder_fix.md).
+        # A small trainable linear adapter bridges the two mel-filterbank spaces so
+        # distillation can still transfer signal, without touching the student's own
+        # generative/decode path. Both are smooth linear-ish remappings of the same
+        # underlying STFT magnitude spectrum, so a learned linear map is a reasonable
+        # (if imperfect) bridge -- see docs/experiments/distillation_fix.md.
+        self.to_teacher_mel = None
+        self.from_teacher_mel = None
+        if self.teacher is not None and teacher_mel_dim is not None and teacher_mel_dim != config.n_mels:
+            self.to_teacher_mel = nn.Linear(config.n_mels, teacher_mel_dim).to(device)
+            self.from_teacher_mel = nn.Linear(teacher_mel_dim, config.n_mels).to(device)
+
+        if self.teacher is not None:
+            self.teacher.eval()
+            for param in self.teacher.parameters():
+                param.requires_grad = False
+
+    def adapter_parameters(self) -> list[torch.nn.Parameter]:
+        params = []
+        if self.to_teacher_mel is not None:
+            params += list(self.to_teacher_mel.parameters()) + list(self.from_teacher_mel.parameters())
+        return params
+
+    def _teacher_velocity(self, xt: torch.Tensor, t: torch.Tensor, texts: list[str], style_prompt: torch.Tensor) -> torch.Tensor | None:
+        if self.teacher is None or self.parse_lyrics_fn is None:
+            return None
+        batch_size, seq_len = xt.shape[0], xt.shape[1]
+
+        token_ids, token_valid = _tokenize_lyrics_batch(self.parse_lyrics_fn, texts, self.device)
+        text_len = token_ids.shape[1]
+
+        text_emb = self.teacher.text_embed(token_ids)  # (B, text_len, cond_dim)
+        text_time = torch.full((batch_size, text_len), -1.0, device=self.device, dtype=xt.dtype)
+        text_position_ids = torch.arange(text_len, device=self.device).unsqueeze(0).repeat(batch_size, 1)
+
+        teacher_xt = self.to_teacher_mel(xt) if self.to_teacher_mel is not None else xt
+        noisy_latent = self.teacher.latent_embed(teacher_xt)  # (B, seq_len, cond_dim)
+        noisy_time = t[:, None].repeat(1, seq_len)
+        noisy_position_ids = torch.arange(seq_len, device=self.device).unsqueeze(0).repeat(batch_size, 1)
+
+        x = torch.cat([text_emb, noisy_latent], dim=1)
+        time = torch.cat([text_time, noisy_time], dim=1)
+        position_ids = torch.cat([text_position_ids, noisy_position_ids], dim=1)
+
+        total_len = text_len + seq_len
+        key_valid = torch.cat([token_valid, torch.ones(batch_size, seq_len, dtype=torch.bool, device=self.device)], dim=1)
+        attn_mask = key_valid[:, None, None, :].repeat(1, 1, total_len, 1)  # (B, 1, total_len, total_len), True=attend
+
+        outputs = self.teacher(
+            x=x,
+            time=time,
+            position_ids=position_ids,
+            style_prompt=style_prompt,
+            attn_mask=attn_mask,
+            use_cache=False,
+            past_key_value=None,
+        )
+        pred = outputs[0] if isinstance(outputs, tuple) else outputs
+        teacher_velocity = pred[:, text_len:]
+        if self.from_teacher_mel is not None:
+            teacher_velocity = self.from_teacher_mel(teacher_velocity)
+        return teacher_velocity
+
+    def train_epoch(self, dataloader) -> list[dict[str, float | None]]:
+        """Returns per-step {"loss": total, "loss_gt": ground-truth CFM component,
+        "loss_velocity": teacher-matching component or None} -- kept separate (not
+        just the blended total) so distilled vs. non-distilled runs can be compared
+        on the same ground-truth-loss axis. See docs/experiments/*.md."""
         self.student.train()
         epoch_losses = []
-        
+
         for batch in dataloader:
-            vocal_mel = batch["vocal_mel"].to(self.device) # Target Shape: (batch, n_mels, seq_len)
-            backing_mel = batch["backing_mel"].to(self.device) # Condition Shape: (batch, n_mels, seq_len)
-            style_anchor = batch["style_anchor"].to(self.device)
+            vocal_mel = batch["vocal_mel"].to(self.device)  # (B, n_mels, seq_len)
+            backing_mel = batch["backing_mel"].to(self.device)
+            style_anchor = batch["style_anchor"].to(self.device)  # (B, 512) precomputed MuQ-MuLan embedding
             texts = batch["text"]
-            
-            # Match channel layouts
-            # Teacher and Student expect (batch, seq_len, n_mels)
-            x1 = vocal_mel.transpose(1, 2)
+
+            x1 = vocal_mel.transpose(1, 2)  # (B, seq_len, n_mels)
             cond = backing_mel.transpose(1, 2)
-            style_anchor_t = style_anchor.transpose(1, 2)
             x0 = torch.randn_like(x1)
-            
-            # Sample timestep t in [0, 1]
+
             batch_size = x1.shape[0]
             t = torch.rand(batch_size, device=self.device)
-            t_unsqueezed = t.view(-1, 1, 1)
-            
-            # Linearly interpolate intermediate noised state xt
-            xt = (1.0 - t_unsqueezed) * x0 + t_unsqueezed * x1
-            
-            self.optimizer.zero_grad(set_to_none=True)
-            
-            # 1. Forward pass on teacher (no gradients tracked)
-            with torch.no_grad():
-                seq_len = xt.shape[1]
-                
-                # Build position_ids and noncausal attention mask for SDPA
-                pos_ids = torch.arange(seq_len, device=self.device).unsqueeze(0).repeat(batch_size, 1)
-                attn_mask = torch.ones((batch_size, seq_len), dtype=torch.bool, device=self.device)
-                attn_mask_4d = attn_mask.unsqueeze(1).unsqueeze(2).repeat(1, 1, seq_len, 1)
-                attn_mask_inverted = (~attn_mask_4d).float() * torch.finfo(xt.dtype).min
-                
-                # Expand 1D timestep to 2D time representation (batch, seq_len)
-                time_2d = t[:, None].repeat(1, seq_len)
-                
-                # Project x to latent dimension (512) using teacher's latent_embed
-                x_latent = self.teacher.latent_embed(xt)
-                
-                # The official DiffRhythm 2 teacher DiT expects style_prompt as a 512-dim embedding.
-                # In distillation, we can project style_anchor_t to 512-dim embedding or average text embedding.
-                # Project the style anchor to 512 dimensions for the teacher
-                if hasattr(self.teacher, "latent_embed"):
-                    # Use student's style projection averaged or text pool for teacher style prompt
-                    style_in = style_anchor_t.mean(dim=1)
-                    if style_in.shape[-1] != 512:
-                        # Match 512 dimension
-                        style_in = torch.nn.functional.interpolate(style_in.unsqueeze(1), size=512, mode="linear", align_corners=False).squeeze(dim=1)
-                else:
-                    style_in = torch.zeros(batch_size, 512, device=self.device)
-                
-                # Call teacher DiT forward
-                outputs = self.teacher(
-                    x=x_latent,
-                    time=time_2d,
-                    position_ids=pos_ids,
-                    style_prompt=style_in,
-                    attn_mask=attn_mask_inverted
-                )
-                
-                # Teacher DiT outputs (output, attn_weights, past_key_value)
-                v_teacher = outputs[0] if isinstance(outputs, tuple) else outputs
-                
-            # 2. Forward pass on student (gradients tracked)
-            v_student = self.student(
-                x=xt,
-                cond=cond,
-                texts=texts,
-                timestep=t,
-                style_prompt=style_anchor_t
-            )
-            
-            # 3. Compute joint distillation losses
-            # - Velocity matching loss (KL / Mean Squared Error between velocity vectors)
-            loss_velocity = torch.nn.functional.mse_loss(v_student, v_teacher)
-            
-            # - Output reconstruction loss against clean data target (Ground truth CFM loss)
-            target_velocity = x1 - x0
-            loss_gt = torch.nn.functional.mse_loss(v_student, target_velocity)
-            
-            # Total combined loss
-            loss = (1.0 - self.alpha_feature) * loss_velocity + self.alpha_feature * loss_gt
-            
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(list(self.student.parameters()), 1.0)
-            self.optimizer.step()
-            
-            epoch_losses.append(float(loss.detach().cpu()))
-            
-        return epoch_losses
+            xt = (1.0 - t.view(-1, 1, 1)) * x0 + t.view(-1, 1, 1) * x1
 
-    def _tokenize_text_for_teacher(self, texts: list[str]) -> torch.Tensor:
-        from src.models.text_to_music_diffusion import text_batch
-        return text_batch(texts, self.config, self.device)
+            self.optimizer.zero_grad(set_to_none=True)
+
+            with torch.no_grad():
+                v_teacher = self._teacher_velocity(xt, t, texts, style_anchor)
+
+            v_student = self.student(x=xt, cond=cond, texts=texts, timestep=t, style_prompt=style_anchor)
+
+            target_velocity = x1 - x0
+            loss_gt = F.mse_loss(v_student, target_velocity)
+            loss_velocity = None
+            if v_teacher is not None:
+                loss_velocity = F.mse_loss(v_student, v_teacher)
+                loss = (1.0 - self.alpha_feature) * loss_velocity + self.alpha_feature * loss_gt
+            else:
+                loss = loss_gt
+
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(list(self.student.parameters()) + self.adapter_parameters(), 1.0)
+            self.optimizer.step()
+
+            epoch_losses.append({
+                "loss": float(loss.detach().cpu()),
+                "loss_gt": float(loss_gt.detach().cpu()),
+                "loss_velocity": float(loss_velocity.detach().cpu()) if loss_velocity is not None else None,
+            })
+
+        return epoch_losses
 
 
 def run_distillation_training(
@@ -146,80 +317,38 @@ def run_distillation_training(
     learning_rate: float = 1e-4,
     device: str | None = None,
     alpha_feature: float = 0.5,
-    repo_id: str = "ASLP-lab/DiffRhythm2"
+    repo_id: str = "ASLP-lab/DiffRhythm2",
+    dim: int = 256,
+    depth: int = 4,
+    heads: int = 4,
+    ff_mult: int = 4,
 ) -> dict[str, Any]:
     torch, _, _, DataLoaderClass = _torch()
-    
+
     root = Path(dataset_dir)
     student_checkpoint = Path(student_checkpoint_path)
     selected_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    
-    # 1. Load config
-    config = MusicDiffusionConfig(**json.loads((root / "config.json").read_text(encoding="utf-8")))
-    
-    # 2. Download and load Teacher (DiffRhythm 2 Model)
-    # Determine the teacher checkpoint path (local or download from HF)
-    actual_teacher_path = None
-    if teacher_checkpoint_path is not None and Path(teacher_checkpoint_path).exists():
-        actual_teacher_path = Path(teacher_checkpoint_path)
-        print(f"Using local teacher checkpoint: {actual_teacher_path}", flush=True)
-    else:
-        print(f"Downloading pretrained teacher from Hugging Face repo '{repo_id}'...", flush=True)
-        try:
-            from huggingface_hub import hf_hub_download
-            actual_teacher_path = Path(hf_hub_download(
-                repo_id=repo_id,
-                filename="model.safetensors",
-                local_dir="./ckpt",
-                local_files_only=False
-            ))
-            print(f"Downloaded teacher model: {actual_teacher_path}", flush=True)
-        except Exception as e:
-            print(f"[WARNING] Failed to download from Hugging Face: {e}. Falling back to initialized weights.", flush=True)
 
-    # Instantiate Llama DiT backbone of DiffRhythm 2
-    try:
-        try:
-            from diffrhythm2.backbones.dit import DiT
-        except ImportError:
-            from DiffRhythm2_main.diffrhythm2.backbones.dit import DiT
-        teacher_backbone = DiT(
-            dim=512, # Reference standard DiffRhythm hidden dimension
-            depth=8,
-            heads=8,
-            mel_dim=config.n_mels
+    config = MusicDiffusionConfig(**json.loads((root / "config.json").read_text(encoding="utf-8")))
+
+    teacher_backbone, teacher_config, teacher_status = _load_teacher(repo_id, teacher_checkpoint_path, selected_device)
+    print(f"Teacher load status: {teacher_status}", flush=True)
+    teacher_mel_dim = teacher_config.get("mel_dim") if teacher_config else None
+    if teacher_backbone is not None and teacher_mel_dim is not None and teacher_mel_dim != config.n_mels:
+        print(
+            f"Teacher mel_dim={teacher_mel_dim} != dataset n_mels={config.n_mels}; "
+            "bridging with a trainable linear adapter (see docs/experiments/distillation_fix.md).",
+            flush=True,
         )
-    except ImportError:
-        # Fallback dummy model if imports are not configured
-        class DummyTeacher(nn.Module):
-            def __init__(self, mel_dim):
-                super().__init__()
-                self.proj = nn.Linear(mel_dim, mel_dim)
-            def forward(self, x, time, position_ids, style_prompt, attn_mask):
-                return self.proj(x), None, None
-        teacher_backbone = DummyTeacher(config.n_mels)
-    
-    if actual_teacher_path is not None and actual_teacher_path.exists():
-        print(f"Loading pretrained teacher weights from: {actual_teacher_path}", flush=True)
-        if actual_teacher_path.name.endswith(".safetensors"):
-            from safetensors.torch import load_file
-            teacher_payload = load_file(str(actual_teacher_path))
-        else:
-            teacher_payload = torch.load(actual_teacher_path, map_location="cpu")
-        teacher_backbone.load_state_dict(teacher_payload["model"] if "model" in teacher_payload else teacher_payload, strict=False)
-    else:
-        print("[WARNING] Teacher checkpoint not loaded. Distilling using initialized weights.", flush=True)
-        
-    # 3. Instantiate Student (MicroDiT)
-    model_student = MicroDiT(config, dim=256, depth=4, heads=4).to(selected_device)
-    
-    # 4. Setup Optimizer (only for student parameters)
-    trainable_params = [p for p in model_student.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(trainable_params, lr=learning_rate)
-    
-    # 5. Dataset and Dataloader
+
+    parse_lyrics_fn, tokenizer_status = (None, "skipped (no teacher)") if teacher_backbone is None else _load_lyric_tokenizer()
+    if teacher_backbone is not None:
+        print(f"Lyric tokenizer status: {tokenizer_status}", flush=True)
+
+    model_student = MicroDiT(config, dim=dim, depth=depth, heads=heads, ff_mult=ff_mult, style_dim=TEACHER_COND_DIM).to(selected_device)
+
     dataset = MusicDiffusionDataset(root, config)
-    
+
     def collate_fn(batch):
         vocal_mels = torch.stack([item["vocal_mel"] for item in batch])
         backing_mels = torch.stack([item["backing_mel"] for item in batch])
@@ -227,55 +356,77 @@ def run_distillation_training(
         texts = [item["text"] for item in batch]
         return {"vocal_mel": vocal_mels, "backing_mel": backing_mels, "style_anchor": style_anchors, "text": texts}
 
-    dataloader = DataLoaderClass(
-        dataset, 
-        batch_size=batch_size, 
-        shuffle=True, 
-        collate_fn=collate_fn
-    )
-    
-    # 6. Distillation loop
+    dataloader = DataLoaderClass(dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+
     trainer = KnowledgeDistillationTrainer(
         teacher_model=teacher_backbone,
         student_model=model_student,
         config=config,
-        optimizer=optimizer,
+        optimizer=None,
         device=selected_device,
-        alpha_feature=alpha_feature
+        alpha_feature=alpha_feature,
+        teacher_mel_dim=teacher_mel_dim,
+        parse_lyrics_fn=parse_lyrics_fn,
     )
-    
-    print(f"Starting distillation training for {epochs} epochs on {selected_device}...", flush=True)
+    trainable_params = [p for p in model_student.parameters() if p.requires_grad] + trainer.adapter_parameters()
+    trainer.optimizer = torch.optim.AdamW(trainable_params, lr=learning_rate)
+    distillation_active = trainer.teacher is not None and trainer.parse_lyrics_fn is not None
+    print(
+        f"Starting {'distillation' if distillation_active else 'ground-truth-only (teacher unavailable)'} "
+        f"training for {epochs} epochs on {selected_device}...",
+        flush=True,
+    )
+
     start_time = time.perf_counter()
     losses = []
-    
+    loss_curve = []
     for epoch in range(epochs):
         epoch_losses = trainer.train_epoch(dataloader)
         losses.extend(epoch_losses)
-        print(f"Epoch [{epoch+1}/{epochs}] complete. Average Loss: {sum(epoch_losses)/len(epoch_losses):.6f}", flush=True)
-        
-    final_loss = sum(losses[-10:]) / max(1, len(losses[-10:]))
-    
-    # 7. Save student checkpoint
+        avg_loss = sum(d["loss"] for d in epoch_losses) / len(epoch_losses)
+        avg_loss_gt = sum(d["loss_gt"] for d in epoch_losses) / len(epoch_losses)
+        velocity_values = [d["loss_velocity"] for d in epoch_losses if d["loss_velocity"] is not None]
+        avg_loss_velocity = sum(velocity_values) / len(velocity_values) if velocity_values else None
+        loss_curve.append({"epoch": epoch + 1, "loss": avg_loss, "loss_gt": avg_loss_gt, "loss_velocity": avg_loss_velocity})
+        print(
+            f"Epoch [{epoch+1}/{epochs}] complete. Average Loss: {avg_loss:.6f} "
+            f"(loss_gt={avg_loss_gt:.6f}, loss_velocity={avg_loss_velocity})",
+            flush=True,
+        )
+
+    final_loss = sum(d["loss"] for d in losses[-10:]) / max(1, len(losses[-10:]))
+    final_loss_gt = sum(d["loss_gt"] for d in losses[-10:]) / max(1, len(losses[-10:]))
+
     from src.models.text_to_music_diffusion import save_checkpoint
+
     save_checkpoint(
-        model_student,
-        student_checkpoint,
-        config,
-        optimizer=optimizer,
-        epoch=epochs,
-        loss=final_loss
+        model_student, student_checkpoint, config, optimizer=trainer.optimizer, epoch=epochs, loss=final_loss,
+        arch={"dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult, "style_dim": TEACHER_COND_DIM},
     )
-    
+
     report = {
         "status": "complete",
         "backend": "genmusic-vn-dit-distillation",
+        "distillation_active": distillation_active,
+        "teacher_status": teacher_status,
+        "tokenizer_status": tokenizer_status if teacher_backbone is not None else "skipped (no teacher)",
+        "teacher_mel_dim": teacher_mel_dim,
+        "student_mel_dim": config.n_mels,
+        "mel_adapter_used": trainer.to_teacher_mel is not None,
         "student_checkpoint": str(student_checkpoint.resolve()),
         "epochs": epochs,
         "step_count": len(losses),
         "final_loss": round(final_loss, 6),
-        "elapsed_seconds": round(time.perf_counter() - start_time, 3)
+        "final_loss_gt": round(final_loss_gt, 6),
+        "loss_curve": loss_curve,
+        "elapsed_seconds": round(time.perf_counter() - start_time, 3),
+        "alpha_feature": alpha_feature,
+        "dim": dim,
+        "depth": depth,
+        "heads": heads,
+        "ff_mult": ff_mult,
     }
-    
+
     (student_checkpoint.parent / "distillation_report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )

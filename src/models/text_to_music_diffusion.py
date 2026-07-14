@@ -20,9 +20,13 @@ import numpy as np
 
 @dataclass(frozen=True)
 class MusicDiffusionConfig:
-    sample_rate: int = 16_000
-    n_mels: int = 64
-    n_fft: int = 512
+    # Mel parameters intentionally match Vocos's "charactr/vocos-mel-24khz" native
+    # feature extractor exactly (sample_rate, n_fft, hop_length, n_mels, log scale).
+    # This lets predicted mels be decoded directly with no resampling/interpolation
+    # hack, which was previously destroying almost all signal (see docs/experiments).
+    sample_rate: int = 24_000
+    n_mels: int = 100
+    n_fft: int = 1024
     hop_length: int = 256
     frames_per_chunk: int = 128
     text_vocab_size: int = 256
@@ -48,6 +52,38 @@ def _torch():
     except ImportError as exc:  # pragma: no cover - dependency boundary
         raise RuntimeError("Cần cài torch để chạy model sinh nhạc tự code.") from exc
     return torch, nn
+
+
+VOCOS_MEL_CLIP = 1e-7
+
+
+def compute_mel_spectrogram(waveform, config: "MusicDiffusionConfig"):
+    """Log-mel matching Vocos's own MelSpectrogramFeatures exactly (magnitude mel,
+    power=1, natural log with 1e-7 clip, no upper clip). Any mel produced this way
+    can be handed straight to ``Vocos.decode`` with no resampling/interpolation.
+
+    ``waveform`` may be a 1D numpy array / torch tensor of samples at
+    ``config.sample_rate``. Returns a ``(n_mels, frames)`` float32 torch tensor.
+    """
+    torch, _ = _torch()
+    import torchaudio
+
+    if not isinstance(waveform, torch.Tensor):
+        waveform = torch.as_tensor(waveform, dtype=torch.float32)
+    waveform = waveform.float()
+    if waveform.dim() == 1:
+        waveform = waveform.unsqueeze(0)
+    mel_transform = torchaudio.transforms.MelSpectrogram(
+        sample_rate=config.sample_rate,
+        n_fft=config.n_fft,
+        hop_length=config.hop_length,
+        n_mels=config.n_mels,
+        center=True,
+        power=1.0,
+    )
+    mel = mel_transform(waveform)
+    log_mel = torch.log(torch.clip(mel, min=VOCOS_MEL_CLIP))
+    return log_mel.squeeze(0)
 
 
 def _sinusoidal_embedding(timesteps, dimension: int):
@@ -151,7 +187,9 @@ class ResidualDenoiser:
             state.update({f"{module_name}.{key}": value for key, value in module.state_dict().items()})
         return state
 
-    def load_state_dict(self, state):
+    def load_state_dict(self, state, strict: bool = True):
+        # `strict` accepted only for call-signature parity with nn.Module.load_state_dict
+        # (see load_checkpoint) -- submodules below are always loaded non-strictly.
         groups = {
             "input": self.input,
             "time": self.time,
@@ -245,7 +283,7 @@ def sample_mel(model: ResidualDenoiser, text: str, frames: int, *, config: Music
             sample = (sample - current_beta / (1.0 - current_cumulative).sqrt() * prediction) / current_alpha.sqrt()
             if int(index) > 0:
                 sample = sample + current_beta.sqrt() * 0.15 * torch.randn_like(sample)
-    return sample.clamp(-5.0, 3.0)
+    return sample.clamp(-12.0, 4.0)
 
 
 def build_lyric_timing(text: str, duration_seconds: float) -> list[dict[str, Any]]:
@@ -267,92 +305,82 @@ def build_lyric_timing(text: str, duration_seconds: float) -> list[dict[str, Any
     return timing
 
 
-def render_mel_to_wav(mel, destination: str | Path, config: MusicDiffusionConfig, vocoder_type: str = "istft") -> Path:
+def render_mel_to_wav(mel, destination: str | Path, config: MusicDiffusionConfig, vocoder_type: str = "vocos") -> Path:
+    """Render a log-mel tensor/array (n_mels, frames) into a WAV file.
+
+    ``vocoder_type="vocos"`` (default, recommended) decodes with the pretrained
+    neural vocoder "charactr/vocos-mel-24khz". It requires ``config`` to match
+    Vocos's native mel format exactly (sample_rate=24000, n_fft=1024,
+    hop_length=256, n_mels=100 -- the ``MusicDiffusionConfig`` defaults), so the
+    mel is handed to Vocos unmodified with no lossy resampling. If the config
+    does not match, or Vocos is unavailable, this falls back to a proper
+    multi-iteration Griffin-Lim mel inversion (``vocoder_type="griffinlim"``),
+    never to the old fabricated-phase iSTFT hack (removed: it produced audio with
+    ~0.15 correlation to the true spectrogram, i.e. near-noise -- see
+    docs/experiments/vocoder_fix.md).
+    """
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    
+    torch, _ = _torch()
+    values = mel.detach().float().cpu() if hasattr(mel, "detach") else torch.as_tensor(np.asarray(mel, dtype=np.float32))
+
+    vocos_native = (
+        config.sample_rate == 24_000 and config.n_fft == 1024 and config.hop_length == 256 and config.n_mels == 100
+    )
     if vocoder_type == "vocos":
-        try:
-            from vocos import Vocos
-            import torch
-            import torch.nn.functional as F
-            
-            # Load pretrained model
-            vocos_model = Vocos.from_pretrained("charactr/vocos-mel-24khz")
-            
-            # Get raw mel as torch tensor
-            if not isinstance(mel, torch.Tensor):
-                mel_tensor = torch.tensor(mel, dtype=torch.float32)
-            else:
-                mel_tensor = mel.detach().cpu().float()
-                
-            # Shape is [n_mels, time_steps]
-            n_mels, time_steps = mel_tensor.shape
-            
-            # Calculate target time steps (resample to 24000 Hz frame rate)
-            # Vocos expects 24000 Hz sample rate, 256 hop length.
-            # Original has config.sample_rate and config.hop_length.
-            original_fps = config.sample_rate / config.hop_length
-            vocos_fps = 24000 / 256
-            time_scale = vocos_fps / original_fps
-            target_time_steps = max(8, int(time_steps * time_scale))
-            
-            # Interpolate to shape [1, 100, target_time_steps]
-            mel_tensor = mel_tensor.unsqueeze(0).unsqueeze(0) # [1, 1, n_mels, time_steps]
-            mel_tensor = F.interpolate(
-                mel_tensor, 
-                size=(100, target_time_steps), 
-                mode='bilinear', 
-                align_corners=False
-            ).squeeze(0) # [1, 100, target_time_steps]
-            
-            # Vocos expects log-mel in range matching its training distribution.
-            # Our model output is in similar scale, so we pass it directly.
-            with torch.no_grad():
-                audio_tensor = vocos_model.decode(mel_tensor) # [1, audio_len]
-                
-            audio = audio_tensor.squeeze(0).cpu().numpy()
-            audio = audio / max(1e-6, float(np.max(np.abs(audio)))) * 0.8
-            pcm = (audio.clip(-1.0, 1.0) * 32767.0).astype(np.int16)
-            
-            with wave.open(str(destination), "wb") as stream:
-                stream.setnchannels(1)
-                stream.setsampwidth(2)
-                stream.setframerate(24000) # Output sample rate of Vocos
-                stream.writeframes(pcm.tobytes())
-            return destination.resolve()
-        except Exception as e:
-            print(f"⚠️ Warning: Vocos decoding failed ({e}). Falling back to iSTFT...")
+        if not vocos_native:
+            print(
+                f"⚠️ Warning: config ({config.sample_rate}Hz, n_fft={config.n_fft}, hop={config.hop_length}, "
+                f"n_mels={config.n_mels}) does not match Vocos's native mel format; falling back to Griffin-Lim "
+                "instead of resampling (resampling previously caused severe distortion)."
+            )
+        else:
+            try:
+                from vocos import Vocos
+
+                vocos_model = Vocos.from_pretrained("charactr/vocos-mel-24khz")
+                with torch.no_grad():
+                    audio_tensor = vocos_model.decode(values.unsqueeze(0))
+                audio = audio_tensor.squeeze(0).cpu().numpy()
+                return _write_wav(audio, destination, config.sample_rate)
+            except Exception as e:
+                print(f"⚠️ Warning: Vocos decoding failed ({e}). Falling back to Griffin-Lim...")
 
     try:
         import librosa
     except ImportError as exc:  # pragma: no cover - dependency boundary
         raise RuntimeError("Cần librosa để đổi mel thành WAV.") from exc
-    values = mel.detach().float().cpu().numpy() if hasattr(mel, "detach") else np.asarray(mel, dtype=np.float32)
-    values = np.exp(np.clip(values, -5.0, 3.0)).astype(np.float32)
-    mel_filter = librosa.filters.mel(sr=config.sample_rate, n_fft=config.n_fft, n_mels=config.n_mels, dtype=np.float32)
-    linear_power = np.maximum(0.0, np.linalg.pinv(mel_filter) @ values)
-    magnitude = np.sqrt(linear_power + 1e-7)
-    frequencies = np.linspace(0.0, config.sample_rate / 2.0, magnitude.shape[0], dtype=np.float32)[:, None]
-    frame_times = np.arange(magnitude.shape[1], dtype=np.float32)[None, :] * config.hop_length / config.sample_rate
-    phase = 2.0 * np.pi * frequencies * frame_times
-    phase += np.linspace(0.0, np.pi, magnitude.shape[0], dtype=np.float32)[:, None]
-    audio = librosa.istft(magnitude * np.exp(1j * phase), hop_length=config.hop_length, n_fft=config.n_fft)
+    # Our mels use Vocos's convention: log(magnitude_mel), power=1. Recover
+    # magnitude and run real iterative Griffin-Lim phase estimation (NOT a
+    # fabricated linear phase ramp) via librosa's mel pseudo-inverse + Griffin-Lim.
+    magnitude_mel = np.exp(values.numpy().astype(np.float32))
+    audio = librosa.feature.inverse.mel_to_audio(
+        magnitude_mel, sr=config.sample_rate, n_fft=config.n_fft, hop_length=config.hop_length, power=1.0, n_iter=64,
+    )
+    return _write_wav(audio, destination, config.sample_rate)
+
+
+def _write_wav(audio: np.ndarray, destination: Path, sample_rate: int) -> Path:
     audio = audio / max(1e-6, float(np.max(np.abs(audio)))) * 0.8
     pcm = (audio.clip(-1.0, 1.0) * 32767.0).astype(np.int16)
     with wave.open(str(destination), "wb") as stream:
         stream.setnchannels(1)
         stream.setsampwidth(2)
-        stream.setframerate(config.sample_rate)
+        stream.setframerate(sample_rate)
         stream.writeframes(pcm.tobytes())
     return destination.resolve()
 
 
-def save_checkpoint(model: ResidualDenoiser, path: str | Path, config: MusicDiffusionConfig, *, optimizer=None, epoch: int = 0, loss: float | None = None) -> Path:
+def save_checkpoint(model: ResidualDenoiser, path: str | Path, config: MusicDiffusionConfig, *, optimizer=None, epoch: int = 0, loss: float | None = None, arch: dict[str, int] | None = None) -> Path:
     torch, _ = _torch()
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"config": asdict(config), "model": model.state_dict(), "epoch": epoch, "loss": loss}
+    # Exclude the frozen pretrained RoBERTa text encoder (~1.1GB of never-updated
+    # weights) from the saved checkpoint -- it is always re-downloaded fresh from
+    # HuggingFace by PretrainedRobertaEncoder.__init__ on load, so saving it here
+    # only bloats every checkpoint by ~1.1GB for no benefit.
+    model_state = {k: v for k, v in model.state_dict().items() if ".roberta." not in k}
+    payload = {"config": asdict(config), "model": model_state, "epoch": epoch, "loss": loss, "arch": arch or {}}
     if optimizer is not None:
         payload["optimizer"] = optimizer.state_dict()
     torch.save(payload, destination)
@@ -363,18 +391,31 @@ def load_checkpoint(path: str | Path, *, device="cpu", model_type: str | None = 
     torch, _ = _torch()
     payload = torch.load(path, map_location=device, weights_only=False)
     config = MusicDiffusionConfig(**payload["config"])
-    
+
     # Detect model type based on saved state dict keys
     state_keys = payload["model"].keys()
     is_dit = any("transformer_blocks" in k or "text_encoder" in k for k in state_keys)
-    
+
     if model_type == "dit" or (model_type is None and is_dit):
         from .dit_transformer import MicroDiT
-        model = MicroDiT(config, roberta_model=roberta_model).to(device)
+        # Reconstruct with the exact architecture size the checkpoint was trained
+        # with (defaults match the old hardcoded values, for checkpoints saved
+        # before "arch" was tracked) -- a size mismatch here would silently fail
+        # to load most weights via load_state_dict(strict=False).
+        arch = payload.get("arch") or {}
+        model = MicroDiT(
+            config, roberta_model=roberta_model,
+            dim=arch.get("dim", 256), depth=arch.get("depth", 4),
+            heads=arch.get("heads", 4), ff_mult=arch.get("ff_mult", 4),
+            style_dim=arch.get("style_dim", 512),
+        ).to(device)
     else:
         model = make_model(config).to(device)
         
-    model.load_state_dict(payload["model"])
+    # strict=False: checkpoints deliberately omit the frozen RoBERTa encoder
+    # weights (see save_checkpoint) -- those are already loaded fresh from
+    # HuggingFace by the model constructor above.
+    model.load_state_dict(payload["model"], strict=False)
     return model, config, payload
 
 

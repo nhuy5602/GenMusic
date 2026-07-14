@@ -81,22 +81,28 @@ class InputEmbedding(nn.Module):
 
 
 class AudioStyleEncoder(nn.Module):
-    """Encodes a Mel spectrogram style anchor (audio prompt) into a style representation vector."""
-    def __init__(self, n_mels: int, dim: int):
+    """Projects a precomputed MuQ-MuLan audio/style embedding (the same 512-dim
+    contrastive audio-style space DiffRhythm2's teacher itself conditions on)
+    into the model's internal conditioning dimension.
+
+    This replaced an earlier version that average-pooled a raw mel crop of the
+    backing track with an untrained Conv1D -- that threw away all temporal
+    structure and had nothing to do with any learned notion of musical style.
+    Using the real MuLan embedding both gives the student a far richer style
+    signal and lets the *same* embedding be handed unmodified to the teacher
+    during distillation (see docs/experiments/distillation_fix.md).
+    """
+    def __init__(self, style_dim: int, dim: int):
         super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv1d(n_mels, dim, kernel_size=3, padding=1),
+        self.fc = nn.Sequential(
+            nn.Linear(style_dim, dim),
             nn.SiLU(),
-            nn.AdaptiveAvgPool1d(1)
+            nn.Linear(dim, dim),
         )
-        self.fc = nn.Linear(dim, dim)
-        
+
     def forward(self, style_anchor: torch.Tensor) -> torch.Tensor:
-        # Expected input shape: (batch_size, seq_len, n_mels)
-        # Transpose to channel-first (batch_size, n_mels, seq_len) for Conv1D
-        x = style_anchor.transpose(1, 2)
-        x = self.conv(x).squeeze(-1) # (batch_size, dim)
-        return self.fc(x)
+        # Expected input shape: (batch_size, style_dim) -- a single embedding vector per item.
+        return self.fc(style_anchor)
 
 
 class AdaLayerNormZeroFinal(nn.Module):
@@ -122,16 +128,18 @@ class MicroDiT(nn.Module):
         depth: int = 4,
         heads: int = 4,
         ff_mult: int = 4,
+        style_dim: int = 512,
     ):
         super().__init__()
         self.config = config
         self.dim = dim
         self.cond_dim = dim
-        
+        self.style_dim = style_dim
+
         # Core embeddings and adapters
         self.text_encoder = PretrainedRobertaEncoder(model_name=roberta_model, out_dim=dim)
         self.time_embed = TimestepEmbedding(self.cond_dim)
-        self.audio_style_encoder = AudioStyleEncoder(config.n_mels, dim)
+        self.audio_style_encoder = AudioStyleEncoder(style_dim, dim)
         self.style_embed = nn.Sequential(
             nn.Linear(dim, self.cond_dim),
             nn.SiLU(),

@@ -3,11 +3,15 @@ import json
 import os
 import subprocess
 import shutil
+import sys
 from pathlib import Path
 import numpy as np
 import librosa
 import torch
 import whisper
+
+sys.path.append(str(Path(__file__).resolve().parents[2]))
+from src.models.text_to_music_diffusion import MusicDiffusionConfig, compute_mel_spectrogram
 
 # Configure FFMPEG path using imageio_ffmpeg so that whisper/demucs can find it on Windows
 try:
@@ -22,11 +26,53 @@ try:
 except ImportError:
     pass
 
-# Default parameters
-SAMPLE_RATE = 16000
-N_MELS = 64
-N_FFT = 512
-HOP_LENGTH = 256
+# Mel parameters MUST match Vocos's native "charactr/vocos-mel-24khz" feature
+# extractor exactly (via compute_mel_spectrogram) so that training targets are
+# directly decodable by Vocos at inference with no resampling. See
+# docs/experiments/vocoder_fix.md for why the previous 16kHz/64-mel/log-power
+# convention produced badly distorted audio.
+_MEL_CONFIG = MusicDiffusionConfig()
+SAMPLE_RATE = _MEL_CONFIG.sample_rate
+N_MELS = _MEL_CONFIG.n_mels
+N_FFT = _MEL_CONFIG.n_fft
+HOP_LENGTH = _MEL_CONFIG.hop_length
+STYLE_EMBED_DIM = 512  # MuQ-MuLan / DiffRhythm2 teacher cond_dim
+
+_mulan_model = None
+
+
+def _load_mulan(device: str = "cpu"):
+    """Lazily load MuQ-MuLan (real contrastive audio-style embedding model used
+    by the DiffRhythm2 teacher). Requires the `muq` package + internet on first
+    use to fetch weights -- only available in the Kaggle preprocessing kernel.
+    Returns None if unavailable so preprocessing degrades to a zero style vector
+    instead of crashing (e.g. for local/offline smoke runs).
+    """
+    global _mulan_model
+    if _mulan_model is None:
+        try:
+            from muq import MuQMuLan
+            _mulan_model = MuQMuLan.from_pretrained("OpenMuQ/MuQ-MuLan-large").to(device).eval()
+        except Exception as e:
+            print(f"[WARNING] MuQ-MuLan unavailable ({e}); style embeddings will be zero vectors.", flush=True)
+            _mulan_model = False
+    return _mulan_model or None
+
+
+def compute_style_embedding(waveform_24k: np.ndarray, device: str = "cpu") -> torch.Tensor:
+    """Real MuQ-MuLan style/genre embedding of a song, computed once at
+    preprocess time and reused as the "Audio Style Anchor" for both the student
+    and (during distillation) the teacher -- see docs/experiments/distillation_fix.md.
+    """
+    mulan = _load_mulan(device)
+    if mulan is None:
+        return torch.zeros(STYLE_EMBED_DIM)
+    with torch.no_grad():
+        clip = waveform_24k[: 24_000 * 10]  # MuLan is trained on ~10s clips
+        wav = torch.tensor(clip, dtype=torch.float32, device=device).unsqueeze(0)
+        embedding = mulan(wavs=wav)
+    return embedding.squeeze(0).float().cpu()
+
 
 def run_demucs_separation(audio_path: Path, output_dir: Path) -> tuple[Path, Path]:
     """Separate vocals and backing using Demucs CLI."""
@@ -54,59 +100,73 @@ def run_demucs_separation(audio_path: Path, output_dir: Path) -> tuple[Path, Pat
     
     return None, None
 
-def process_file(audio_path: Path, output_dir: Path, whisper_model, keep_separated: bool = False) -> dict:
+def process_file(audio_path: Path, output_dir: Path, whisper_model, keep_separated: bool = False, device: str = "cpu") -> dict:
     sample_id = audio_path.stem
     print(f"\n==================== PROCESSING {sample_id} ====================", flush=True)
-    
+
     separated_dir = output_dir / "separated"
     mels_dir = output_dir / "mels"
-    pitch_dir = output_dir / "pitch"
-    
-    for d in (separated_dir, mels_dir, pitch_dir):
+
+    for d in (separated_dir, mels_dir):
         d.mkdir(parents=True, exist_ok=True)
-        
+
+    # 0. Style embedding (MuQ-MuLan) of the full original song -- the same
+    # audio-style space the DiffRhythm2 teacher itself conditions on.
+    print("-> Computing MuQ-MuLan style embedding...", flush=True)
+    y_style, _ = librosa.load(audio_path, sr=SAMPLE_RATE, duration=10.0)
+    style_embedding = compute_style_embedding(y_style, device=device)
+    style_pt_path = mels_dir / f"{sample_id}_style.pt"
+    torch.save(style_embedding, style_pt_path)
+
     # 1. Stem separation
     vocals_wav, backing_wav = run_demucs_separation(audio_path, separated_dir)
-    
+
     # 2. Backing processing
-    if backing_wav and backing_wav.exists():
+    has_backing_stem = bool(backing_wav and backing_wav.exists())
+    if has_backing_stem:
         y_backing, sr = librosa.load(backing_wav, sr=SAMPLE_RATE)
     else:
         print("-> Using raw audio as backing track...", flush=True)
         y_backing, sr = librosa.load(audio_path, sr=SAMPLE_RATE)
         vocals_wav = None
-        
-    mel_backing = librosa.feature.melspectrogram(
-        y=y_backing, sr=sr, n_fft=N_FFT, hop_length=HOP_LENGTH, n_mels=N_MELS, power=2.0
-    )
-    log_mel_backing = np.clip(np.log(np.clip(mel_backing, 1e-5, None)), -5.0, 3.0)
-    backing_tensor = torch.from_numpy(log_mel_backing).float()
+
+    backing_tensor = compute_mel_spectrogram(y_backing, _MEL_CONFIG)
     frames = backing_tensor.shape[1]
-    
+
     backing_pt_path = mels_dir / f"{sample_id}_backing.pt"
     torch.save(backing_tensor, backing_pt_path)
 
-    tempo, _ = librosa.beat.beat_track(y=y_backing, sr=sr)
-    bpm = int(tempo[0]) if hasattr(tempo, "__len__") else int(tempo)
+    try:
+        # librosa's beat_track calls scipy.signal.hann, which newer scipy releases
+        # removed (moved to scipy.signal.windows.hann) -- depending on exactly which
+        # scipy/librosa combo an environment resolves to (e.g. after installing a
+        # third-party requirements.txt that repins scipy), this raises AttributeError.
+        # BPM is cosmetic metadata (folded into the "style" text prompt), not required
+        # for training, so fall back rather than losing the whole record over it.
+        tempo, _ = librosa.beat.beat_track(y=y_backing, sr=sr)
+        bpm = int(tempo[0]) if hasattr(tempo, "__len__") else int(tempo)
+    except Exception as e:
+        print(f"[WARNING] beat_track failed ({e}); defaulting bpm=120.", flush=True)
+        bpm = 120
 
     # 3. Vocal transcription & features extraction
     lyrics = "Instrumental track."
     vocal_tensor = torch.zeros_like(backing_tensor)
-    
-    if vocals_wav and vocals_wav.exists():
+    has_vocals = bool(vocals_wav and vocals_wav.exists())
+
+    if has_vocals:
         y_vocal, _ = librosa.load(vocals_wav, sr=SAMPLE_RATE)
-        
+
         # Whisper Transcription
         print("-> Transcribing lyrics using Whisper ASR...", flush=True)
         asr_res = whisper_model.transcribe(str(vocals_wav), language="vi", word_timestamps=True)
         lyrics = asr_res["text"].strip()
-        
-        mel_vocal = librosa.feature.melspectrogram(
-            y=y_vocal[:frames * HOP_LENGTH], sr=sr, n_fft=N_FFT, hop_length=HOP_LENGTH, n_mels=N_MELS, power=2.0
-        )
-        log_mel_vocal = np.clip(np.log(np.clip(mel_vocal, 1e-5, None)), -5.0, 3.0)
-        vocal_tensor = torch.from_numpy(log_mel_vocal).float()
-        
+
+        vocal_tensor = compute_mel_spectrogram(y_vocal[: frames * HOP_LENGTH], _MEL_CONFIG)
+        vocal_tensor = vocal_tensor[:, :frames]
+        if vocal_tensor.shape[1] < frames:
+            vocal_tensor = torch.nn.functional.pad(vocal_tensor, (0, frames - vocal_tensor.shape[1]))
+
     # Save outputs
     vocal_pt_path = mels_dir / f"{sample_id}_vocal.pt"
     torch.save(vocal_tensor, vocal_pt_path)
@@ -123,8 +183,11 @@ def process_file(audio_path: Path, output_dir: Path, whisper_model, keep_separat
         "style": f"Vietnamese music, {bpm} BPM, emotional melody",
         "bpm": bpm,
         "frames": frames,
+        "has_vocals": has_vocals,
+        "demucs_separated": has_backing_stem,
         "backing_mel_path": f"mels/{sample_id}_backing.pt",
-        "vocal_mel_path": f"mels/{sample_id}_vocal.pt"
+        "vocal_mel_path": f"mels/{sample_id}_vocal.pt",
+        "style_embed_path": f"mels/{sample_id}_style.pt"
     }
 
 def preprocess_raw_audio(input_path: str | Path, output_path: str | Path, whisper_model_name: str = "base", keep_separated_count: int = 10, max_files: int | None = None) -> dict:
@@ -141,23 +204,34 @@ def preprocess_raw_audio(input_path: str | Path, output_path: str | Path, whispe
         print(f"[ERROR] No raw audio files found in {raw_dir.resolve()}. Please supply input wav/mp3 files.", flush=True)
         return {"status": "failed", "error": "No raw audio files found"}
 
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Loading Whisper model ({whisper_model_name})...", flush=True)
-    whisper_model = whisper.load_model(whisper_model_name)
-    
+    whisper_model = whisper.load_model(whisper_model_name, device=device)
+
     records = []
+    failures = []
     for idx, f in enumerate(raw_files, start=1):
         try:
             print(f"\n-> [{idx}/{total_files}] Processing: {f.name}", flush=True)
-            record = process_file(f, output_dir, whisper_model, keep_separated=(idx <= keep_separated_count))
+            record = process_file(f, output_dir, whisper_model, keep_separated=(idx <= keep_separated_count), device=device)
             records.append(record)
         except Exception as e:
+            import traceback
+
+            tb = traceback.format_exc()
             print(f"[ERROR] processing [{idx}/{total_files}] {f.name}: {e}", flush=True)
-            
+            # Print() output is not reliably captured by Kaggle's log download for
+            # scripts that shell out to a subprocess -- persist failures to the
+            # returned report (written to disk) so they survive regardless.
+            failures.append({"file": f.name, "error": str(e), "traceback": tb})
+
     # Write metadata index
     records_jsonl_path = output_dir / "records.jsonl"
     with records_jsonl_path.open("w", encoding="utf-8") as out:
         for r in records:
             out.write(json.dumps(r, ensure_ascii=False) + "\n")
+    if failures:
+        (output_dir / "preprocess_failures.json").write_text(json.dumps(failures, ensure_ascii=False, indent=2), encoding="utf-8")
             
     # Write dataset config
     config_data = {
@@ -169,7 +243,13 @@ def preprocess_raw_audio(input_path: str | Path, output_path: str | Path, whispe
     (output_dir / "config.json").write_text(json.dumps(config_data, indent=2))
     
     print(f"\n🎉 Preprocessing completed! Dataset generated at: {output_dir.resolve()}", flush=True)
-    return {"status": "completed", "dataset_path": str(output_dir.resolve()), "records_count": len(records)}
+    return {
+        "status": "completed" if records else "failed",
+        "dataset_path": str(output_dir.resolve()),
+        "records_count": len(records),
+        "failed_count": len(failures),
+        "failures": failures[:3],  # first few tracebacks inline for visibility without opening another file
+    }
 
 
 def main():
