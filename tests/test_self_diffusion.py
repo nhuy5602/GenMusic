@@ -9,8 +9,10 @@ from pathlib import Path
 from src.data.vietnamese_g2p import vietnamese_g2p
 from src.data.vietnamese_text import normalize_vietnamese_lyrics
 from src.integrations.kaggle_auto import DEFAULT_KAGGLE_DATASET_SLUG, DEFAULT_MODEL, KaggleJobConfig, resolve_training_dataset_ref, run_local_generation, stage_text_to_music_job, validate_dataset_ref
-from src.models.text_to_music_diffusion import build_lyric_timing, encode_text
+from src.models.text_to_music_diffusion import build_lyric_timing, encode_text, estimate_minimum_lyric_duration
+from src.training.distill_training import _load_teacher
 from src.training.self_diffusion import create_random_dataset, train_model, validate_dataset
+from server import PROJECT_ROOT, WEB_ROOT, _is_relative_to
 
 
 class SelfDiffusionTests(unittest.TestCase):
@@ -21,6 +23,30 @@ class SelfDiffusionTests(unittest.TestCase):
             validation = validate_dataset(Path(temp) / "dataset")
             self.assertEqual(validation["status"], "valid")
 
+    def test_validation_checks_both_separated_stems(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "dataset"
+            create_random_dataset(root, count=1, frames=32)
+            import torch
+
+            backing_path = root / "mels" / "backing.pt"
+            tensor = torch.load(root / "mels" / "sample_00000.pt", weights_only=True)
+            torch.save(tensor, backing_path)
+            (root / "records.jsonl").write_text(
+                json.dumps({
+                    "id": "separated",
+                    "text": "Mot cau hat.",
+                    "style": "pop",
+                    "frames": 32,
+                    "vocal_mel_path": "mels/vocal.pt",
+                    "backing_mel_path": "mels/backing.pt",
+                }) + "\n",
+                encoding="utf-8",
+            )
+            validation = validate_dataset(root)
+            self.assertEqual(validation["status"], "invalid")
+            self.assertTrue(any(item["stem"] == "vocal" for item in validation["missing"]))
+
     def test_training_and_local_generation(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -30,6 +56,7 @@ class SelfDiffusionTests(unittest.TestCase):
             self.assertEqual(report["status"], "complete")
             generated = run_local_generation(text="Mưa rơi nhẹ nhàng.", style="soft piano", output_dir=root / "audio", duration_seconds=1, checkpoint=root / "model.pt", steps=1)
             self.assertEqual(generated["status"], "complete")
+            self.assertTrue(generated["duration_auto_adjusted"])
             self.assertTrue(Path(generated["audio_path"]).exists())
 
     def test_kaggle_job_contains_only_project_source(self) -> None:
@@ -54,14 +81,31 @@ class SelfDiffusionTests(unittest.TestCase):
             self.assertIn("records.jsonl", script)
             self.assertIn("copytree", script)
             self.assertNotIn("make-random-dataset", script)
+            self.assertNotIn("git clone", script.lower())
+            self.assertNotIn("raw.", script.lower())
 
     def test_dataset_ref_contract(self) -> None:
         self.assertEqual(resolve_training_dataset_ref("alice/music-data"), "alice/music-data")
         self.assertEqual(validate_dataset_ref("alice/music-data"), "alice/music-data")
         with self.assertRaises(ValueError):
             validate_dataset_ref("not-a-dataset-ref")
-            self.assertNotIn("git clone", script.lower())
-            self.assertNotIn("raw.", script.lower())
+
+    def test_server_uses_project_root_and_rejects_escape(self) -> None:
+        self.assertEqual(PROJECT_ROOT, Path(__file__).resolve().parents[1])
+        self.assertEqual(WEB_ROOT, PROJECT_ROOT / "web")
+        self.assertTrue(_is_relative_to(WEB_ROOT / "index.html", WEB_ROOT))
+        self.assertFalse(_is_relative_to(WEB_ROOT.parent / "secret.txt", WEB_ROOT))
+
+    def test_distillation_reports_honest_fallback_when_teacher_unavailable(self) -> None:
+        # Without the DiffRhythm2 repo vendored on PYTHONPATH (not the case in this
+        # test environment), _load_teacher must return None + a status message --
+        # never a silent fake stand-in (the previous "DummyTeacher" behavior this
+        # replaced). See docs/experiments/distillation_fix.md.
+        teacher, model_config, status = _load_teacher("ASLP-lab/DiffRhythm2", None, "cpu")
+        self.assertIsNone(teacher)
+        self.assertIsNone(model_config)
+        self.assertIsInstance(status, str)
+        self.assertTrue(status)
 
     def test_vietnamese_text_contract(self) -> None:
         self.assertIn("mười hai", normalize_vietnamese_lyrics("Mưa 12 ngày, ko về."))
@@ -74,6 +118,10 @@ class SelfDiffusionTests(unittest.TestCase):
         timing = build_lyric_timing("Một câu chậm.\nMột câu khác.", 8)
         self.assertEqual(len(timing), 2)
         self.assertAlmostEqual(timing[-1]["end_seconds"], 8.0, places=3)
+
+
+    def test_minimum_duration_prevents_rushed_lyrics(self) -> None:
+        self.assertGreaterEqual(estimate_minimum_lyric_duration("Mot ngay moi bat dau, anh van nho em."), 4.0)
 
 
 if __name__ == "__main__":

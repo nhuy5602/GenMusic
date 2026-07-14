@@ -8,7 +8,10 @@ from pathlib import Path
 import numpy as np
 import librosa
 import torch
-import whisper
+try:
+    import whisper
+except ImportError:  # Optional for the fast full-mix preprocessing mode (--skip-asr).
+    whisper = None
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from src.models.text_to_music_diffusion import MusicDiffusionConfig, compute_mel_spectrogram
@@ -30,7 +33,9 @@ except ImportError:
 # extractor exactly (via compute_mel_spectrogram) so that training targets are
 # directly decodable by Vocos at inference with no resampling. See
 # docs/experiments/vocoder_fix.md for why the previous 16kHz/64-mel/log-power
-# convention produced badly distorted audio.
+# convention produced badly distorted audio. Unlike an earlier iteration of
+# this file, this is no longer an opt-in mode -- there is no non-Vocos-native
+# mel format anymore, since it was the direct cause of that distortion.
 _MEL_CONFIG = MusicDiffusionConfig()
 SAMPLE_RATE = _MEL_CONFIG.sample_rate
 N_MELS = _MEL_CONFIG.n_mels
@@ -74,39 +79,99 @@ def compute_style_embedding(waveform_24k: np.ndarray, device: str = "cpu") -> to
     return embedding.squeeze(0).float().cpu()
 
 
-def run_demucs_separation(audio_path: Path, output_dir: Path) -> tuple[Path, Path]:
-    """Separate vocals and backing using Demucs CLI."""
+def run_demucs_separation(audio_path: Path, output_dir: Path, device: str = "auto") -> tuple[Path | None, Path | None]:
+    """Separate vocals and backing using Demucs CLI. Resumable (skips if stems
+    already exist) and retries cuda -> cpu on failure."""
+    model_name = "htdemucs"
+    song_folder = output_dir / model_name / audio_path.stem
+    vocals_file = song_folder / "vocals.wav"
+    backing_file = song_folder / "no_vocals.wav"
+    if vocals_file.exists() and backing_file.exists():
+        print(f"-> Reusing separated stems for: {audio_path.name}", flush=True)
+        return vocals_file, backing_file
+
     print(f"-> Separating vocal/backing stems for: {audio_path.name}...", flush=True)
-    try:
-        subprocess.run(
-            ["demucs", "--two-stems=vocals", "-o", str(output_dir), str(audio_path)],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-        
-        # Demucs default structure: output_dir/htdemucs/song_stem_name/
-        model_name = "htdemucs"
-        song_folder = output_dir / model_name / audio_path.stem
-        
-        vocals_file = song_folder / "vocals.wav"
-        backing_file = song_folder / "no_vocals.wav"
-        
-        if vocals_file.exists() and backing_file.exists():
-            return vocals_file, backing_file
-            
-    except Exception as e:
-        print(f"[WARNING] Demucs separation failed/not found: {e}. Falling back to treating audio as instrumental (no vocal split).", flush=True)
-    
+    requested = (device or "auto").lower()
+    devices = [requested] if requested != "auto" else (["cuda", "cpu"] if torch.cuda.is_available() else ["cpu"])
+    last_error = "unknown error"
+    for selected_device in devices:
+        try:
+            command = [sys.executable, "-m", "demucs.separate", "--two-stems=vocals", "-o", str(output_dir)]
+            if selected_device:
+                command.extend(["-d", selected_device])
+            command.append(str(audio_path))
+            subprocess.run(command, check=True)
+            if vocals_file.exists() and backing_file.exists():
+                return vocals_file, backing_file
+            last_error = f"Demucs completed on {selected_device} without producing both stems."
+        except Exception as exc:
+            last_error = str(exc)
+            if selected_device != devices[-1]:
+                print(f"[WARNING] Demucs {selected_device} failed; retrying on {devices[-1]}.", flush=True)
+
+    print(f"[WARNING] Demucs separation failed: {last_error}. Falling back to raw mix.", flush=True)
     return None, None
 
-def process_file(audio_path: Path, output_dir: Path, whisper_model, keep_separated: bool = False, device: str = "cpu") -> dict:
+
+def run_demucs_batch(audio_paths: list[Path], output_dir: Path, device: str = "auto") -> bool:
+    """Separate a small batch so Demucs loads its model once per batch instead
+    of once per file -- meaningfully faster for larger datasets."""
+    if not audio_paths:
+        return True
+
+    model_name = "htdemucs"
+    pending = [
+        path for path in audio_paths
+        if not (output_dir / model_name / path.stem / "vocals.wav").exists()
+        or not (output_dir / model_name / path.stem / "no_vocals.wav").exists()
+    ]
+    if not pending:
+        print(f"-> Reusing separated stems for batch ({len(audio_paths)} files).", flush=True)
+        return True
+
+    requested = (device or "auto").lower()
+    devices = [requested] if requested != "auto" else (["cuda", "cpu"] if torch.cuda.is_available() else ["cpu"])
+    for selected_device in devices:
+        command = [sys.executable, "-m", "demucs.separate", "--two-stems=vocals", "-o", str(output_dir)]
+        if selected_device:
+            command.extend(["-d", selected_device])
+        command.extend(str(path) for path in pending)
+        print(f"-> Demucs batch {len(pending)} file(s) on {selected_device}; progress will appear below...", flush=True)
+        try:
+            subprocess.run(command, check=True)
+            missing = [
+                path for path in pending
+                if not (output_dir / model_name / path.stem / "vocals.wav").exists()
+                or not (output_dir / model_name / path.stem / "no_vocals.wav").exists()
+            ]
+            if not missing:
+                return True
+            print(f"[WARNING] Demucs batch missed {len(missing)} file(s).", flush=True)
+        except Exception as exc:
+            print(f"[WARNING] Demucs batch on {selected_device} failed: {exc}", flush=True)
+            if selected_device != devices[-1]:
+                print(f"[WARNING] Retrying Demucs batch on {devices[-1]}.", flush=True)
+
+    print("[WARNING] Falling back to per-file Demucs attempts for this batch.", flush=True)
+    return False
+
+
+def process_file(
+    audio_path: Path,
+    output_dir: Path,
+    whisper_model,
+    keep_separated: bool = False,
+    *,
+    use_demucs: bool = True,
+    transcribe: bool = True,
+    demucs_device: str = "auto",
+    device: str = "cpu",
+) -> dict:
     sample_id = audio_path.stem
     print(f"\n==================== PROCESSING {sample_id} ====================", flush=True)
 
     separated_dir = output_dir / "separated"
     mels_dir = output_dir / "mels"
-
     for d in (separated_dir, mels_dir):
         d.mkdir(parents=True, exist_ok=True)
 
@@ -119,7 +184,7 @@ def process_file(audio_path: Path, output_dir: Path, whisper_model, keep_separat
     torch.save(style_embedding, style_pt_path)
 
     # 1. Stem separation
-    vocals_wav, backing_wav = run_demucs_separation(audio_path, separated_dir)
+    vocals_wav, backing_wav = run_demucs_separation(audio_path, separated_dir, demucs_device) if use_demucs else (None, None)
 
     # 2. Backing processing
     has_backing_stem = bool(backing_wav and backing_wav.exists())
@@ -150,17 +215,38 @@ def process_file(audio_path: Path, output_dir: Path, whisper_model, keep_separat
         bpm = 120
 
     # 3. Vocal transcription & features extraction
-    lyrics = "Instrumental track."
-    vocal_tensor = torch.zeros_like(backing_tensor)
-    has_vocals = bool(vocals_wav and vocals_wav.exists())
+    has_vocal = bool(vocals_wav and vocals_wav.exists())
+    lyrics = f"Vietnamese music track {sample_id}."
+    lyric_segments = []
+    # Only claim the vocal target equals the backing mix when stem separation was
+    # deliberately skipped for the whole dataset (--skip-demucs, a fast/approximate
+    # mode). If Demucs was attempted but failed for just this one song, fall back to
+    # silence instead -- claiming "vocal == whole mix" would train the model to treat
+    # accompaniment as a vocal target, which is wrong when the rest of the dataset has
+    # real separated vocals.
+    vocal_tensor = backing_tensor.clone() if not use_demucs else torch.zeros_like(backing_tensor)
 
-    if has_vocals:
+    if has_vocal:
         y_vocal, _ = librosa.load(vocals_wav, sr=SAMPLE_RATE)
 
-        # Whisper Transcription
-        print("-> Transcribing lyrics using Whisper ASR...", flush=True)
-        asr_res = whisper_model.transcribe(str(vocals_wav), language="vi", word_timestamps=True)
-        lyrics = asr_res["text"].strip()
+        if transcribe and whisper_model is not None:
+            print("-> Transcribing lyrics using Whisper ASR...", flush=True)
+            asr_res = whisper_model.transcribe(
+                str(vocals_wav),
+                language="vi",
+                word_timestamps=True,
+                fp16=(str(next(whisper_model.parameters()).device).startswith("cuda")),
+            )
+            lyrics = asr_res["text"].strip()
+            lyric_segments = [
+                {
+                    "start": round(float(segment.get("start", 0.0)), 3),
+                    "end": round(float(segment.get("end", 0.0)), 3),
+                    "text": str(segment.get("text", "")).strip(),
+                }
+                for segment in asr_res.get("segments", [])
+                if str(segment.get("text", "")).strip()
+            ]
 
         vocal_tensor = compute_mel_spectrogram(y_vocal[: frames * HOP_LENGTH], _MEL_CONFIG)
         vocal_tensor = vocal_tensor[:, :frames]
@@ -180,50 +266,94 @@ def process_file(audio_path: Path, output_dir: Path, whisper_model, keep_separat
     return {
         "id": sample_id,
         "text": lyrics,
+        "segments": lyric_segments,
         "style": f"Vietnamese music, {bpm} BPM, emotional melody",
         "bpm": bpm,
         "frames": frames,
-        "has_vocals": has_vocals,
+        "has_vocal": has_vocal,
+        "vocal_source": "demucs" if has_vocal else ("raw_mix_fallback" if not use_demucs else "silence_fallback"),
         "demucs_separated": has_backing_stem,
         "backing_mel_path": f"mels/{sample_id}_backing.pt",
         "vocal_mel_path": f"mels/{sample_id}_vocal.pt",
-        "style_embed_path": f"mels/{sample_id}_style.pt"
+        "style_embed_path": f"mels/{sample_id}_style.pt",
     }
 
-def preprocess_raw_audio(input_path: str | Path, output_path: str | Path, whisper_model_name: str = "base", keep_separated_count: int = 10, max_files: int | None = None) -> dict:
+
+def preprocess_raw_audio(
+    input_path: str | Path,
+    output_path: str | Path,
+    whisper_model_name: str = "base",
+    keep_separated_count: int = 10,
+    max_files: int | None = None,
+    *,
+    use_demucs: bool = True,
+    transcribe: bool = True,
+    demucs_device: str = "auto",
+    whisper_device: str = "auto",
+) -> dict:
     raw_dir = Path(input_path)
     output_dir = Path(output_path)
-    
-    raw_files = list(raw_dir.glob("*.wav")) + list(raw_dir.glob("*.mp3"))
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    raw_files = sorted(
+        {path for pattern in ("*.wav", "*.mp3") for path in raw_dir.rglob(pattern)},
+        key=lambda path: str(path).lower(),
+    )
     if max_files is not None:
         raw_files = raw_files[:max_files]
-        
+
     total_files = len(raw_files)
     print(f"Found {total_files} files to process.", flush=True)
     if not raw_files:
         print(f"[ERROR] No raw audio files found in {raw_dir.resolve()}. Please supply input wav/mp3 files.", flush=True)
         return {"status": "failed", "error": "No raw audio files found"}
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Loading Whisper model ({whisper_model_name})...", flush=True)
-    whisper_model = whisper.load_model(whisper_model_name, device=device)
+    style_device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    whisper_model = None
+    if transcribe:
+        if whisper is None:
+            raise RuntimeError("Cần cài openai-whisper hoặc dùng --skip-asr.")
+        print(f"Loading Whisper model ({whisper_model_name})...", flush=True)
+        requested_device = (whisper_device or "auto").lower()
+        whisper_devices = [requested_device] if requested_device != "auto" else (["cuda", "cpu"] if torch.cuda.is_available() else ["cpu"])
+        for selected_device in whisper_devices:
+            try:
+                whisper_model = whisper.load_model(whisper_model_name, device=selected_device)
+                break
+            except Exception as exc:
+                if selected_device == whisper_devices[-1]:
+                    raise
+                print(f"[WARNING] Whisper {selected_device} failed; retrying on {whisper_devices[-1]}: {exc}", flush=True)
 
     records = []
     failures = []
-    for idx, f in enumerate(raw_files, start=1):
-        try:
-            print(f"\n-> [{idx}/{total_files}] Processing: {f.name}", flush=True)
-            record = process_file(f, output_dir, whisper_model, keep_separated=(idx <= keep_separated_count), device=device)
-            records.append(record)
-        except Exception as e:
-            import traceback
+    batch_size = 8 if use_demucs else total_files
+    separated_dir = output_dir / "separated"
+    for batch_start in range(0, total_files, batch_size):
+        batch = raw_files[batch_start:batch_start + batch_size]
+        if use_demucs:
+            print(f"\n--- DEMUCS BATCH {batch_start + 1}-{batch_start + len(batch)} of {total_files} ---", flush=True)
+            run_demucs_batch(batch, separated_dir, demucs_device)
 
-            tb = traceback.format_exc()
-            print(f"[ERROR] processing [{idx}/{total_files}] {f.name}: {e}", flush=True)
-            # Print() output is not reliably captured by Kaggle's log download for
-            # scripts that shell out to a subprocess -- persist failures to the
-            # returned report (written to disk) so they survive regardless.
-            failures.append({"file": f.name, "error": str(e), "traceback": tb})
+        for local_index, f in enumerate(batch):
+            idx = batch_start + local_index + 1
+            try:
+                print(f"\n-> [{idx}/{total_files}] Processing: {f.name}", flush=True)
+                record = process_file(
+                    f, output_dir, whisper_model, keep_separated=(idx <= keep_separated_count),
+                    use_demucs=use_demucs, transcribe=transcribe, demucs_device=demucs_device, device=style_device,
+                )
+                records.append(record)
+            except Exception as e:
+                import traceback
+
+                tb = traceback.format_exc()
+                print(f"[ERROR] processing [{idx}/{total_files}] {f.name}: {e}", flush=True)
+                # Print() output is not reliably captured by Kaggle's log download for
+                # scripts that shell out to a subprocess -- persist failures to the
+                # returned report (written to disk) so they survive regardless.
+                failures.append({"file": f.name, "error": str(e), "traceback": tb})
 
     # Write metadata index
     records_jsonl_path = output_dir / "records.jsonl"
@@ -232,19 +362,25 @@ def preprocess_raw_audio(input_path: str | Path, output_path: str | Path, whispe
             out.write(json.dumps(r, ensure_ascii=False) + "\n")
     if failures:
         (output_dir / "preprocess_failures.json").write_text(json.dumps(failures, ensure_ascii=False, indent=2), encoding="utf-8")
-            
+
     # Write dataset config
     config_data = {
         "sample_rate": SAMPLE_RATE,
         "n_mels": N_MELS,
         "n_fft": N_FFT,
-        "hop_length": HOP_LENGTH
+        "hop_length": HOP_LENGTH,
     }
-    (output_dir / "config.json").write_text(json.dumps(config_data, indent=2))
-    
-    print(f"\n🎉 Preprocessing completed! Dataset generated at: {output_dir.resolve()}", flush=True)
+    (output_dir / "config.json").write_text(json.dumps(config_data, indent=2), encoding="utf-8")
+
+    if not records:
+        status = "failed"
+    elif failures:
+        status = "completed_with_warnings"
+    else:
+        status = "completed"
+    print(f"\nPreprocessing {status}. Dataset generated at: {output_dir.resolve()}", flush=True)
     return {
-        "status": "completed" if records else "failed",
+        "status": status,
         "dataset_path": str(output_dir.resolve()),
         "records_count": len(records),
         "failed_count": len(failures),
@@ -261,9 +397,18 @@ def main():
     parser.add_argument("--input", default="dataset/vietnamese_songs", help="Path to raw audio folder.")
     parser.add_argument("--output", default="dataset/diff_rhythm_dataset", help="Output dataset path.")
     parser.add_argument("--whisper-model", default="base", help="Size of Whisper model to use.")
+    parser.add_argument("--skip-demucs", action="store_true", help="Bỏ tách vocal, dùng bản phối thật làm mục tiêu nhanh.")
+    parser.add_argument("--skip-asr", action="store_true", help="Bỏ Whisper ASR và dùng nhãn text mặc định.")
+    parser.add_argument("--demucs-device", default="auto", choices=("auto", "cuda", "cpu"))
+    parser.add_argument("--whisper-device", default="auto", choices=("auto", "cpu", "cuda"))
     args = parser.parse_args()
 
-    preprocess_raw_audio(args.input, args.output, args.whisper_model)
+    preprocess_raw_audio(
+        args.input, args.output, args.whisper_model,
+        use_demucs=not args.skip_demucs, transcribe=not args.skip_asr,
+        demucs_device=args.demucs_device, whisper_device=args.whisper_device,
+    )
+
 
 if __name__ == "__main__":
     main()

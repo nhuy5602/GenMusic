@@ -41,7 +41,7 @@ GenMusic/
 
 * **Using Standard `pip`:**
   ```powershell
-  pip install -r requirements.txt
+  pip install -e .
   ```
 
 ### 2. Setup Environment Variables (.env)
@@ -135,7 +135,7 @@ uv run python cli.py evaluate-self --generated outputs/my_song/final.wav --out o
 
 ## 🖥️ Interactive Web UI Demo
 
-Start the FastAPI backend server:
+Start the local standard-library backend server:
 ```powershell
 uv run python server.py
 ```

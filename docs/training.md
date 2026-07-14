@@ -1,53 +1,60 @@
-# Training Pipelines & Self-Improvement Loops
+# Training and Evaluation
 
-GenMusic VN provides automated training pipelines for both the Text Classifier and the Self-authored Music Diffusion Model.
+## 1. Prepare Audio Data
 
----
-
-## 1. Text Model Training & Self-Improvement
-
-The classification model (Naive Bayes) can be trained locally or on Kaggle.
-
-### Basic Local Training
-Train the text model using local datasets:
-```powershell
-uv run python -m genmusic_vn.cli train-text-model --local --samples 800 --model-out data/trained_models/genmusic_text_model.json
-```
-
-### Self-Improvement Loop (`self-improve`)
-The self-improvement cycle automates model upgrades through active learning:
-1. **Initialize:** Loads the baseline text classification model.
-2. **Simulate:** Generates a synthetic test set mimicking user queries.
-3. **Predict:** Feeds the test queries into the classifier.
-4. **Evaluate:** Grades outputs based on keyword recall, emotion consistency, and rhythm metrics.
-5. **Identify Weaknesses:** Filters out cases where the classification confidence or matching scores are low.
-6. **Augment & Retrain:** Augments the training set with corrected weak samples and retrains the model.
+Raw WAV/MP3 files are discovered recursively. Demucs separates vocals and
+backing, while Whisper supplies the lyric transcript:
 
 ```powershell
-uv run python -m genmusic_vn.cli self-improve --iterations 3 --samples 640 --eval-count 24 --out outputs/self_improve
+uv run python cli.py preprocess-raw --input dataset/vietnamese_songs --output dataset/diff_rhythm_dataset --whisper-model small --max-files 100 --keep-separated-count 10
 ```
 
----
+If some files fail, the command returns `completed_with_warnings` and a non-zero
+exit code. Inspect the printed failure list before training.
 
-## 2. Music Diffusion Model Training
+## 2. Create a Smoke Dataset
 
-The diffusion model is trained to convert text condition features into Mel-spectrogram matrices.
+Use synthetic Mel tensors to verify the pipeline without downloading audio:
 
-### Dataset Preparation
-Generate a synthetic dataset of Mel-spectrogram tensor checkpoints (`.pt` files) on disk:
 ```powershell
-uv run python -m genmusic_vn.cli make-random-dataset --out data/random_self_diffusion_training --count 16 --frames 128 --target-gb 1.0
+uv run python cli.py make-random-dataset --out dataset/random_self_diffusion_training --count 16 --frames 128 --target-gb 1.0
+uv run python cli.py validate-dataset --dataset dataset/random_self_diffusion_training
 ```
 
-### Dataset Validation
-Verify the dataset schema, including file directories, metadata indices, and tensor dimensions:
+The synthetic dataset validates software behavior only; it is not a substitute
+for real singing data.
+
+## 3. Train the Self-authored Model
+
 ```powershell
-uv run python -m genmusic_vn.cli validate-dataset --dataset data/random_self_diffusion_training
+uv run python cli.py train-self --dataset dataset/random_self_diffusion_training --checkpoint outputs/self_music_checkpoint.pt --epochs 2 --batch-size 4
 ```
 
-### Model Training
-Run the training loop using the `AdamW` optimizer:
+For separated vocal/backing records, use the optional MicroDiT path:
+
 ```powershell
-uv run python -m genmusic_vn.cli train-self --dataset data/random_self_diffusion_training --checkpoint outputs/self_music_checkpoint.pt --epochs 2 --batch-size 4
+uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/microdit.pt --model-type dit --epochs 2 --batch-size 2
 ```
-This loop loads target tensors, injects noise according to the diffusion schedule, computes the MSE loss backpropagated through time step embeddings, and saves a PyTorch checkpoint.
+
+The MicroDiT path may download its text encoder on first use and therefore
+requires network access unless the encoder is already cached.
+
+## 4. Optional Distillation
+
+```powershell
+uv run python cli.py train-distill --dataset dataset/diff_rhythm_dataset --student-checkpoint outputs/distilled_student.pt --teacher-checkpoint outputs/teacher.pt --epochs 5 --batch-size 4
+```
+
+Provide a local teacher checkpoint for a reproducible run. The fallback teacher
+exists for smoke testing and does not improve musical quality by itself.
+
+## 5. Generate and Evaluate
+
+```powershell
+uv run python cli.py generate-local --text "Dem nay thanh pho ngu quen trong tieng mua." --style "soft Vietnamese ballad" --duration 8 --checkpoint outputs/self_music_checkpoint.pt --out outputs/demo
+uv run python cli.py evaluate-self --generated outputs/demo/final.wav --out outputs/demo/evaluation
+uv run python cli.py project-report --source outputs --out outputs/project_report
+```
+
+Evaluation writes objective metrics and plots. MOS/CMOS remain skipped unless a
+human listening survey is supplied.

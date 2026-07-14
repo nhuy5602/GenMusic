@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import site
@@ -19,7 +20,7 @@ from typing import Any
 
 from ..data.lyric_alignment import AlignedLine, write_lrc
 from ..data.vietnamese_text import normalize_vietnamese_lyrics
-from ..models.text_to_music_diffusion import MusicDiffusionConfig, generate_audio, load_checkpoint, make_model
+from ..models.text_to_music_diffusion import MusicDiffusionConfig, estimate_minimum_lyric_duration, generate_audio, load_checkpoint, make_model
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -64,12 +65,17 @@ def run_local_generation(*, text: str, style: str, output_dir: str | Path, durat
             model = make_model(config).to(selected_device)
         checkpoint_path = ""
         checkpoint_epoch = 0
+    requested_duration = max(1.0, float(duration_seconds))
+    minimum_duration = estimate_minimum_lyric_duration(normalized)
+    effective_duration = max(requested_duration, minimum_duration)
+    if effective_duration > requested_duration:
+        print(f"[INFO] Duration tang tu {requested_duration:.2f}s len {effective_duration:.2f}s de tranh ep lyric.", flush=True)
     report = generate_audio(
         model,
         normalized,
         style or "Vietnamese pop, warm piano, clear melody",
         destination / "final.wav",
-        duration_seconds=max(1.0, float(duration_seconds)),
+        duration_seconds=effective_duration,
         config=config,
         device=selected_device,
         steps=max(1, int(steps)),
@@ -77,7 +83,7 @@ def run_local_generation(*, text: str, style: str, output_dir: str | Path, durat
         mel_output=mel_output,
         vocoder_type=vocoder,
     )
-    report.update({"text": normalized, "style": style, "checkpoint": checkpoint_path, "checkpoint_epoch": checkpoint_epoch, "device": selected_device})
+    report.update({"text": normalized, "style": style, "checkpoint": checkpoint_path, "checkpoint_epoch": checkpoint_epoch, "device": selected_device, "requested_duration_seconds": requested_duration, "minimum_lyric_duration_seconds": minimum_duration, "duration_auto_adjusted": effective_duration > requested_duration})
     mp3_path = _convert_to_mp3(Path(report["audio_path"]))
     if mp3_path:
         report["mp3_path"] = str(mp3_path)
@@ -90,6 +96,7 @@ def stage_text_to_music_job(*, text: str, output_root: str | Path, duration_seco
     if not normalized:
         raise ValueError("Văn bản input đang trống.")
     requested_duration = max(1, min(120, int(duration_seconds)))
+    requested_duration = min(120, max(requested_duration, math.ceil(estimate_minimum_lyric_duration(text))))
     run_id = make_run_id(normalized)
     username = resolve_kaggle_username(config.username) or "YOUR_KAGGLE_USERNAME"
     run_dir = Path(output_root) / run_id
@@ -413,11 +420,11 @@ elif source_dir and source_dir.is_dir():
 else:
     raise RuntimeError("Không tìm thấy source model trong request dataset Kaggle.")
 os.environ["PYTHONPATH"] = str(source_root) + os.pathsep + os.environ.get("PYTHONPATH", "")
-subprocess.run([sys.executable, "-m", "pip", "install", "-q", "torch", "torchaudio", "librosa", "matplotlib"], check=False)
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "torch", "torchaudio", "librosa", "matplotlib", "imageio-ffmpeg", "vocos"], check=False)
 checkpoint = Path("/kaggle/working/self_music.pt")
 subprocess.run([sys.executable, "cli.py", "train-self", "--dataset", str(training_dataset), "--checkpoint", str(checkpoint), "--epochs", "1", "--batch-size", "4"], cwd=source_root, check=True)
 output = Path("/kaggle/working/genmusic_output")
-subprocess.run([sys.executable, "cli.py", "generate-local", "--text", request["lyrics"], "--style", request["style_prompt"], "--duration", str(request["duration_seconds"]), "--checkpoint", str(checkpoint), "--steps", "6", "--out", str(output)], cwd=source_root, check=True)
+subprocess.run([sys.executable, "cli.py", "generate-local", "--text", request["lyrics"], "--style", request["style_prompt"], "--duration", str(request["duration_seconds"]), "--checkpoint", str(checkpoint), "--steps", "6", "--vocoder", "vocos", "--out", str(output)], cwd=source_root, check=True)
 output.joinpath("request.json").write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
 if shutil.which("ffmpeg") and list(output.glob("*.wav")):
     subprocess.run(["ffmpeg", "-y", "-i", str(list(output.glob("*.wav"))[0]), str(output / "final.mp3")], check=False)
@@ -461,6 +468,13 @@ def _default_device() -> str:
 
 def _convert_to_mp3(wav_path: Path) -> Path | None:
     ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        try:
+            import imageio_ffmpeg
+
+            ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        except ImportError:
+            return None
     if not ffmpeg:
         return None
     destination = wav_path.with_suffix(".mp3")

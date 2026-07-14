@@ -263,7 +263,17 @@ def diffusion_loss(model: ResidualDenoiser, clean_mel, texts: list[str], config:
     return torch.nn.functional.mse_loss(prediction, noise)
 
 
-def sample_mel(model: ResidualDenoiser, text: str, frames: int, *, config: MusicDiffusionConfig, device, steps: int | None = None, seed: int | None = None):
+def sample_mel(
+    model: ResidualDenoiser,
+    text: str,
+    frames: int,
+    *,
+    config: MusicDiffusionConfig,
+    device,
+    steps: int | None = None,
+    seed: int | None = None,
+    noise_scale: float = 0.0,
+):
     torch, _ = _torch()
     if seed is not None:
         torch.manual_seed(seed)
@@ -281,8 +291,8 @@ def sample_mel(model: ResidualDenoiser, text: str, frames: int, *, config: Music
             current_beta = beta[index]
             current_cumulative = cumulative[index]
             sample = (sample - current_beta / (1.0 - current_cumulative).sqrt() * prediction) / current_alpha.sqrt()
-            if int(index) > 0:
-                sample = sample + current_beta.sqrt() * 0.15 * torch.randn_like(sample)
+            if int(index) > 0 and noise_scale > 0.0:
+                sample = sample + current_beta.sqrt() * float(noise_scale) * torch.randn_like(sample)
     return sample.clamp(-12.0, 4.0)
 
 
@@ -303,6 +313,14 @@ def build_lyric_timing(text: str, duration_seconds: float) -> list[dict[str, Any
         timing.append({"line": line, "line_index": index, "start_seconds": round(start, 4), "end_seconds": round(end, 4), "duration_seconds": round(line_duration, 4), "word_count": weight})
         cursor = end + (pause if index < len(lines) - 1 else 0.0)
     return timing
+
+
+def estimate_minimum_lyric_duration(text: str, *, words_per_second: float = 2.2, line_pause_seconds: float = 0.25) -> float:
+    """Estimate a non-rushed minimum duration from lyric word count."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()] or [text.strip()]
+    word_count = sum(max(1, len(line.split())) for line in lines)
+    pauses = max(0, len(lines) - 1) * max(0.0, float(line_pause_seconds))
+    return round(max(1.0, word_count / max(0.1, float(words_per_second)) + pauses), 3)
 
 
 def render_mel_to_wav(mel, destination: str | Path, config: MusicDiffusionConfig, vocoder_type: str = "vocos") -> Path:
@@ -422,6 +440,7 @@ def load_checkpoint(path: str | Path, *, device="cpu", model_type: str | None = 
 def generate_audio(model: ResidualDenoiser, text: str, style: str, destination: str | Path, *, duration_seconds: float, config: MusicDiffusionConfig, device="cpu", steps: int = 6, seed: int = 5602, mel_output: str | Path | None = None, vocoder_type: str = "istft") -> dict[str, Any]:
     torch, _ = _torch()
     model.to(device)
+    duration_seconds = max(float(duration_seconds), estimate_minimum_lyric_duration(text))
     rendered = []
     lyric_timing = build_lyric_timing(text, duration_seconds)
     section_number = 0

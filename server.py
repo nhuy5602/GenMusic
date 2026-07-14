@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import sys
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,7 +14,7 @@ from src.integrations.kaggle_auto import DEFAULT_MODEL, KaggleJobConfig, refresh
 from src.evaluation.project_metrics import build_project_report
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parent
 WEB_ROOT = PROJECT_ROOT / "web"
 OUTPUT_ROOT = PROJECT_ROOT / "outputs"
 SUBMISSION_LOCK = threading.Lock()
@@ -29,7 +30,11 @@ class GenMusicHandler(BaseHTTPRequestHandler):
             self._send_file(WEB_ROOT / "index.html")
             return
         if path.startswith("/web/"):
-            self._send_file(WEB_ROOT / unquote(path.removeprefix("/web/")))
+            requested = (WEB_ROOT / unquote(path.removeprefix("/web/"))).resolve()
+            if not _is_relative_to(requested, WEB_ROOT.resolve()):
+                self._send_json({"error": "Duong dan web khong hop le."}, HTTPStatus.BAD_REQUEST)
+                return
+            self._send_file(requested)
             return
         if path.startswith("/outputs/"):
             requested = (OUTPUT_ROOT / unquote(path.removeprefix("/outputs/"))).resolve()
@@ -44,7 +49,10 @@ class GenMusicHandler(BaseHTTPRequestHandler):
         if path == "/api/kaggle/status":
             query = parse_qs(parsed.query)
             run_id = (query.get("run_id") or [""])[0]
-            state_path = OUTPUT_ROOT / run_id / "kaggle_job" / "job_state.json"
+            state_path = (OUTPUT_ROOT / run_id / "kaggle_job" / "job_state.json").resolve()
+            if not _is_relative_to(state_path, OUTPUT_ROOT.resolve()):
+                self._send_json({"error": "Ma job Kaggle khong hop le."}, HTTPStatus.BAD_REQUEST)
+                return
             if not run_id or not state_path.exists():
                 self._send_json({"error": "Không tìm thấy job Kaggle."}, HTTPStatus.NOT_FOUND)
                 return
@@ -128,6 +136,11 @@ def _is_relative_to(path: Path, root: Path) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, OSError):
+        pass
+
     parser = argparse.ArgumentParser(description="Chạy web app MP3 local của GenMusic VN.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)

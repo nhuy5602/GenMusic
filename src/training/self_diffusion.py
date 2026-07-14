@@ -37,7 +37,8 @@ class MusicDiffusionDataset:
         _, _, Dataset, _ = _torch()
         self.root = Path(dataset_dir)
         self.config = config
-        self.records = _read_records(self.root)[:max_records or None]
+        records = _read_records(self.root)
+        self.records = records[:max_records] if max_records is not None else records
         if additional_records:
             self.records.extend(additional_records)
 
@@ -61,20 +62,46 @@ class MusicDiffusionDataset:
             vocal_mel = _load_mel(mel_path)
             backing_mel = torch.zeros_like(vocal_mel)
             
-        vocal_mel = _fit_mel_frames(vocal_mel, self.config.frames_per_chunk)
-        backing_mel = _fit_mel_frames(backing_mel, self.config.frames_per_chunk)
+        # Crop both stems at the same offset so the text/audio condition stays aligned
+        # (also a cheap augmentation: different epochs see different windows of longer songs).
+        crop_start = 0
+        shared_frames = min(vocal_mel.shape[1], backing_mel.shape[1])
+        if shared_frames > self.config.frames_per_chunk:
+            crop_start = random.randint(0, shared_frames - self.config.frames_per_chunk)
+            vocal_mel = vocal_mel[:, crop_start:crop_start + self.config.frames_per_chunk]
+            backing_mel = backing_mel[:, crop_start:crop_start + self.config.frames_per_chunk]
+        else:
+            vocal_mel = _fit_mel_frames(vocal_mel, self.config.frames_per_chunk)
+            backing_mel = _fit_mel_frames(backing_mel, self.config.frames_per_chunk)
 
-        # Style anchor: a precomputed MuQ-MuLan audio embedding of the song (see
-        # preprocess_raw_vietnamese.py), the same contrastive audio-style space
-        # the real DiffRhythm2 teacher conditions on. Falls back to a zero vector
-        # for older/synthetic datasets that never computed one.
+        # Style anchor: a precomputed MuQ-MuLan audio embedding of the whole song (see
+        # preprocess_raw_vietnamese.py), the same contrastive audio-style space the
+        # real DiffRhythm2 teacher conditions on. This is a fixed per-song summary
+        # (unlike vocal_mel/backing_mel above, it does not need cropping) -- falls
+        # back to a zero vector for older/synthetic datasets that never computed one.
         style_path = record.get("style_embed_path")
         if style_path and (self.root / style_path).exists():
             style_anchor = _load_mel(self.root / style_path).float().view(-1)
         else:
             style_anchor = torch.zeros(STYLE_EMBED_DIM)
 
-        text = f"{record['style']}. {record['text']}"
+        # Only keep the lyric words that actually fall within this crop's time window,
+        # when word/segment-level timestamps are available -- otherwise every crop of a
+        # long song would be conditioned on the full-song transcript, most of which the
+        # cropped audio doesn't contain.
+        lyric_text = record["text"]
+        segments = record.get("segments") or []
+        if segments:
+            crop_start_seconds = crop_start * self.config.hop_length / self.config.sample_rate
+            crop_end_seconds = crop_start_seconds + self.config.frames_per_chunk * self.config.hop_length / self.config.sample_rate
+            local_segments = [
+                segment["text"]
+                for segment in segments
+                if float(segment.get("end", 0.0)) > crop_start_seconds and float(segment.get("start", 0.0)) < crop_end_seconds
+            ]
+            if local_segments:
+                lyric_text = " ".join(local_segments)
+        text = f"{record['style']}. {lyric_text}"
         return {"vocal_mel": vocal_mel, "backing_mel": backing_mel, "style_anchor": style_anchor, "text": text}
 
 class DiffusionTrainer:
@@ -99,7 +126,9 @@ class DiffusionTrainer:
             # Check if using the new MicroDiT model
             is_dit = self.model.__class__.__name__ == "MicroDiT"
             if is_dit:
-                # Transpose mels from (batch, n_mels, seq_len) to (batch, seq_len, n_mels) for DiT
+                # Transpose mels from (batch, n_mels, seq_len) to (batch, seq_len, n_mels) for DiT.
+                # style_anchor is already a flat (batch, 512) MuQ-MuLan embedding, not
+                # mel-shaped, so it needs no transpose.
                 vocal_mel_t = vocal_mel.transpose(1, 2)
                 backing_mel_t = backing_mel.transpose(1, 2)
                 from ..models.cfm_flow import cfm_loss
@@ -166,10 +195,22 @@ def _record_path(root: Path, record: dict[str, Any]) -> Path:
     path = Path(path_str)
     return path if path.is_absolute() else root / path
 
+def _record_paths(root: Path, record: dict[str, Any]) -> list[tuple[str, Path]]:
+    """Return every tensor path required by a record, including separated stems."""
+    separated = (("vocal", "vocal_mel_path"), ("backing", "backing_mel_path"))
+    if all(record.get(key) for _, key in separated):
+        return [(name, _resolve_record_path(root, record[key])) for name, key in separated]
+    return [("mel", _record_path(root, record))]
+
+def _resolve_record_path(root: Path, path_str: str) -> Path:
+    path = Path(path_str)
+    return path if path.is_absolute() else root / path
+
 def _fit_mel_frames(mel, frames: int):
     torch, _, _, _ = _torch()
     if mel.shape[1] > frames:
-        return mel[:, :frames]
+        start = random.randint(0, mel.shape[1] - frames)
+        return mel[:, start:start + frames]
     if mel.shape[1] < frames:
         return torch.nn.functional.pad(mel, (0, frames - mel.shape[1]))
     return mel
@@ -190,13 +231,13 @@ def validate_dataset(dataset_dir: str | Path, *, report_path: str | Path | None 
     config_data = json.loads((root / "config.json").read_text(encoding="utf-8")) if (root / "config.json").exists() else asdict(MusicDiffusionConfig())
     expected_mels = int(config_data.get("n_mels", 64))
     for record in records:
-        path = _record_path(root, record)
-        if not path.exists():
-            missing.append(str(path))
-            continue
-        tensor = _load_mel(path)
-        if tuple(tensor.shape) != (expected_mels, int(record["frames"])):
-            invalid.append({"path": str(path), "shape": list(tensor.shape), "expected": [expected_mels, int(record["frames"])]})
+        for stem_name, path in _record_paths(root, record):
+            if not path.exists():
+                missing.append({"stem": stem_name, "path": str(path)})
+                continue
+            tensor = _load_mel(path)
+            if tuple(tensor.shape) != (expected_mels, int(record["frames"])):
+                invalid.append({"stem": stem_name, "path": str(path), "shape": list(tensor.shape), "expected": [expected_mels, int(record["frames"])]})
     report = {"status": "valid" if not missing and not invalid else "invalid", "dataset": str(root.resolve()), "record_count": len(records), "missing": missing, "invalid": invalid, "format": "genmusic-self-diffusion-v1"}
     report_destination.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report

@@ -1,56 +1,40 @@
-# Machine Learning Model Details
+# Model Details
 
-GenMusic VN utilizes three distinct model classes to power the generative audio pipe:
+## Conv1D Diffusion Model
 
----
+The default model is a self-authored conditional diffusion denoiser. It predicts
+the denoising direction for a log-Mel spectrogram using a text/style condition
+and a continuous diffusion timestep. It is implemented in
+`src/models/text_to_music_diffusion.py` and trained by
+`src/training/self_diffusion.py`.
 
-## 1. Trained Text Classifier (Multinomial Naive Bayes)
+The model is intentionally small enough for a local smoke run. Generated Mel
+features can be rendered with the deterministic ISTFT path or the optional Vocos
+neural vocoder.
 
-- **Purpose:** Analyzes Vietnamese prose to detect emotions and musical genre cues.
-- **Algorithm:** Built from scratch using multinomial distributions of word unigrams and bigrams.
-- **Diacritic Normalization:** Extracts accentless tokens (e.g. `mua roi` from `mưa rơi`) to handle varying input typing conventions.
-- **Priors and Inference:** Calculates class probabilities:
-  $$\text{Score}(c) = \log P(c) + \sum_{i} \text{count}(f_i) \cdot \log P(f_i | c)$$
-  Uses a softmax layer to normalize confidence outputs.
+## MicroDiT and CFM
 
----
+The optional `MicroDiT` path uses a frozen pretrained text encoder, a compact
+Transformer backbone, and an audio-style anchor encoder. Its training target is
+Conditional Flow Matching: a noisy Mel state is interpolated between Gaussian
+noise and a clean vocal target, and the network learns the velocity field.
 
-## 2. Self-authored Music Diffusion Model
+`src/models/cfm_flow.py` contains the loss and Euler sampler. Separated datasets
+provide the backing Mel as the audio condition and a cropped backing segment as
+the style anchor. Legacy and synthetic records retain a zero backing fallback,
+so they are useful for smoke tests but are not evidence of vocal quality.
 
-Designed to replace massive third-party packages, this model is a self-contained PyTorch conditional diffusion model tailored for spectrogram synthesis.
+## Distillation
 
-### Network Components
-1. **Text Conditioner:**
-   - Embeds text tokens from the input lyric and style descriptions.
-   - Passes embeddings through a positional embedding layer and a 2-layer `TransformerEncoder` with Multi-Head Attention.
-   - Pools character-level features to build a single condition vector.
-2. **Residual Conv1D Denoiser:**
-   - Processes Mel-spectrogram grids using 1D convolutional residual blocks.
-   - Injects sinusoidal time step embeddings along with the text conditioner embedding at each residual layer.
-   - Employs Group Normalization (`GroupNorm`) and `SiLU` activations.
+`src/training/distill_training.py` contains the optional teacher-to-MicroDiT
+training loop. A local teacher checkpoint is preferred; if the external teacher
+package/checkpoint is unavailable, the code uses its initialized fallback only
+to keep the training path executable. That fallback is a smoke-test teacher, not
+a quality baseline.
 
-### Loss Function
-Computes the Mean Squared Error (MSE) loss between the true Gaussian noise $\epsilon$ and the predicted noise $\epsilon_\theta$ at random timesteps $t$:
-$$\mathcal{L} = \mathbb{E}_{x_0, \epsilon, t} \left[ \| \epsilon - \epsilon_\theta(x_t, t, \text{condition}) \|^2 \right]$$
+## Important Evaluation Boundary
 
-### Spectrogram to Audio Rendering
-Mel-spectrogram outputs are reconstructed using Librosa:
-- Applies a pseudo-inverse operation on the Mel filterbank matrix to project Mel bands back to linear-frequency magnitude bins.
-- Estimates phase characteristics using a deterministic frequency-time projection phase matrix.
-- Runs Inverse Short-Time Fourier Transform (`ISTFT`) to obtain time-domain waveform signals.
-
----
-
-## 3. Custom Music Composer (Rule-Based Synth)
-- **Melody/MIDI Engine:** Translates note sequences into standard MIDI events.
-- **Waveform Synthesis:** Performs additive synthesis by summing fundamental sine waves and fractional harmonics to generate keyboard, bass, and string waveforms.
-- **Percussion Modeling:**
-  - **Kick:** Logarithmically decays frequency from 62Hz down to 38Hz.
-  - **Snare:** Blends low-mid sine wave tones with high-pass filtered white noise.
-  - **Hi-hat:** Rapidly decays high-pass filtered white noise.
-
----
-
-## 4. Singing Voice Synthesis (TTS)
-- **F5-TTS Vietnamese:** Acoustic model trained on Vietnamese voices (`hynt/F5-TTS-Vietnamese-ViVoice`). Takes a 15-second reference audio slice to capture natural timbre, singing tone, and pitch variation.
-- **MMS-TTS:** Meta's Massively Multilingual Speech model (`facebook/mms-tts-vie`), serving as a fast CPU-safe fallback.
+Random Mel data can verify tensor shapes, optimization, checkpoint loading, and
+audio rendering. It cannot demonstrate natural singing, Vietnamese intelligibility,
+rhyme quality, or vocal pacing. Those claims require real audio with a valid vocal
+stem and lyric/alignment metadata.

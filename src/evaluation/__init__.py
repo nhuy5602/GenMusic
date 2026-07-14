@@ -1,1 +1,1 @@
-"""Danh gia chat luong, self-improve va bao cao."""
+"""Danh gia chat luong am thanh va tao bao cao."""
