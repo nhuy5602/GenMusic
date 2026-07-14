@@ -111,6 +111,28 @@ For running the same pipeline on Kaggle GPUs instead (recommended for anything p
 
 All key workflows are packaged into automated scripts in the `scripts/` directory:
 
+### 0. Training-only / distillation with no manual environment setup (Kaggle)
+
+These two are the ones to hand to a teammate — both fully automate their own GPU
+environment (cloning DiffRhythm2, installing `espeak-ng` + Python deps, etc.) inside
+the Kaggle kernel, so **no local dependency chasing is needed**:
+```powershell
+# Training-only (baseline, no teacher):
+uv run python scripts/run_kaggle_training.py
+
+# Knowledge distillation from the real DiffRhythm2 teacher:
+uv run python scripts/run_kaggle_distill.py
+```
+Only two things are required in `.env` first — everything else is handled by the script:
+1. `KAGGLE_USERNAME` / `KAGGLE_KEY`.
+2. A processed-dataset reference **your own Kaggle account can access** —
+   `KAGGLE_PROCESSED_KERNEL_REF` (preferred) or `KAGGLE_PROCESSED_DATASET_REF`. The
+   scripts fall back to a hardcoded example ref if unset, but that example belongs to
+   whoever produced it and is not guaranteed to be public/shared with your account —
+   don't rely on it. If you don't have your own processed dataset yet, produce one
+   first with `scripts/run_kaggle_preprocess_all.py`, or ask whoever already has one to
+   make it accessible to you (public, or shared as a Kaggle dataset collaborator).
+
 ### 1. Run Complete Local Pipeline Test
 Verify the whole end-to-end flow locally (Data scanning ➔ Prep ➔ Model training ➔ Sampling ➔ Evaluation):
 ```powershell
@@ -165,13 +187,9 @@ You can train the diffusion denoiser from scratch or perform knowledge distillat
 
 * **Train Model from Scratch:**
   ```powershell
-  # Train standard Conv1D denoiser model (legacy/smoke-test baseline):
-  uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/my_model.pt --epochs 5 --batch-size 4
-  
-  # Train MicroDiT (Transformer-based) model with real MuQ-MuLan Audio Style Anchor conditioning (recommended):
   uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/my_dit_model.pt --epochs 5 --batch-size 4 --dim 256 --depth 4 --heads 4
   ```
-  `--dim`/`--depth`/`--heads`/`--ff-mult` control MicroDiT's architecture size (default: ~5.6M trainable params).
+  MicroDiT (Transformer-based) with real MuQ-MuLan Audio Style Anchor conditioning is the only architecture. `--dim`/`--depth`/`--heads`/`--ff-mult` control its size (default: ~5.6M trainable params).
 
 * **Knowledge Distillation:**
   Replicates the real DiffRhythm2 teacher's call contract (see [docs/experiments/distillation_fix.md](docs/experiments/distillation_fix.md)). Needs a clone of the [DiffRhythm2 repo](https://github.com/ASLP-lab/DiffRhythm2) on `PYTHONPATH` with its dependencies installed — done automatically on Kaggle (see `scripts/run_kaggle_distill.py`), or manually locally (see Quick Start step 3 above; verified working on Windows/CPU too, not just Kaggle). Running without that clone, or without internet, falls back to ground-truth-only training and reports this explicitly via `teacher_status`/`distillation_active` in the output — never a silent fake teacher.
