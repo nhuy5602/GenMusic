@@ -34,6 +34,14 @@ HOP_LENGTH = 256
 
 def run_demucs_separation(audio_path: Path, output_dir: Path, device: str = "auto") -> tuple[Path | None, Path | None]:
     """Separate vocals and backing using Demucs CLI."""
+    model_name = "htdemucs"
+    song_folder = output_dir / model_name / audio_path.stem
+    vocals_file = song_folder / "vocals.wav"
+    backing_file = song_folder / "no_vocals.wav"
+    if vocals_file.exists() and backing_file.exists():
+        print(f"-> Reusing separated stems for: {audio_path.name}", flush=True)
+        return vocals_file, backing_file
+
     print(f"-> Separating vocal/backing stems for: {audio_path.name}...", flush=True)
     requested = (device or "auto").lower()
     devices = [requested] if requested != "auto" else (["cuda", "cpu"] if torch.cuda.is_available() else ["cpu"])
@@ -44,15 +52,10 @@ def run_demucs_separation(audio_path: Path, output_dir: Path, device: str = "aut
             if selected_device:
                 command.extend(["-d", selected_device])
             command.append(str(audio_path))
-            result = subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
-
-            model_name = "htdemucs"
-            song_folder = output_dir / model_name / audio_path.stem
-            vocals_file = song_folder / "vocals.wav"
-            backing_file = song_folder / "no_vocals.wav"
+            subprocess.run(command, check=True)
             if vocals_file.exists() and backing_file.exists():
                 return vocals_file, backing_file
-            last_error = f"Demucs completed on {selected_device} without producing both stems. {result.stderr[-500:]}"
+            last_error = f"Demucs completed on {selected_device} without producing both stems."
         except Exception as exc:
             last_error = str(exc)
             if selected_device != devices[-1]:
@@ -61,6 +64,59 @@ def run_demucs_separation(audio_path: Path, output_dir: Path, device: str = "aut
     print(f"[WARNING] Demucs separation failed: {last_error}. Falling back to raw mix.", flush=True)
     
     return None, None
+
+
+def run_demucs_batch(audio_paths: list[Path], output_dir: Path, device: str = "auto") -> bool:
+    """Separate a small batch so Demucs loads its model once per batch."""
+    if not audio_paths:
+        return True
+
+    model_name = "htdemucs"
+    pending = [
+        path for path in audio_paths
+        if not (output_dir / model_name / path.stem / "vocals.wav").exists()
+        or not (output_dir / model_name / path.stem / "no_vocals.wav").exists()
+    ]
+    if not pending:
+        print(f"-> Reusing separated stems for batch ({len(audio_paths)} files).", flush=True)
+        return True
+
+    requested = (device or "auto").lower()
+    devices = [requested] if requested != "auto" else (['cuda', 'cpu'] if torch.cuda.is_available() else ['cpu'])
+    for selected_device in devices:
+        command = [
+            sys.executable,
+            "-m",
+            "demucs.separate",
+            "--two-stems=vocals",
+            "-o",
+            str(output_dir),
+        ]
+        if selected_device:
+            command.extend(["-d", selected_device])
+        command.extend(str(path) for path in pending)
+        print(
+            f"-> Demucs batch {len(pending)} file(s) on {selected_device}; "
+            "progress will appear below...",
+            flush=True,
+        )
+        try:
+            subprocess.run(command, check=True)
+            missing = [
+                path for path in pending
+                if not (output_dir / model_name / path.stem / "vocals.wav").exists()
+                or not (output_dir / model_name / path.stem / "no_vocals.wav").exists()
+            ]
+            if not missing:
+                return True
+            print(f"[WARNING] Demucs batch missed {len(missing)} file(s).", flush=True)
+        except Exception as exc:
+            print(f"[WARNING] Demucs batch on {selected_device} failed: {exc}", flush=True)
+            if selected_device != devices[-1]:
+                print(f"[WARNING] Retrying Demucs batch on {devices[-1]}.", flush=True)
+
+    print("[WARNING] Falling back to per-file Demucs attempts for this batch.", flush=True)
+    return False
 
 def process_file(
     audio_path: Path,
@@ -229,27 +285,40 @@ def preprocess_raw_audio(
     
     records = []
     failures = []
-    for idx, f in enumerate(raw_files, start=1):
-        try:
-            print(f"\n-> [{idx}/{total_files}] Processing: {f.name}", flush=True)
-            record = process_file(
-                f,
-                output_dir,
-                whisper_model,
-                keep_separated=(idx <= keep_separated_count),
-                use_demucs=use_demucs,
-                transcribe=transcribe,
-                sample_rate=sample_rate,
-                n_mels=n_mels,
-                n_fft=n_fft,
-                hop_length=hop_length,
-                mel_power=mel_power,
-                demucs_device=demucs_device,
+    batch_size = 8 if use_demucs else total_files
+    separated_dir = output_dir / "separated"
+    for batch_start in range(0, total_files, batch_size):
+        batch = raw_files[batch_start:batch_start + batch_size]
+        if use_demucs:
+            print(
+                f"\n--- DEMUCS BATCH {batch_start + 1}-{batch_start + len(batch)} "
+                f"of {total_files} ---",
+                flush=True,
             )
-            records.append(record)
-        except Exception as e:
-            print(f"[ERROR] processing [{idx}/{total_files}] {f.name}: {e}", flush=True)
-            failures.append({"file": str(f), "error": str(e)})
+            run_demucs_batch(batch, separated_dir, demucs_device)
+
+        for local_index, f in enumerate(batch):
+            idx = batch_start + local_index + 1
+            try:
+                print(f"\n-> [{idx}/{total_files}] Processing: {f.name}", flush=True)
+                record = process_file(
+                    f,
+                    output_dir,
+                    whisper_model,
+                    keep_separated=(idx <= keep_separated_count),
+                    use_demucs=use_demucs,
+                    transcribe=transcribe,
+                    sample_rate=sample_rate,
+                    n_mels=n_mels,
+                    n_fft=n_fft,
+                    hop_length=hop_length,
+                    mel_power=mel_power,
+                    demucs_device=demucs_device,
+                )
+                records.append(record)
+            except Exception as e:
+                print(f"[ERROR] processing [{idx}/{total_files}] {f.name}: {e}", flush=True)
+                failures.append({"file": str(f), "error": str(e)})
             
     # Write metadata index
     records_jsonl_path = output_dir / "records.jsonl"

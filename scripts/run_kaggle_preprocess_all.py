@@ -31,6 +31,8 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
+import time
 import zipfile
 import traceback
 from pathlib import Path
@@ -68,25 +70,51 @@ try:
 
     def run_logged(command, label, timeout):
         print("--- RUNNING " + label + " ---", flush=True)
-        try:
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-            )
-        except subprocess.TimeoutExpired as exc:
-            message = "TIMEOUT after %ss\\n%s" % (timeout, exc)
-            Path("/kaggle/working/" + label + ".log").write_text(message, encoding="utf-8")
-            raise RuntimeError(label + " timed out; see /kaggle/working/" + label + ".log") from exc
-        output = (result.stdout or "") + chr(10) + "--- STDERR ---" + chr(10) + (result.stderr or "")
+        started = time.monotonic()
+        output_lines = []
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+
+        def forward_output():
+            if process.stdout is None:
+                return
+            for line in process.stdout:
+                output_lines.append(line)
+                print("[" + label + "] " + line.rstrip(), flush=True)
+
+        forwarder = threading.Thread(target=forward_output, daemon=True)
+        forwarder.start()
+        timed_out = False
+        next_heartbeat = 30
+        while process.poll() is None:
+            elapsed = int(time.monotonic() - started)
+            if elapsed >= timeout:
+                process.kill()
+                timed_out = True
+                break
+            if elapsed >= next_heartbeat:
+                print("[" + label + "] still running (" + str(elapsed) + "s)", flush=True)
+                next_heartbeat += 30
+            time.sleep(1)
+
+        returncode = process.wait()
+        forwarder.join(timeout=10)
+        output = "".join(output_lines)
         Path("/kaggle/working/" + label + ".log").write_text(output, encoding="utf-8")
-        print(output, flush=True)
-        if result.returncode != 0:
-            raise RuntimeError(label + " failed with exit code " + str(result.returncode))
-        return result
+        if timed_out:
+            message = "TIMEOUT after %ss\\n%s" % (timeout, output[-4000:])
+            Path("/kaggle/working/" + label + ".log").write_text(message, encoding="utf-8")
+            raise RuntimeError(label + " timed out; see /kaggle/working/" + label + ".log")
+        if returncode != 0:
+            raise RuntimeError(label + " failed with exit code " + str(returncode))
+        return subprocess.CompletedProcess(command, returncode, output, "")
 
     print("--- STEP 3: Checking dependencies ---")
     dependency_probe = subprocess.run(
