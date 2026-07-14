@@ -24,7 +24,7 @@ def _write_source_zip(project_root: Path, destination: Path) -> None:
                 continue
             archive.write(path, relative.as_posix())
 
-def _kernel_script_content(dataset_slug: str) -> str:
+def _kernel_script_content(dataset_slug: str, epochs: str = "5", batch_size: str = "4") -> str:
     # This script will run on the Kaggle GPU instance and log errors to output files instead of crashing
     # We use pure ASCII characters to prevent Windows cp1252 encoding crashes during kaggle push
     return f'''import os
@@ -48,71 +48,44 @@ except Exception as de:
 try:
     print("--- STEP 1: Locating input datasets ---")
     input_dir = Path("/kaggle/input")
-    # Find the raw audio dataset using recursive rglob
-    raw_dataset = next(
-        (d for d in input_dir.rglob("*") if d.is_dir() and "{dataset_slug}" in d.name.lower()), 
-        None
-    )
-    if not raw_dataset:
-        # Fallback to any directory under input/datasets/sonlest/
-        raw_dataset = next(
-            (d for d in input_dir.rglob("*") if d.is_dir() and "vietnamese-music-dataset" in d.name.lower()), 
-            None
-        )
-
-    if not raw_dataset:
-        raise RuntimeError("Could not find the raw music dataset in /kaggle/input.")
-
-    print(f"Using raw audio dataset: {{raw_dataset.resolve()}}")
-
-    # Find and copy exactly 1 audio file (.mp3 or .wav) to test the pipeline
-    audio_file = next(
-        (f for f in raw_dataset.rglob("*") if f.is_file() and f.suffix.lower() in (".mp3", ".wav")), 
-        None
-    )
-    if not audio_file:
-        raise RuntimeError("No raw audio file found in the dataset.")
-
-    print(f"Selected audio file for 1-file test run: {{audio_file.name}}")
-    test_input_dir = Path("/kaggle/working/test_songs")
-    test_input_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(audio_file, test_input_dir / audio_file.name)
+    processed_dataset = next(input_dir.rglob("records.jsonl"), None)
+    if not processed_dataset or not processed_dataset.is_file():
+        raise RuntimeError("Could not find processed dataset records.jsonl in /kaggle/input.")
+    processed_dataset = processed_dataset.parent
+    print(f"Using processed dataset: {{processed_dataset.resolve()}}")
 
     print("--- STEP 2: Setting up source code ---")
-    # Locate the already unzipped source directory under input_dir
+    # Locate source code either as a mounted directory or as the source zip.
     source_dataset_dir = next(
         (d for d in input_dir.rglob("*") if d.is_dir() and "genmusic-source-" in d.name.lower()), 
         None
     )
-    if not source_dataset_dir:
-        raise RuntimeError("Could not find the source code dataset directory.")
-        
     source_root = Path("/kaggle/working/GenMusic")
-    shutil.copytree(source_dataset_dir, source_root, dirs_exist_ok=True)
+    source_zip = next(input_dir.rglob("genmusic_vn_source.zip"), None)
+    if source_zip and source_zip.is_file():
+        source_root.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(source_zip) as archive:
+            archive.extractall(source_root)
+    elif source_dataset_dir:
+        shutil.copytree(source_dataset_dir, source_root, dirs_exist_ok=True)
+    else:
+        raise RuntimeError("Could not find the source code dataset directory or zip.")
 
     print("--- STEP 3: Installing dependencies ---")
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "torch", "torchaudio", "librosa", "matplotlib", "openai-whisper", "demucs", "imageio-ffmpeg", "transformers", "vocos"], check=True)
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "librosa", "imageio-ffmpeg"], check=True)
 
     # Add source code to path
     os.environ["PYTHONPATH"] = str(source_root) + os.pathsep + os.environ.get("PYTHONPATH", "")
 
-    print("--- STEP 4: Preprocessing the single audio track ---")
-    preprocessed_dir = Path("/kaggle/working/preprocessed_dataset")
-    subprocess.run([
-        sys.executable, str(source_root / "cli.py"), "preprocess-raw",
-        "--input", str(test_input_dir),
-        "--output", str(preprocessed_dir),
-        "--whisper-model", "tiny"
-    ], check=True)
-
-    print("--- STEP 5: Training model on the 1-file dataset (1 Epoch) ---")
+    print("--- STEP 4: Training model on ALL processed records ---")
     checkpoint_path = Path("/kaggle/working/my_trained_model.pt")
     subprocess.run([
         sys.executable, str(source_root / "cli.py"), "train-self",
-        "--dataset", str(preprocessed_dir),
+        "--dataset", str(processed_dataset),
         "--checkpoint", str(checkpoint_path),
-        "--epochs", "1",
-        "--batch-size", "1"
+        "--epochs", "{epochs}",
+        "--batch-size", "{batch_size}",
+        "--device", "cuda"
     ], check=True)
 
     print("--- PIPELINE COMPLETED SUCCESSFULLY ---")
@@ -166,8 +139,13 @@ def main():
     except Exception as e:
         print(f"⚠️ Warning: Could not write kaggle.json/access_token: {e}")
 
-    raw_dataset_ref = tokens.get("KAGGLE_RAW_DATASET_REF", "sonlest/vietnamese-music-dataset-version3-part6")
-    raw_dataset_slug = raw_dataset_ref.split("/")[-1]
+    processed_dataset_ref = os.getenv("KAGGLE_PROCESSED_DATASET_REF") or tokens.get(
+        "KAGGLE_PROCESSED_DATASET_REF",
+        "ngochuy5602/genmusic-vn-part3-vocal-vocos-smoke",
+    )
+    processed_dataset_slug = processed_dataset_ref.split("/")[-1]
+    epochs = os.getenv("KAGGLE_TRAIN_EPOCHS") or tokens.get("KAGGLE_TRAIN_EPOCHS", "5")
+    batch_size = os.getenv("KAGGLE_TRAIN_BATCH_SIZE") or tokens.get("KAGGLE_TRAIN_BATCH_SIZE", "4")
     
     run_id = f"train-run-{int(time.time())}"
     job_dir = project_root / "outputs" / "kaggle_training" / run_id
@@ -180,7 +158,8 @@ def main():
 
     print("======================================================================")
     print(f"🚀 Initializing Kaggle Job: {run_id}")
-    print(f"   Raw Dataset: {raw_dataset_ref}")
+    print(f"   Processed Dataset: {processed_dataset_ref}")
+    print(f"   Training config: epochs={epochs}, batch_size={batch_size}")
     print("======================================================================")
 
     # 1. Zip source code
@@ -212,7 +191,10 @@ def main():
     kernel_slug = f"genmusic-train-{int(time.time())}"
     kernel_ref = f"{username}/{kernel_slug}"
     
-    (kernel_dir / "run_training.py").write_text(_kernel_script_content(raw_dataset_slug), encoding="utf-8")
+    (kernel_dir / "run_training.py").write_text(
+        _kernel_script_content(processed_dataset_slug, epochs, batch_size),
+        encoding="utf-8",
+    )
     (kernel_dir / "kernel-metadata.json").write_text(json.dumps({
         "id": kernel_ref,
         "title": kernel_slug,
@@ -224,7 +206,7 @@ def main():
         "enable_internet": "true",
         "machine_shape": "NvidiaTeslaT4",
         "dataset_sources": [
-            raw_dataset_ref,
+            processed_dataset_ref,
             source_dataset_ref
         ]
     }, indent=2))
