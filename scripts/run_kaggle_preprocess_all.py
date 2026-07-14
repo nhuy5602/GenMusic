@@ -26,12 +26,14 @@ def _write_source_zip(project_root: Path, destination: Path) -> None:
 
 def _kernel_script_content(
     raw_dataset_slug: str,
-    output_dataset_ref: str,
-    kaggle_username: str,
-    kaggle_key: str,
     max_files: str | None = None,
 ) -> str:
     # Script runs on Kaggle GPU instance and processes the requested file set.
+    # Deliberately never embeds any Kaggle credentials -- this source is pushed to
+    # Kaggle and becomes visible/shareable, so it must stay safe to hand to anyone.
+    # The processed dataset is left as this kernel's own retained output; downstream
+    # kernels attach it via `kernel_sources` (see run_kaggle_training.py/run_kaggle_distill.py)
+    # instead of the preprocess kernel re-authenticating to publish a separate Dataset.
     kernel_max_files = str(max_files or "")
     return f'''import os
 import json
@@ -44,9 +46,6 @@ import zipfile
 import traceback
 from pathlib import Path
 
-    # Set up Kaggle credentials inside the kernel environment so it can upload
-os.environ["KAGGLE_USERNAME"] = "{kaggle_username}"
-os.environ["KAGGLE_KEY"] = "{kaggle_key}"
 # Disable output buffering to force real-time log printing in Kaggle console
 os.environ["PYTHONUNBUFFERED"] = "1"
 
@@ -264,19 +263,10 @@ try:
     record_count = sum(1 for line in records_path.read_text(encoding="utf-8").splitlines() if line.strip()) if records_path.exists() else 0
     if preprocess_result.returncode != 0 and record_count == 0:
         raise RuntimeError(f"Preprocessing failed without usable records. See /kaggle/working/preprocess.log")
-    print(f"Preprocessing produced {{record_count}} usable records; continuing with dataset upload.", flush=True)
-
-    print("--- STEP 5: Creating and Uploading Processed Dataset to Kaggle ---")
-    metadata = {{
-        "title": "Vietnamese Music Processed Dataset",
-        "id": "{output_dataset_ref}",
-        "licenses": [{{ "name": "other" }}]
-    }}
-    with open(preprocessed_dir / "dataset-metadata.json", "w") as f:
-        json.dump(metadata, f, indent=2)
-
-    print(f"Creating Kaggle Dataset: {output_dataset_ref}...")
-    run_logged(["kaggle", "datasets", "create", "-p", str(preprocessed_dir), "-r", "zip"], "upload", 1800)
+    print(f"Preprocessing produced {{record_count}} usable records.", flush=True)
+    print("Output kept at /kaggle/working/processed_dataset -- this kernel's own retained "
+          "output. Attach it to downstream kernels via kernel_sources (this kernel's ref), "
+          "no re-upload or credentials needed.", flush=True)
 
     print("--- ALL PROCESSES COMPLETED SUCCESSFULLY ---")
     Path("/kaggle/working/success.txt").write_text("success", encoding="utf-8")
@@ -326,7 +316,6 @@ def main():
     raw_dataset_ref = os.getenv("KAGGLE_RAW_DATASET_REF") or tokens.get("KAGGLE_RAW_DATASET_REF", "sonlest/vietnamese-music-dataset-version3-part6")
     raw_dataset_slug = raw_dataset_ref.split("/")[-1]
     
-    output_dataset_ref = os.getenv("KAGGLE_PROCESSED_DATASET_REF") or tokens.get("KAGGLE_PROCESSED_DATASET_REF", f"{username}/vietnamese-music-processed-dataset")
     max_files = os.getenv("KAGGLE_PREPROCESS_MAX_FILES") or tokens.get("KAGGLE_PREPROCESS_MAX_FILES")
     if max_files:
         try:
@@ -346,7 +335,6 @@ def main():
     print("======================================================================")
     print(f"🚀 Initializing Preprocess Request: {run_id}")
     print(f"   Source Dataset: {raw_dataset_ref}")
-    print(f"   Target Dataset: https://www.kaggle.com/datasets/{output_dataset_ref}")
     print("======================================================================")
 
     # 1. Zip source code
@@ -377,7 +365,7 @@ def main():
     kernel_slug = f"genmusic-prep-{int(time.time())}"
     kernel_ref = f"{username}/{kernel_slug}"
     
-    kernel_script = _kernel_script_content(raw_dataset_slug, output_dataset_ref, username, tokens["KAGGLE_KEY"], max_files)
+    kernel_script = _kernel_script_content(raw_dataset_slug, max_files)
     (kernel_dir / "run_preprocess.py").write_text(kernel_script, encoding="utf-8")
     (kernel_dir / "kernel-metadata.json").write_text(json.dumps({
         "id": kernel_ref,
@@ -413,8 +401,10 @@ def main():
     print("\n✅ PREPROCESS REQUEST SUBMITTED SUCCESSFULLY!")
     print(f"Watch live logs on Kaggle Web UI:")
     print(f"➔ https://www.kaggle.com/code/{kernel_ref}")
-    print(f"\nThe preprocessed dataset will be uploaded to your Kaggle profile at:")
-    print(f"➔ https://www.kaggle.com/datasets/{output_dataset_ref}")
+    print(f"\nOnce it completes, the processed dataset is this kernel's own retained output")
+    print(f"(no separate Dataset upload, no credentials embedded in the shared code).")
+    print(f"Point downstream kernels (train/distill) at it with:")
+    print(f'  KAGGLE_PROCESSED_KERNEL_REF={kernel_ref}')
 
 if __name__ == "__main__":
     main()

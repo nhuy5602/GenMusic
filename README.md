@@ -60,6 +60,11 @@ GENMUSIC_OUTPUT_DIR=outputs
 KAGGLE_USERNAME=your_kaggle_username
 KAGGLE_KEY=your_kaggle_api_key
 KAGGLE_RAW_DATASET_REF=sonlest/vietnamese-music-dataset-version3-part6
+# Set after a preprocess run (scripts/run_kaggle_preprocess_all.py) -- attaches the
+# preprocess kernel's own output to downstream kernels via kernel_sources, so no
+# Kaggle API key is ever embedded in the shared kernel code:
+KAGGLE_PROCESSED_KERNEL_REF=your_kaggle_username/genmusic-prep-1234567890
+# Legacy fallback: a pre-existing published Dataset, used only if the above is unset.
 KAGGLE_PROCESSED_DATASET_REF=your_kaggle_username/vietnamese-music-processed-dataset
 ```
 

@@ -172,9 +172,14 @@ def run_kaggle_distillation() -> None:
     
     (kernel_dir / "run_distill.py").write_text(_kernel_script_content(), encoding="utf-8")
     
-    # Target dataset slug
-    processed_dataset_ref = tokens.get("KAGGLE_PROCESSED_DATASET_REF", f"{username}/vietnamese-music-processed-dataset")
-    
+    # Processed data source: a preprocess-kernel output (kernel_sources, no credentials
+    # needed) takes priority; falls back to a pre-existing published Dataset for
+    # compatibility with datasets published before this fix.
+    processed_kernel_ref = tokens.get("KAGGLE_PROCESSED_KERNEL_REF")
+    processed_dataset_ref = None if processed_kernel_ref else tokens.get(
+        "KAGGLE_PROCESSED_DATASET_REF", f"{username}/vietnamese-music-processed-dataset"
+    )
+
     (kernel_dir / "kernel-metadata.json").write_text(json.dumps({
         "id": kernel_ref,
         "title": kernel_slug,
@@ -185,11 +190,8 @@ def run_kaggle_distillation() -> None:
         "enable_gpu": True,
         "enable_tpu": False,
         "enable_internet": True,
-        "dataset_sources": [
-            source_dataset_ref,
-            processed_dataset_ref
-        ],
-        "kernel_sources": [],
+        "dataset_sources": [source_dataset_ref] + ([processed_dataset_ref] if processed_dataset_ref else []),
+        "kernel_sources": [processed_kernel_ref] if processed_kernel_ref else [],
         "competition_sources": []
     }, indent=2))
 

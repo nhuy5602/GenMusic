@@ -193,11 +193,17 @@ def main():
     except Exception as e:
         print(f"⚠️ Warning: Could not write kaggle.json/access_token: {e}")
 
+    # KAGGLE_PROCESSED_KERNEL_REF: output of a preprocess kernel run with the fixed
+    # run_kaggle_preprocess_all.py (attached via kernel_sources, no credentials needed).
+    # KAGGLE_PROCESSED_DATASET_REF: a pre-existing published Dataset (attached via
+    # dataset_sources instead) -- kept for compatibility with datasets published before
+    # this fix, or shared manually outside this project's scripts.
+    processed_kernel_ref = os.getenv("KAGGLE_PROCESSED_KERNEL_REF") or tokens.get("KAGGLE_PROCESSED_KERNEL_REF")
     processed_dataset_ref = os.getenv("KAGGLE_PROCESSED_DATASET_REF") or tokens.get(
         "KAGGLE_PROCESSED_DATASET_REF",
-        "ngochuy5602/genmusic-vn-part3-vocal-vocos-smoke",
+        "ngochuy5602/genmusic-vn-part3-vocal-vocos-smoke" if not processed_kernel_ref else None,
     )
-    processed_dataset_slug = processed_dataset_ref.split("/")[-1]
+    processed_dataset_slug = (processed_kernel_ref or processed_dataset_ref).split("/")[-1]
     epochs = os.getenv("KAGGLE_TRAIN_EPOCHS") or tokens.get("KAGGLE_TRAIN_EPOCHS", "5")
     batch_size = os.getenv("KAGGLE_TRAIN_BATCH_SIZE") or tokens.get("KAGGLE_TRAIN_BATCH_SIZE", "4")
     
@@ -212,7 +218,7 @@ def main():
 
     print("======================================================================")
     print(f"🚀 Initializing Kaggle Job: {run_id}")
-    print(f"   Processed Dataset: {processed_dataset_ref}")
+    print(f"   Processed data source: {processed_kernel_ref or processed_dataset_ref} ({'kernel' if processed_kernel_ref else 'dataset'})")
     print(f"   Training config: epochs={epochs}, batch_size={batch_size}")
     print("======================================================================")
 
@@ -259,10 +265,8 @@ def main():
         "enable_gpu": "true",       # Enable GPU training
         "enable_internet": "true",
         "machine_shape": "NvidiaTeslaT4",
-        "dataset_sources": [
-            processed_dataset_ref,
-            source_dataset_ref
-        ]
+        "dataset_sources": [source_dataset_ref] + ([] if processed_kernel_ref else [processed_dataset_ref]),
+        "kernel_sources": [processed_kernel_ref] if processed_kernel_ref else [],
     }, indent=2))
 
     # 4. Push Kernel to Kaggle
