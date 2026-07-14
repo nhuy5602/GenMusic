@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     local.add_argument("--seed", type=int, default=5602)
     local.add_argument("--device", default=None)
     local.add_argument("--out", required=True)
-    local.add_argument("--vocoder", default="istft", choices=["istft", "vocos"], help="Chọn bộ giải mã spectrogram thành âm thanh.")
+    local.add_argument("--vocoder", default="vocos", choices=["istft", "vocos"], help="Chọn bộ giải mã spectrogram thành âm thanh.")
     local.add_argument("--model-type", default="conv1d", choices=["conv1d", "dit"], help="Chọn kiến trúc mô hình khuếch tán.")
     local.add_argument("--roberta-model", default="xlm-roberta-base", help="Tên model RoBERTa dùng làm Text Encoder.")
 
@@ -135,6 +135,9 @@ def build_parser() -> argparse.ArgumentParser:
     preprocess.add_argument("--max-files", type=int, default=None, help="Giới hạn số lượng bài hát tối đa sẽ xử lý.")
     preprocess.add_argument("--skip-demucs", action="store_true", help="Bỏ tách vocal, dùng bản phối thật làm mục tiêu nhanh.")
     preprocess.add_argument("--skip-asr", action="store_true", help="Bỏ Whisper ASR và dùng nhãn text mặc định.")
+    preprocess.add_argument("--vocos-compatible", action="store_true", help="Tạo mel đúng chuẩn Vocos 24 kHz/100 kênh.")
+    preprocess.add_argument("--demucs-device", default="auto", choices=("auto", "cuda", "cpu"))
+    preprocess.add_argument("--whisper-device", default="auto", choices=("auto", "cpu", "cuda"))
 
     return parser
 
@@ -212,6 +215,13 @@ def main(argv: list[str] | None = None) -> int:
             max_files=args.max_files,
             use_demucs=not args.skip_demucs,
             transcribe=not args.skip_asr,
+            sample_rate=24000 if args.vocos_compatible else 16000,
+            n_mels=100 if args.vocos_compatible else 64,
+            n_fft=1024 if args.vocos_compatible else 512,
+            hop_length=256,
+            mel_power=1.0 if args.vocos_compatible else 2.0,
+            demucs_device=args.demucs_device,
+            whisper_device=args.whisper_device,
         )
     else:  # pragma: no cover - argparse enforces command choices
         raise ValueError(args.command)

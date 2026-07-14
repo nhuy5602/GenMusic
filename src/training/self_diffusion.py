@@ -60,13 +60,20 @@ class MusicDiffusionDataset:
             vocal_mel = _load_mel(mel_path)
             backing_mel = torch.zeros_like(vocal_mel)
             
-        vocal_mel = _fit_mel_frames(vocal_mel, self.config.frames_per_chunk)
-        backing_mel = _fit_mel_frames(backing_mel, self.config.frames_per_chunk)
+        # Crop both stems at the same offset so the text/audio condition stays aligned.
+        crop_start = 0
+        shared_frames = min(vocal_mel.shape[1], backing_mel.shape[1])
+        if shared_frames > self.config.frames_per_chunk:
+            crop_start = random.randint(0, shared_frames - self.config.frames_per_chunk)
+            vocal_mel = vocal_mel[:, crop_start:crop_start + self.config.frames_per_chunk]
+            backing_mel = backing_mel[:, crop_start:crop_start + self.config.frames_per_chunk]
+        else:
+            vocal_mel = _fit_mel_frames(vocal_mel, self.config.frames_per_chunk)
+            backing_mel = _fit_mel_frames(backing_mel, self.config.frames_per_chunk)
         
         # Crop random style anchor representing the Audio Anchor style prompt
         anchor_len = 64
         mel_len = backing_mel.shape[1]
-        import random
         if mel_len > anchor_len:
             start = random.randint(0, mel_len - anchor_len)
             style_anchor = backing_mel[:, start:start + anchor_len]
@@ -74,7 +81,19 @@ class MusicDiffusionDataset:
             import torch.nn.functional as F
             style_anchor = F.pad(backing_mel, (0, anchor_len - mel_len))
             
-        text = f"{record['style']}. {record['text']}"
+        lyric_text = record["text"]
+        segments = record.get("segments") or []
+        if segments:
+            crop_start_seconds = crop_start * self.config.hop_length / self.config.sample_rate
+            crop_end_seconds = crop_start_seconds + self.config.frames_per_chunk * self.config.hop_length / self.config.sample_rate
+            local_segments = [
+                segment["text"]
+                for segment in segments
+                if float(segment.get("end", 0.0)) > crop_start_seconds and float(segment.get("start", 0.0)) < crop_end_seconds
+            ]
+            if local_segments:
+                lyric_text = " ".join(local_segments)
+        text = f"{record['style']}. {lyric_text}"
         return {"vocal_mel": vocal_mel, "backing_mel": backing_mel, "style_anchor": style_anchor, "text": text}
 
 class DiffusionTrainer:

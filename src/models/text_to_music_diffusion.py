@@ -24,6 +24,7 @@ class MusicDiffusionConfig:
     n_mels: int = 64
     n_fft: int = 512
     hop_length: int = 256
+    mel_power: float = 2.0
     frames_per_chunk: int = 128
     text_vocab_size: int = 256
     text_max_length: int = 256
@@ -225,7 +226,17 @@ def diffusion_loss(model: ResidualDenoiser, clean_mel, texts: list[str], config:
     return torch.nn.functional.mse_loss(prediction, noise)
 
 
-def sample_mel(model: ResidualDenoiser, text: str, frames: int, *, config: MusicDiffusionConfig, device, steps: int | None = None, seed: int | None = None):
+def sample_mel(
+    model: ResidualDenoiser,
+    text: str,
+    frames: int,
+    *,
+    config: MusicDiffusionConfig,
+    device,
+    steps: int | None = None,
+    seed: int | None = None,
+    noise_scale: float = 0.0,
+):
     torch, _ = _torch()
     if seed is not None:
         torch.manual_seed(seed)
@@ -243,8 +254,8 @@ def sample_mel(model: ResidualDenoiser, text: str, frames: int, *, config: Music
             current_beta = beta[index]
             current_cumulative = cumulative[index]
             sample = (sample - current_beta / (1.0 - current_cumulative).sqrt() * prediction) / current_alpha.sqrt()
-            if int(index) > 0:
-                sample = sample + current_beta.sqrt() * 0.15 * torch.randn_like(sample)
+            if int(index) > 0 and noise_scale > 0.0:
+                sample = sample + current_beta.sqrt() * float(noise_scale) * torch.randn_like(sample)
     return sample.clamp(-5.0, 3.0)
 
 
@@ -294,25 +305,30 @@ def render_mel_to_wav(mel, destination: str | Path, config: MusicDiffusionConfig
             else:
                 mel_tensor = mel.detach().cpu().float()
                 
-            # Shape is [n_mels, time_steps]
+            # Vocos was trained on log amplitude mel features, not an
+            # interpolated power mel. Keep the representation exact whenever
+            # the dataset was prepared with --vocos-compatible.
             n_mels, time_steps = mel_tensor.shape
-            
-            # Calculate target time steps (resample to 24000 Hz frame rate)
-            # Vocos expects 24000 Hz sample rate, 256 hop length.
-            # Original has config.sample_rate and config.hop_length.
-            original_fps = config.sample_rate / config.hop_length
-            vocos_fps = 24000 / 256
-            time_scale = vocos_fps / original_fps
-            target_time_steps = max(8, int(time_steps * time_scale))
-            
-            # Interpolate to shape [1, 100, target_time_steps]
-            mel_tensor = mel_tensor.unsqueeze(0).unsqueeze(0) # [1, 1, n_mels, time_steps]
-            mel_tensor = F.interpolate(
-                mel_tensor, 
-                size=(100, target_time_steps), 
-                mode='bilinear', 
-                align_corners=False
-            ).squeeze(0) # [1, 100, target_time_steps]
+            is_native_vocos_mel = (
+                config.sample_rate == 24000
+                and config.n_fft == 1024
+                and config.hop_length == 256
+                and config.n_mels == 100
+                and abs(float(config.mel_power) - 1.0) < 1e-6
+            )
+            if is_native_vocos_mel:
+                mel_tensor = mel_tensor.unsqueeze(0)
+            else:
+                original_fps = config.sample_rate / config.hop_length
+                vocos_fps = 24000 / 256
+                target_time_steps = max(8, int(time_steps * vocos_fps / original_fps))
+                mel_tensor = mel_tensor.unsqueeze(0).unsqueeze(0)
+                mel_tensor = F.interpolate(
+                    mel_tensor,
+                    size=(100, target_time_steps),
+                    mode="bilinear",
+                    align_corners=False,
+                ).squeeze(0)
             
             # Vocos expects log-mel in range matching its training distribution.
             # Our model output is in similar scale, so we pass it directly.
@@ -320,6 +336,7 @@ def render_mel_to_wav(mel, destination: str | Path, config: MusicDiffusionConfig
                 audio_tensor = vocos_model.decode(mel_tensor) # [1, audio_len]
                 
             audio = audio_tensor.squeeze(0).cpu().numpy()
+            audio = clean_generated_audio(audio, 24000)
             audio = audio / max(1e-6, float(np.max(np.abs(audio)))) * 0.8
             pcm = (audio.clip(-1.0, 1.0) * 32767.0).astype(np.int16)
             
@@ -346,6 +363,7 @@ def render_mel_to_wav(mel, destination: str | Path, config: MusicDiffusionConfig
     phase = 2.0 * np.pi * frequencies * frame_times
     phase += np.linspace(0.0, np.pi, magnitude.shape[0], dtype=np.float32)[:, None]
     audio = librosa.istft(magnitude * np.exp(1j * phase), hop_length=config.hop_length, n_fft=config.n_fft)
+    audio = clean_generated_audio(audio, config.sample_rate)
     audio = audio / max(1e-6, float(np.max(np.abs(audio)))) * 0.8
     pcm = (audio.clip(-1.0, 1.0) * 32767.0).astype(np.int16)
     with wave.open(str(destination), "wb") as stream:
@@ -354,6 +372,29 @@ def render_mel_to_wav(mel, destination: str | Path, config: MusicDiffusionConfig
         stream.setframerate(config.sample_rate)
         stream.writeframes(pcm.tobytes())
     return destination.resolve()
+
+
+def clean_generated_audio(audio, sample_rate: int):
+    """Reduce stationary hiss while retaining the vocal and musical band."""
+    values = np.asarray(audio, dtype=np.float32)
+    if values.size < 2048:
+        return values
+    try:
+        import librosa
+        from scipy.signal import butter, sosfiltfilt
+
+        high_cut = min(10_000.0, sample_rate * 0.42)
+        sos = butter(4, [60.0, high_cut], btype="bandpass", fs=sample_rate, output="sos")
+        filtered = sosfiltfilt(sos, values).astype(np.float32)
+        spectrum = librosa.stft(filtered, n_fft=1024, hop_length=256)
+        magnitude = np.abs(spectrum)
+        floor = np.percentile(magnitude, 15.0, axis=1, keepdims=True)
+        gain = magnitude**2 / (magnitude**2 + (floor * 1.8) ** 2 + 1e-8)
+        gain = np.clip(gain, 0.12, 1.0)
+        denoised = librosa.istft(spectrum * gain, hop_length=256, length=len(filtered))
+        return (0.9 * denoised + 0.1 * filtered).astype(np.float32)
+    except Exception:
+        return values
 
 
 def save_checkpoint(model: ResidualDenoiser, path: str | Path, config: MusicDiffusionConfig, *, optimizer=None, epoch: int = 0, loss: float | None = None) -> Path:

@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import shutil
+import sys
 from pathlib import Path
 import numpy as np
 import librosa
@@ -31,29 +32,33 @@ N_MELS = 64
 N_FFT = 512
 HOP_LENGTH = 256
 
-def run_demucs_separation(audio_path: Path, output_dir: Path) -> tuple[Path | None, Path | None]:
+def run_demucs_separation(audio_path: Path, output_dir: Path, device: str = "auto") -> tuple[Path | None, Path | None]:
     """Separate vocals and backing using Demucs CLI."""
     print(f"-> Separating vocal/backing stems for: {audio_path.name}...", flush=True)
-    try:
-        subprocess.run(
-            ["demucs", "--two-stems=vocals", "-o", str(output_dir), str(audio_path)],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-        
-        # Demucs default structure: output_dir/htdemucs/song_stem_name/
-        model_name = "htdemucs"
-        song_folder = output_dir / model_name / audio_path.stem
-        
-        vocals_file = song_folder / "vocals.wav"
-        backing_file = song_folder / "no_vocals.wav"
-        
-        if vocals_file.exists() and backing_file.exists():
-            return vocals_file, backing_file
-            
-    except Exception as e:
-        print(f"[WARNING] Demucs separation failed/not found: {e}. Falling back to treating audio as instrumental (no vocal split).", flush=True)
+    requested = (device or "auto").lower()
+    devices = [requested] if requested != "auto" else (["cuda", "cpu"] if torch.cuda.is_available() else ["cpu"])
+    last_error = "unknown error"
+    for selected_device in devices:
+        try:
+            command = [sys.executable, "-m", "demucs.separate", "--two-stems=vocals", "-o", str(output_dir)]
+            if selected_device:
+                command.extend(["-d", selected_device])
+            command.append(str(audio_path))
+            result = subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+
+            model_name = "htdemucs"
+            song_folder = output_dir / model_name / audio_path.stem
+            vocals_file = song_folder / "vocals.wav"
+            backing_file = song_folder / "no_vocals.wav"
+            if vocals_file.exists() and backing_file.exists():
+                return vocals_file, backing_file
+            last_error = f"Demucs completed on {selected_device} without producing both stems. {result.stderr[-500:]}"
+        except Exception as exc:
+            last_error = str(exc)
+            if selected_device != devices[-1]:
+                print(f"[WARNING] Demucs {selected_device} failed; retrying on {devices[-1]}.", flush=True)
+
+    print(f"[WARNING] Demucs separation failed: {last_error}. Falling back to raw mix.", flush=True)
     
     return None, None
 
@@ -65,6 +70,12 @@ def process_file(
     *,
     use_demucs: bool = True,
     transcribe: bool = True,
+    sample_rate: int = SAMPLE_RATE,
+    n_mels: int = N_MELS,
+    n_fft: int = N_FFT,
+    hop_length: int = HOP_LENGTH,
+    mel_power: float = 2.0,
+    demucs_device: str = "auto",
 ) -> dict:
     sample_id = audio_path.stem
     print(f"\n==================== PROCESSING {sample_id} ====================", flush=True)
@@ -77,18 +88,18 @@ def process_file(
         d.mkdir(parents=True, exist_ok=True)
         
     # 1. Stem separation
-    vocals_wav, backing_wav = run_demucs_separation(audio_path, separated_dir) if use_demucs else (None, None)
+    vocals_wav, backing_wav = run_demucs_separation(audio_path, separated_dir, demucs_device) if use_demucs else (None, None)
     
     # 2. Backing processing
     if backing_wav and backing_wav.exists():
-        y_backing, sr = librosa.load(backing_wav, sr=SAMPLE_RATE)
+        y_backing, sr = librosa.load(backing_wav, sr=sample_rate)
     else:
         print("-> Using raw audio as backing track...", flush=True)
-        y_backing, sr = librosa.load(audio_path, sr=SAMPLE_RATE)
+        y_backing, sr = librosa.load(audio_path, sr=sample_rate)
         vocals_wav = None
         
     mel_backing = librosa.feature.melspectrogram(
-        y=y_backing, sr=sr, n_fft=N_FFT, hop_length=HOP_LENGTH, n_mels=N_MELS, power=2.0
+        y=y_backing, sr=sr, n_fft=n_fft, hop_length=hop_length, n_mels=n_mels, power=mel_power
     )
     log_mel_backing = np.clip(np.log(np.clip(mel_backing, 1e-5, None)), -5.0, 3.0)
     backing_tensor = torch.from_numpy(log_mel_backing).float()
@@ -100,21 +111,40 @@ def process_file(
     tempo, _ = librosa.beat.beat_track(y=y_backing, sr=sr)
     bpm = int(tempo[0]) if hasattr(tempo, "__len__") else int(tempo)
 
+    # Keep this before cleanup: the separated wavs may be removed after tensors
+    # are saved, but the record must still describe the actual training target.
+    has_vocal = bool(vocals_wav and vocals_wav.exists())
+
     # 3. Vocal transcription & features extraction
     lyrics = f"Vietnamese music track {sample_id}."
+    lyric_segments = []
     vocal_tensor = backing_tensor.clone()
     
-    if vocals_wav and vocals_wav.exists():
-        y_vocal, _ = librosa.load(vocals_wav, sr=SAMPLE_RATE)
+    if has_vocal:
+        y_vocal, _ = librosa.load(vocals_wav, sr=sample_rate)
         
         # Whisper Transcription
         if transcribe and whisper_model is not None:
             print("-> Transcribing lyrics using Whisper ASR...", flush=True)
-            asr_res = whisper_model.transcribe(str(vocals_wav), language="vi", word_timestamps=True)
+            asr_res = whisper_model.transcribe(
+                str(vocals_wav),
+                language="vi",
+                word_timestamps=True,
+                fp16=(str(next(whisper_model.parameters()).device).startswith("cuda")),
+            )
             lyrics = asr_res["text"].strip()
+            lyric_segments = [
+                {
+                    "start": round(float(segment.get("start", 0.0)), 3),
+                    "end": round(float(segment.get("end", 0.0)), 3),
+                    "text": str(segment.get("text", "")).strip(),
+                }
+                for segment in asr_res.get("segments", [])
+                if str(segment.get("text", "")).strip()
+            ]
         
         mel_vocal = librosa.feature.melspectrogram(
-            y=y_vocal[:frames * HOP_LENGTH], sr=sr, n_fft=N_FFT, hop_length=HOP_LENGTH, n_mels=N_MELS, power=2.0
+            y=y_vocal[:frames * hop_length], sr=sr, n_fft=n_fft, hop_length=hop_length, n_mels=n_mels, power=mel_power
         )
         if mel_vocal.shape[1] < frames:
             mel_vocal = np.pad(mel_vocal, ((0, 0), (0, frames - mel_vocal.shape[1])))
@@ -136,11 +166,12 @@ def process_file(
     return {
         "id": sample_id,
         "text": lyrics,
+        "segments": lyric_segments,
         "style": f"Vietnamese music, {bpm} BPM, emotional melody",
         "bpm": bpm,
         "frames": frames,
-        "has_vocal": bool(vocals_wav and vocals_wav.exists()),
-        "vocal_source": "demucs" if vocals_wav and vocals_wav.exists() else "raw_mix_fallback",
+        "has_vocal": has_vocal,
+        "vocal_source": "demucs" if has_vocal else "raw_mix_fallback",
         "backing_mel_path": f"mels/{sample_id}_backing.pt",
         "vocal_mel_path": f"mels/{sample_id}_vocal.pt"
     }
@@ -154,6 +185,13 @@ def preprocess_raw_audio(
     *,
     use_demucs: bool = True,
     transcribe: bool = True,
+    sample_rate: int = SAMPLE_RATE,
+    n_mels: int = N_MELS,
+    n_fft: int = N_FFT,
+    hop_length: int = HOP_LENGTH,
+    mel_power: float = 2.0,
+    demucs_device: str = "auto",
+    whisper_device: str = "auto",
 ) -> dict:
     raw_dir = Path(input_path)
     output_dir = Path(output_path)
@@ -177,7 +215,17 @@ def preprocess_raw_audio(
         if whisper is None:
             raise RuntimeError("Cần cài openai-whisper hoặc dùng --skip-asr.")
         print(f"Loading Whisper model ({whisper_model_name})...", flush=True)
-        whisper_model = whisper.load_model(whisper_model_name)
+        requested_device = (whisper_device or "auto").lower()
+        whisper_devices = [requested_device] if requested_device != "auto" else (["cuda", "cpu"] if torch.cuda.is_available() else ["cpu"])
+        for selected_device in whisper_devices:
+            try:
+                whisper_model = whisper.load_model(whisper_model_name, device=selected_device)
+                whisper_device = selected_device
+                break
+            except Exception as exc:
+                if selected_device == whisper_devices[-1]:
+                    raise
+                print(f"[WARNING] Whisper {selected_device} failed; retrying on {whisper_devices[-1]}: {exc}", flush=True)
     
     records = []
     failures = []
@@ -191,6 +239,12 @@ def preprocess_raw_audio(
                 keep_separated=(idx <= keep_separated_count),
                 use_demucs=use_demucs,
                 transcribe=transcribe,
+                sample_rate=sample_rate,
+                n_mels=n_mels,
+                n_fft=n_fft,
+                hop_length=hop_length,
+                mel_power=mel_power,
+                demucs_device=demucs_device,
             )
             records.append(record)
         except Exception as e:
@@ -205,10 +259,11 @@ def preprocess_raw_audio(
             
     # Write dataset config
     config_data = {
-        "sample_rate": SAMPLE_RATE,
-        "n_mels": N_MELS,
-        "n_fft": N_FFT,
-        "hop_length": HOP_LENGTH
+        "sample_rate": sample_rate,
+        "n_mels": n_mels,
+        "n_fft": n_fft,
+        "hop_length": hop_length,
+        "mel_power": mel_power,
     }
     (output_dir / "config.json").write_text(json.dumps(config_data, indent=2), encoding="utf-8")
     
@@ -239,7 +294,20 @@ def main():
     parser.add_argument("--whisper-model", default="base", help="Size of Whisper model to use.")
     parser.add_argument("--skip-demucs", action="store_true", help="Bỏ tách vocal, dùng bản phối thật làm mục tiêu nhanh.")
     parser.add_argument("--skip-asr", action="store_true", help="Bỏ Whisper ASR và dùng nhãn text mặc định.")
+    parser.add_argument("--vocos-compatible", action="store_true", help="Tạo mel đúng chuẩn Vocos 24 kHz/100 kênh.")
+    parser.add_argument("--demucs-device", default="auto", choices=("auto", "cuda", "cpu"))
+    parser.add_argument("--whisper-device", default="auto", choices=("auto", "cpu", "cuda"))
     args = parser.parse_args()
+
+    mel_config = {
+        "sample_rate": 24000 if args.vocos_compatible else SAMPLE_RATE,
+        "n_mels": 100 if args.vocos_compatible else N_MELS,
+        "n_fft": 1024 if args.vocos_compatible else N_FFT,
+        "hop_length": 256 if args.vocos_compatible else HOP_LENGTH,
+        "mel_power": 1.0 if args.vocos_compatible else 2.0,
+        "demucs_device": args.demucs_device,
+        "whisper_device": args.whisper_device,
+    }
 
     preprocess_raw_audio(
         args.input,
@@ -247,6 +315,7 @@ def main():
         args.whisper_model,
         use_demucs=not args.skip_demucs,
         transcribe=not args.skip_asr,
+        **mel_config,
     )
 
 if __name__ == "__main__":

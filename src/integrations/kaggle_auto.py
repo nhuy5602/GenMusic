@@ -45,7 +45,7 @@ class KaggleJobConfig:
     training_dataset_ref: str | None = None
 
 
-def run_local_generation(*, text: str, style: str, output_dir: str | Path, duration_seconds: float, checkpoint: str | Path | None = None, steps: int = 6, seed: int = 5602, device: str | None = None, mel_output: str | Path | None = None, vocoder: str = "istft", model_type: str = "conv1d", roberta_model: str = "xlm-roberta-base") -> dict[str, Any]:
+def run_local_generation(*, text: str, style: str, output_dir: str | Path, duration_seconds: float, checkpoint: str | Path | None = None, steps: int = 6, seed: int = 5602, device: str | None = None, mel_output: str | Path | None = None, vocoder: str = "vocos", model_type: str = "conv1d", roberta_model: str = "xlm-roberta-base") -> dict[str, Any]:
     normalized = normalize_vietnamese_lyrics(text).strip()
     if not normalized:
         raise SelfMusicError("Văn bản input đang trống.")
@@ -343,7 +343,8 @@ def load_kaggle_api_tokens() -> dict[str, str]:
 
 
 def kaggle_cli_command() -> list[str] | None:
-    candidates = [shutil.which("kaggle")]
+    configured = os.getenv("KAGGLE_CLI_PATH")
+    candidates = [configured, shutil.which("kaggle")]
     scripts = Path(site.USER_BASE) / ("Scripts" if os.name == "nt" else "bin")
     candidates.append(str(scripts / ("kaggle.exe" if os.name == "nt" else "kaggle")))
     runtime_scripts = Path(sys.executable).resolve().parent / "Scripts"
@@ -428,11 +429,11 @@ elif source_dir and source_dir.is_dir():
 else:
     raise RuntimeError("Không tìm thấy source model trong request dataset Kaggle.")
 os.environ["PYTHONPATH"] = str(source_root) + os.pathsep + os.environ.get("PYTHONPATH", "")
-subprocess.run([sys.executable, "-m", "pip", "install", "-q", "torch", "torchaudio", "librosa", "matplotlib"], check=False)
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "torch", "torchaudio", "librosa", "matplotlib", "imageio-ffmpeg", "vocos"], check=False)
 checkpoint = Path("/kaggle/working/self_music.pt")
 subprocess.run([sys.executable, "cli.py", "train-self", "--dataset", str(training_dataset), "--checkpoint", str(checkpoint), "--epochs", "1", "--batch-size", "4"], cwd=source_root, check=True)
 output = Path("/kaggle/working/genmusic_output")
-subprocess.run([sys.executable, "cli.py", "generate-local", "--text", request["lyrics"], "--style", request["style_prompt"], "--duration", str(request["duration_seconds"]), "--checkpoint", str(checkpoint), "--steps", "6", "--out", str(output)], cwd=source_root, check=True)
+subprocess.run([sys.executable, "cli.py", "generate-local", "--text", request["lyrics"], "--style", request["style_prompt"], "--duration", str(request["duration_seconds"]), "--checkpoint", str(checkpoint), "--steps", "6", "--vocoder", "vocos", "--out", str(output)], cwd=source_root, check=True)
 output.joinpath("request.json").write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
 if shutil.which("ffmpeg") and list(output.glob("*.wav")):
     subprocess.run(["ffmpeg", "-y", "-i", str(list(output.glob("*.wav"))[0]), str(output / "final.mp3")], check=False)

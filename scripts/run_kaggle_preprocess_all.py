@@ -35,7 +35,7 @@ import zipfile
 import traceback
 from pathlib import Path
 
-# Set up Kaggle credentials inside the kernel environment so it can upload
+    # Set up Kaggle credentials inside the kernel environment so it can upload
 os.environ["KAGGLE_USERNAME"] = "{kaggle_username}"
 os.environ["KAGGLE_KEY"] = "{kaggle_key}"
 # Disable output buffering to force real-time log printing in Kaggle console
@@ -54,12 +54,153 @@ try:
     print(f"Raw dataset path: {{raw_dataset.resolve()}}")
 
     print("--- STEP 2: Setting up GenMusic source code ---")
-    source_dataset_dir = next((d for d in input_dir.rglob("*") if d.is_dir() and "genmusic-source-" in d.name.lower()), None)
     source_root = Path("/kaggle/working/GenMusic")
-    shutil.copytree(source_dataset_dir, source_root, dirs_exist_ok=True)
+    source_dataset_dir = next((d for d in input_dir.rglob("*") if d.is_dir() and "genmusic-source-" in d.name.lower()), None)
+    source_zip = next((p for p in input_dir.rglob("genmusic_vn_source.zip") if p.is_file()), None)
+    if source_zip:
+        source_root.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(source_zip) as archive:
+            archive.extractall(source_root)
+    elif source_dataset_dir:
+        shutil.copytree(source_dataset_dir, source_root, dirs_exist_ok=True)
+    if not (source_root / "cli.py").exists():
+        raise RuntimeError(f"GenMusic source code was not found under {{source_root}}.")
 
-    print("--- STEP 3: Installing dependencies ---")
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "torch", "torchaudio", "librosa", "matplotlib", "openai-whisper", "demucs", "imageio-ffmpeg", "kaggle", "transformers", "vocos"], check=True)
+    def run_logged(command, label, timeout):
+        print("--- RUNNING " + label + " ---", flush=True)
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            message = "TIMEOUT after %ss\\n%s" % (timeout, exc)
+            Path("/kaggle/working/" + label + ".log").write_text(message, encoding="utf-8")
+            raise RuntimeError(label + " timed out; see /kaggle/working/" + label + ".log") from exc
+        output = (result.stdout or "") + chr(10) + "--- STDERR ---" + chr(10) + (result.stderr or "")
+        Path("/kaggle/working/" + label + ".log").write_text(output, encoding="utf-8")
+        print(output, flush=True)
+        if result.returncode != 0:
+            raise RuntimeError(label + " failed with exit code " + str(result.returncode))
+        return result
+
+    print("--- STEP 3: Checking dependencies ---")
+    dependency_probe = subprocess.run(
+        [sys.executable, "-c", "import torch, torchaudio, librosa, whisper, demucs, vocos, encodec, imageio_ffmpeg"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+    )
+    if dependency_probe.returncode != 0:
+        run_logged(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "--no-cache-dir",
+                "--prefer-binary",
+                "--no-deps",
+                "--timeout",
+                "60",
+                "--retries",
+                "1",
+                "librosa",
+                "openai-whisper",
+                "demucs",
+                "imageio-ffmpeg",
+                "vocos",
+                "encodec",
+                "einops",
+                "huggingface-hub",
+                "julius",
+                "lameenc",
+                "more-itertools",
+                "numba",
+                "pyyaml",
+                "safetensors",
+                "scipy",
+                "sphn",
+                "tiktoken",
+                "tqdm",
+            ],
+            "install",
+            900,
+        )
+        dependency_verify = subprocess.run(
+            [sys.executable, "-c", "import torch, torchaudio, librosa, whisper, demucs, vocos, encodec, imageio_ffmpeg"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+        if dependency_verify.returncode != 0:
+            Path("/kaggle/working/dependency_verify.log").write_text(
+                (dependency_verify.stdout or "") + chr(10) + (dependency_verify.stderr or ""),
+                encoding="utf-8",
+            )
+            raise RuntimeError("Dependency import failed after fast install; see dependency_verify.log")
+    else:
+        print("All preprocessing dependencies are already available.", flush=True)
+
+    torch_probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import torch; print('torch=%s cuda=%s available=%s' % (torch.__version__, torch.version.cuda, torch.cuda.is_available())); print(torch.randn((2, 2), device='cuda') @ torch.randn((2, 2), device='cuda')) if torch.cuda.is_available() else None",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+    )
+    torch_probe_output = (torch_probe.stdout or "") + chr(10) + (torch_probe.stderr or "")
+    Path("/kaggle/working/torch_probe.log").write_text(torch_probe_output, encoding="utf-8")
+    print(torch_probe_output, flush=True)
+    if torch_probe.returncode != 0:
+        print("CUDA smoke test failed; installing a P100-compatible Torch pair.", flush=True)
+        run_logged(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "--no-cache-dir",
+                "--force-reinstall",
+                "--extra-index-url",
+                "https://download.pytorch.org/whl/cu121",
+                "torch==2.5.1+cu121",
+                "torchaudio==2.5.1+cu121",
+            ],
+            "torch_repair",
+            1200,
+        )
+        repaired_probe = subprocess.run(
+            [sys.executable, "-c", "import torch; print('torch=%s cuda=%s available=%s' % (torch.__version__, torch.version.cuda, torch.cuda.is_available())); print(torch.randn((2, 2), device='cuda') @ torch.randn((2, 2), device='cuda')) if torch.cuda.is_available() else None"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+        repaired_output = (repaired_probe.stdout or "") + chr(10) + (repaired_probe.stderr or "")
+        Path("/kaggle/working/torch_probe_repaired.log").write_text(repaired_output, encoding="utf-8")
+        print(repaired_output, flush=True)
+        if repaired_probe.returncode != 0 or "available=True" not in repaired_output:
+            raise RuntimeError("CUDA is still unavailable after the P100 Torch repair; see torch_probe_repaired.log")
+        torch_probe_output = repaired_output
+    elif "available=True" not in torch_probe_output:
+        raise RuntimeError("Kaggle không có GPU CUDA khả dụng; dừng trước khi rơi xuống CPU.")
 
     # Add source to python path
     os.environ["PYTHONPATH"] = str(source_root) + os.pathsep + os.environ.get("PYTHONPATH", "")
@@ -68,13 +209,25 @@ try:
     preprocessed_dir = Path("/kaggle/working/processed_dataset")
     preprocessed_dir.mkdir(parents=True, exist_ok=True)
 
-    subprocess.run([
+    preprocess_command = [
         sys.executable, str(source_root / "cli.py"), "preprocess-raw",
         "--input", str(raw_dataset),
         "--output", str(preprocessed_dir),
-        "--whisper-model", "small",
-        "--keep-separated-count", "100"
-    ], env=os.environ, check=True)
+        "--whisper-model", "tiny",
+        "--keep-separated-count", "0",
+        "--vocos-compatible",
+        "--demucs-device", "cuda",
+        "--whisper-device", "cuda"
+    ]
+    if os.environ.get("KAGGLE_PREPROCESS_MAX_FILES"):
+        preprocess_command.extend(["--max-files", os.environ["KAGGLE_PREPROCESS_MAX_FILES"]])
+    preprocess_timeout = 1800 if os.environ.get("KAGGLE_PREPROCESS_MAX_FILES") else 43200
+    preprocess_result = run_logged(preprocess_command, "preprocess", preprocess_timeout)
+    records_path = preprocessed_dir / "records.jsonl"
+    record_count = sum(1 for line in records_path.read_text(encoding="utf-8").splitlines() if line.strip()) if records_path.exists() else 0
+    if preprocess_result.returncode != 0 and record_count == 0:
+        raise RuntimeError(f"Preprocessing failed without usable records. See /kaggle/working/preprocess.log")
+    print(f"Preprocessing produced {{record_count}} usable records; continuing with dataset upload.", flush=True)
 
     print("--- STEP 5: Creating and Uploading Processed Dataset to Kaggle ---")
     metadata = {{
@@ -86,7 +239,7 @@ try:
         json.dump(metadata, f, indent=2)
 
     print(f"Creating Kaggle Dataset: {output_dataset_ref}...")
-    subprocess.run(["kaggle", "datasets", "create", "-p", str(preprocessed_dir), "-r", "zip"], check=True)
+    run_logged(["kaggle", "datasets", "create", "-p", str(preprocessed_dir), "-r", "zip"], "upload", 1800)
 
     print("--- ALL PROCESSES COMPLETED SUCCESSFULLY ---")
     Path("/kaggle/working/success.txt").write_text("success", encoding="utf-8")
@@ -200,7 +353,18 @@ def main():
 
     # 4. Push Kernel to Kaggle
     print(f"🚀 Pushing Preprocess Kernel to Kaggle...")
-    subprocess.run(cli + ["kernels", "push", "-p", str(kernel_dir)], env={**os.environ, **tokens}, check=True)
+    push_result = subprocess.run(
+        cli + ["kernels", "push", "-p", str(kernel_dir)],
+        env={**os.environ, **tokens},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    push_output = (push_result.stdout or "") + "\n" + (push_result.stderr or "")
+    print(push_output, end="")
+    if push_result.returncode != 0 or "kernel push error" in push_output.lower() or "maximum batch gpu session count" in push_output.lower():
+        raise RuntimeError("Kaggle không tạo được kernel; kiểm tra quota GPU hoặc các job đang chạy.")
 
     print("\n✅ PREPROCESS REQUEST SUBMITTED SUCCESSFULLY!")
     print(f"Watch live logs on Kaggle Web UI:")
