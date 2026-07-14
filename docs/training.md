@@ -33,7 +33,7 @@ uv run python cli.py train-self --dataset dataset/random_self_diffusion_training
 For separated vocal/backing records, use the optional MicroDiT path:
 
 ```powershell
-uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/microdit.pt --model-type dit --epochs 2 --batch-size 2
+uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/microdit.pt --epochs 2 --batch-size 2
 ```
 
 The MicroDiT path may download its text encoder on first use and therefore

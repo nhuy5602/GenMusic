@@ -20,7 +20,7 @@ from typing import Any
 
 from ..data.lyric_alignment import AlignedLine, write_lrc
 from ..data.vietnamese_text import normalize_vietnamese_lyrics
-from ..models.text_to_music_diffusion import MusicDiffusionConfig, estimate_minimum_lyric_duration, generate_audio, load_checkpoint, make_model
+from ..models.text_to_music_diffusion import MusicDiffusionConfig, estimate_minimum_lyric_duration, generate_audio, load_checkpoint
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -45,7 +45,7 @@ class KaggleJobConfig:
     training_dataset_ref: str | None = None
 
 
-def run_local_generation(*, text: str, style: str, output_dir: str | Path, duration_seconds: float, checkpoint: str | Path | None = None, steps: int = 6, seed: int = 5602, device: str | None = None, mel_output: str | Path | None = None, vocoder: str = "vocos", model_type: str = "conv1d", roberta_model: str = "xlm-roberta-base") -> dict[str, Any]:
+def run_local_generation(*, text: str, style: str, output_dir: str | Path, duration_seconds: float, checkpoint: str | Path | None = None, steps: int = 6, seed: int = 5602, device: str | None = None, mel_output: str | Path | None = None, vocoder: str = "vocos", roberta_model: str = "xlm-roberta-base") -> dict[str, Any]:
     normalized = normalize_vietnamese_lyrics(text).strip()
     if not normalized:
         raise SelfMusicError("Văn bản input đang trống.")
@@ -53,16 +53,13 @@ def run_local_generation(*, text: str, style: str, output_dir: str | Path, durat
     destination.mkdir(parents=True, exist_ok=True)
     selected_device = device or _default_device()
     if checkpoint and Path(checkpoint).exists():
-        model, config, payload = load_checkpoint(checkpoint, device=selected_device, model_type=model_type, roberta_model=roberta_model)
+        model, config, payload = load_checkpoint(checkpoint, device=selected_device, roberta_model=roberta_model)
         checkpoint_path = str(Path(checkpoint).resolve())
         checkpoint_epoch = payload.get("epoch", 0)
     else:
+        from ..models.dit_transformer import MicroDiT
         config = MusicDiffusionConfig()
-        if model_type == "dit":
-            from ..models.dit_transformer import MicroDiT
-            model = MicroDiT(config, roberta_model=roberta_model).to(selected_device)
-        else:
-            model = make_model(config).to(selected_device)
+        model = MicroDiT(config, roberta_model=roberta_model).to(selected_device)
         checkpoint_path = ""
         checkpoint_epoch = 0
     requested_duration = max(1.0, float(duration_seconds))

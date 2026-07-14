@@ -18,11 +18,9 @@ flowchart TD
     M2 --> F
     S --> F
     F --> G[Dataset validation]
-    G --> H[Conv1D diffusion training - legacy default]
-    G --> I[MicroDiT CFM training - recommended, --model-type dit]
-    G --> DI[MicroDiT distillation from real DiffRhythm2 teacher, --train-distill]
-    H --> J[Local sampling + Vocos rendering]
-    I --> J
+    G --> I[MicroDiT CFM training, train-self]
+    G --> DI[MicroDiT distillation from real DiffRhythm2 teacher, train-distill]
+    I --> J[Local sampling + Vocos rendering]
     DI --> J
     A --> K[Kaggle job staging]
     K --> L[GPU training or inference]

@@ -89,7 +89,7 @@ def main():
         try:
             if cfg["mode"] == "baseline":
                 report = train_model(
-                    dataset_dir, ckpt_path, epochs=args.epochs, batch_size=args.batch_size, model_type="dit",
+                    dataset_dir, ckpt_path, epochs=args.epochs, batch_size=args.batch_size,
                     dim=cfg["dim"], depth=cfg["depth"], heads=cfg["heads"],
                 )
             else:
@@ -112,7 +112,7 @@ def main():
                 gen_dir = output_root / f"generated_{name}"
                 gen_report = run_local_generation(
                     text=lyric_text, style=sample_style, output_dir=gen_dir, duration_seconds=8.0,
-                    checkpoint=ckpt_path, steps=32, model_type="dit", vocoder="vocos",
+                    checkpoint=ckpt_path, steps=32, vocoder="vocos",
                 )
                 wav_path = Path(gen_report["audio_path"])
                 gen_report["sanity_stats"] = wav_sanity_stats(wav_path)

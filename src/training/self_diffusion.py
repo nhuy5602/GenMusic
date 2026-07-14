@@ -10,7 +10,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from ..models.text_to_music_diffusion import MusicDiffusionConfig, diffusion_loss, make_model, structured_random_mel
+from ..models.text_to_music_diffusion import MusicDiffusionConfig, structured_random_mel
 
 STYLE_EMBED_DIM = 512  # matches MuQ-MuLan / DiffRhythm2 teacher's cond_dim
 
@@ -122,21 +122,15 @@ class DiffusionTrainer:
             style_anchor = batch["style_anchor"].to(self.device)
             texts = batch["text"]
             self.optimizer.zero_grad(set_to_none=True)
-            
-            # Check if using the new MicroDiT model
-            is_dit = self.model.__class__.__name__ == "MicroDiT"
-            if is_dit:
-                # Transpose mels from (batch, n_mels, seq_len) to (batch, seq_len, n_mels) for DiT.
-                # style_anchor is already a flat (batch, 512) MuQ-MuLan embedding, not
-                # mel-shaped, so it needs no transpose.
-                vocal_mel_t = vocal_mel.transpose(1, 2)
-                backing_mel_t = backing_mel.transpose(1, 2)
-                from ..models.cfm_flow import cfm_loss
-                loss = cfm_loss(self.model, vocal_mel_t, backing_mel_t, style_anchor, texts, self.config)
-            else:
-                # Fallback to single mel input for the old Conv1D model
-                loss = diffusion_loss(self.model, vocal_mel, texts, self.config)
-                
+
+            # Transpose mels from (batch, n_mels, seq_len) to (batch, seq_len, n_mels) for DiT.
+            # style_anchor is already a flat (batch, 512) MuQ-MuLan embedding, not
+            # mel-shaped, so it needs no transpose.
+            vocal_mel_t = vocal_mel.transpose(1, 2)
+            backing_mel_t = backing_mel.transpose(1, 2)
+            from ..models.cfm_flow import cfm_loss
+            loss = cfm_loss(self.model, vocal_mel_t, backing_mel_t, style_anchor, texts, self.config)
+
             loss.backward()
             torch.nn.utils.clip_grad_norm_(list(self.model.parameters()), 1.0)
             self.optimizer.step()
@@ -242,7 +236,7 @@ def validate_dataset(dataset_dir: str | Path, *, report_path: str | Path | None 
     report_destination.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report
 
-def train_model(dataset_dir: str | Path, checkpoint_path: str | Path, *, epochs: int = 1, batch_size: int = 4, learning_rate: float = 2e-4, device: str | None = None, max_records: int | None = None, additional_records: list[dict[str, Any]] | None = None, model_type: str = "conv1d", roberta_model: str = "xlm-roberta-base", dim: int = 256, depth: int = 4, heads: int = 4, ff_mult: int = 4) -> dict[str, Any]:
+def train_model(dataset_dir: str | Path, checkpoint_path: str | Path, *, epochs: int = 1, batch_size: int = 4, learning_rate: float = 2e-4, device: str | None = None, max_records: int | None = None, additional_records: list[dict[str, Any]] | None = None, roberta_model: str = "xlm-roberta-base", dim: int = 256, depth: int = 4, heads: int = 4, ff_mult: int = 4) -> dict[str, Any]:
     torch, _, DatasetClass, DataLoaderClass = _torch()
 
     root = Path(dataset_dir)
@@ -250,20 +244,16 @@ def train_model(dataset_dir: str | Path, checkpoint_path: str | Path, *, epochs:
     validation = validate_dataset(root, report_path=checkpoint.parent / "validation_report.json")
     if validation["status"] != "valid":
         raise ValueError("Dataset không hợp lệ; xem validation_report.json.")
-    
+
     config = MusicDiffusionConfig(**json.loads((root / "config.json").read_text(encoding="utf-8")))
     selected_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    
-    if model_type == "dit":
-        from ..models.dit_transformer import MicroDiT
-        model = MicroDiT(config, roberta_model=roberta_model, dim=dim, depth=depth, heads=heads, ff_mult=ff_mult).to(selected_device)
-        # Train only parameters that requires_grad (i.e. exclude frozen RoBERTa weights)
-        trainable_params = [p for p in model.parameters() if p.requires_grad]
-        optimizer = torch.optim.AdamW(trainable_params, lr=learning_rate)
-    else:
-        model = make_model(config).to(selected_device)
-        optimizer = torch.optim.AdamW(list(model.parameters()), lr=learning_rate)
-    
+
+    from ..models.dit_transformer import MicroDiT
+    model = MicroDiT(config, roberta_model=roberta_model, dim=dim, depth=depth, heads=heads, ff_mult=ff_mult).to(selected_device)
+    # Train only parameters that requires_grad (i.e. exclude frozen RoBERTa weights)
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(trainable_params, lr=learning_rate)
+
     # Instantiate custom Dataset and DataLoader
     dataset = MusicDiffusionDataset(root, config, max_records=max_records, additional_records=additional_records)
     
@@ -296,8 +286,8 @@ def train_model(dataset_dir: str | Path, checkpoint_path: str | Path, *, epochs:
     final_loss = sum(d["loss"] for d in losses[-min(10, len(losses)):]) / max(1, min(10, len(losses)))
     from ..models.text_to_music_diffusion import save_checkpoint
 
-    arch = {"dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult} if model_type == "dit" else None
+    arch = {"dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult}
     save_checkpoint(model, checkpoint, config, optimizer=optimizer, epoch=max(1, int(epochs)), loss=final_loss, arch=arch)
-    report = {"status": "complete", "backend": "genmusic-vn-self-diffusion", "dataset": str(root.resolve()), "checkpoint": str(checkpoint.resolve()), "device": selected_device, "epochs": max(1, int(epochs)), "batch_size": max(1, int(batch_size)), "additional_record_count": len(additional_records or []), "step_count": len(losses), "final_loss": round(final_loss, 6), "loss_curve": loss_curve, "elapsed_seconds": round(time.perf_counter() - started, 3), "model_type": model_type, "dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult}
+    report = {"status": "complete", "backend": "genmusic-vn-self-diffusion", "dataset": str(root.resolve()), "checkpoint": str(checkpoint.resolve()), "device": selected_device, "epochs": max(1, int(epochs)), "batch_size": max(1, int(batch_size)), "additional_record_count": len(additional_records or []), "step_count": len(losses), "final_loss": round(final_loss, 6), "loss_curve": loss_curve, "elapsed_seconds": round(time.perf_counter() - started, 3), "dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult}
     (checkpoint.parent / "training_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report

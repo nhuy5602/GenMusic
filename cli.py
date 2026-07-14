@@ -47,7 +47,6 @@ def build_parser() -> argparse.ArgumentParser:
     local.add_argument("--device", default=None)
     local.add_argument("--out", required=True)
     local.add_argument("--vocoder", default="vocos", choices=["vocos", "griffinlim"], help="Chọn bộ giải mã spectrogram thành âm thanh.")
-    local.add_argument("--model-type", default="conv1d", choices=["conv1d", "dit"], help="Chọn kiến trúc mô hình khuếch tán.")
     local.add_argument("--roberta-model", default="xlm-roberta-base", help="Tên model RoBERTa dùng làm Text Encoder.")
 
     random_data = sub.add_parser("make-random-dataset", help="Tạo dataset mel random cho smoke training.")
@@ -85,12 +84,11 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--learning-rate", type=float, default=2e-4)
     train.add_argument("--device", default=None)
     train.add_argument("--max-records", type=int, default=None)
-    train.add_argument("--model-type", default="conv1d", choices=["conv1d", "dit"], help="Chọn kiến trúc mô hình khuếch tán.")
     train.add_argument("--roberta-model", default="xlm-roberta-base", help="Tên model RoBERTa dùng làm Text Encoder.")
-    train.add_argument("--dim", type=int, default=256, help="[dit only] Hidden dim của MicroDiT.")
-    train.add_argument("--depth", type=int, default=4, help="[dit only] Số lớp transformer block.")
-    train.add_argument("--heads", type=int, default=4, help="[dit only] Số attention head.")
-    train.add_argument("--ff-mult", type=int, default=4, help="[dit only] Hệ số feed-forward.")
+    train.add_argument("--dim", type=int, default=256, help="Hidden dim của MicroDiT.")
+    train.add_argument("--depth", type=int, default=4, help="Số lớp transformer block.")
+    train.add_argument("--heads", type=int, default=4, help="Số attention head.")
+    train.add_argument("--ff-mult", type=int, default=4, help="Hệ số feed-forward.")
 
     distill = sub.add_parser("train-distill", help="Huấn luyện chưng cất tri thức từ DiffRhythm gốc sang MicroDiT.")
     distill.add_argument("--dataset", required=True)
@@ -172,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "refresh-kaggle":
         report = refresh_kaggle_job(args.state)
     elif args.command == "generate-local":
-        report = run_local_generation(text=args.text, style=args.style, output_dir=args.out, duration_seconds=args.duration, checkpoint=args.checkpoint, steps=args.steps, seed=args.seed, device=args.device, vocoder=args.vocoder, model_type=args.model_type, roberta_model=args.roberta_model)
+        report = run_local_generation(text=args.text, style=args.style, output_dir=args.out, duration_seconds=args.duration, checkpoint=args.checkpoint, steps=args.steps, seed=args.seed, device=args.device, vocoder=args.vocoder, roberta_model=args.roberta_model)
     elif args.command == "make-random-dataset":
         target_bytes = int(args.target_gb * (1024 ** 3)) if args.target_gb > 0 else None
         report = create_random_dataset(args.out, count=args.count, frames=args.frames, seed=args.seed, target_bytes=target_bytes)
@@ -186,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
         upload_report = upload_dataset_to_kaggle(args.out, username=args.username, dataset_ref=args.dataset_ref, timeout_seconds=args.timeout_seconds)
         report = {"status": upload_report["status"], "dataset_report": dataset_report, "upload": upload_report}
     elif args.command == "train-self":
-        report = train_model(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, model_type=args.model_type, roberta_model=args.roberta_model, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult)
+        report = train_model(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, roberta_model=args.roberta_model, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult)
     elif args.command == "train-distill":
         from src.training.distill_training import run_distillation_training
         report = run_distillation_training(args.dataset, args.student_checkpoint, args.teacher_checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, alpha_feature=args.alpha_feature, repo_id=args.repo_id, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult)

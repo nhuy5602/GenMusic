@@ -7,17 +7,11 @@ fixed in the areas below — read those before changing this code again, several
 non-obvious pitfalls (wrong mel format, wrong teacher call signature, guessed
 architecture dims) are documented there in detail.
 
-## Conv1D Diffusion Model (legacy/default for `train-self` without `--model-type dit`)
+## MicroDiT and CFM
 
-A self-authored conditional diffusion denoiser predicting the denoising
-direction for a log-mel spectrogram from a text/style condition and a
-continuous diffusion timestep. Implemented in
-`src/models/text_to_music_diffusion.py` (`ResidualDenoiser`), trained by
-`src/training/self_diffusion.py`. Small, toy-scale text conditioning
-(per-character hash embedding) — this is a smoke-test baseline, not the
-recommended path for quality work; use `--model-type dit` instead.
-
-## MicroDiT and CFM (recommended path: `--model-type dit`)
+MicroDiT is the only model architecture in this project (the earlier Conv1D
+`ResidualDenoiser` smoke-test baseline was removed once MicroDiT/CFM proved out
+— see git history before this cleanup if you need it for reference).
 
 `MicroDiT` (`src/models/dit_transformer.py`) conditions on: (1) lyric text via
 a frozen `xlm-roberta-base` encoder (genuinely multilingual, unlike the
@@ -37,7 +31,7 @@ any dimension DiffRhythm2 itself uses — this was the single highest-impact fix
 in this project's history (see `docs/experiments/vocoder_fix.md`).
 
 Architecture size is configurable: `--dim`/`--depth`/`--heads`/`--ff-mult` on
-both `train-self --model-type dit` and `train-distill`. Default
+both `train-self` and `train-distill`. Default
 `dim=256, depth=4, heads=4` is ~5.6M trainable parameters (plus 278M frozen
 RoBERTa weights, never trained, re-downloaded fresh from HuggingFace on
 checkpoint load rather than saved).
@@ -51,15 +45,23 @@ teacher's real checkpoint uses `mel_dim=64`, not the `100` its Python default
 suggested). A small trainable linear adapter bridges the teacher's 64-mel space
 and the student's 100-mel space for the distillation loss only. If the teacher
 (or its lyric tokenizer) can't be loaded — no internet, DiffRhythm2 repo not
-cloned onto `PYTHONPATH` (only works inside a Kaggle kernel that clones it) —
-training falls back to ground-truth CFM loss alone and reports this plainly via
-`teacher_status`/`distillation_active` in the returned report, rather than
-silently substituting a fake teacher (the previous behavior).
+on `PYTHONPATH` with its dependencies installed (works on Kaggle via
+`scripts/run_kaggle_distill.py`, or locally by cloning it yourself and
+installing deps as they come up) — training falls back to ground-truth CFM
+loss alone and reports this plainly via `teacher_status`/`distillation_active`
+in the returned report, rather than silently substituting a fake teacher (the
+previous behavior).
 
-**As of this writing, `distillation_active: true` has not been confirmed at
-Kaggle scale** — see `docs/experiments/kaggle_runs.md` and
-`docs/PROJECT_REPORT.md` §3.6 for exactly what happened (a hung kernel burned
-GPU quota before it could be re-verified) and what to run next.
+**`distillation_active: true` has been confirmed locally** (CPU, real
+DiffRhythm2 teacher + real lyric tokenizer, 2-song dataset, 30 epochs) — the
+mechanism is genuinely correct end-to-end. **Not yet confirmed**: whether
+distillation actually improves quality over training from scratch — at this
+tiny 2-song/1-step-per-epoch scale, CFM's random timestep sampling makes
+per-step loss too noisy (swings 3.5-229 in the same run) to distinguish signal
+from noise, and it has also never completed a full run on Kaggle GPU (every
+attempt there hit a bug or ran out of quota first — see
+`docs/experiments/kaggle_runs.md`). Both require a larger dataset/more steps
+per epoch to answer.
 
 ## Important Evaluation Boundary
 

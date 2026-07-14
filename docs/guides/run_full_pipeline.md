@@ -16,7 +16,7 @@ uv run python cli.py preprocess-raw --input dataset/vietnamese_songs --output da
 
 **2. Train the student model (baseline, no teacher):**
 ```powershell
-uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/my_model.pt --model-type dit --epochs 60 --dim 256 --depth 4 --heads 4
+uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/my_model.pt --epochs 60 --dim 256 --depth 4 --heads 4
 ```
 
 **3. Distill from the real DiffRhythm2 teacher instead of step 2:**
@@ -28,7 +28,7 @@ uv run python cli.py train-distill --dataset dataset/diff_rhythm_dataset --stude
 **4. Download the checkpoint (if trained on Kaggle) and run inference:**
 ```powershell
 uv run python -m kaggle kernels output <kernel_ref> -p outputs/downloaded -o    # skip if trained locally
-uv run python cli.py generate-local --text "Đêm nay Hà Nội ngập tràn tiếng mưa rơi." --checkpoint outputs/my_model.pt --model-type dit --vocoder vocos --duration 8 --out outputs/my_song
+uv run python cli.py generate-local --text "Đêm nay Hà Nội ngập tràn tiếng mưa rơi." --checkpoint outputs/my_model.pt --vocoder vocos --duration 8 --out outputs/my_song
 ```
 Output lands at `outputs/my_song/final.wav`.
 
@@ -172,7 +172,7 @@ Train it standalone (not inside the matrix/experiment scripts) for a real traini
 
 ```powershell
 # Baseline (no distillation):
-uv run python cli.py train-self --dataset <processed_dataset_dir> --checkpoint outputs/final_model.pt --model-type dit --epochs 200 --dim 256 --depth 4 --heads 4
+uv run python cli.py train-self --dataset <processed_dataset_dir> --checkpoint outputs/final_model.pt --epochs 200 --dim 256 --depth 4 --heads 4
 
 # With distillation:
 uv run python cli.py train-distill --dataset <processed_dataset_dir> --student-checkpoint outputs/final_model.pt --epochs 200 --alpha-feature 0.5 --dim 256 --depth 4 --heads 4
@@ -181,7 +181,7 @@ uv run python cli.py train-distill --dataset <processed_dataset_dir> --student-c
 Then generate:
 
 ```powershell
-uv run python cli.py generate-local --text "<Vietnamese lyrics>" --checkpoint outputs/final_model.pt --model-type dit --vocoder vocos --duration 12 --out outputs/final_song
+uv run python cli.py generate-local --text "<Vietnamese lyrics>" --checkpoint outputs/final_model.pt --vocoder vocos --duration 12 --out outputs/final_song
 ```
 
 Both of these need to run wherever the checkpoint is (Kaggle kernel, or download the

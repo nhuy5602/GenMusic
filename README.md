@@ -18,7 +18,7 @@ Detailed technical documentations are located in the `docs/` folder:
 GenMusic/
 ├── src/                # Core Python package (data processing, model, training)
 │   ├── data/           # Audio preprocessing, Whisper ASR, Demucs split, Vietnamese G2P
-│   ├── models/         # Diffusion architectures (ResidualDenoiser, MicroDiT, CFM)
+│   ├── models/         # MicroDiT + Conditional Flow Matching (CFM) diffusion architecture
 │   ├── training/       # PyTorch Dataset, DataLoader, Trainer, and Distillation loop
 │   ├── evaluation/     # Objective evaluation metrics for audio spectrograms
 │   └── integrations/   # Kaggle API cloud integrations and job submitters
@@ -82,7 +82,7 @@ Splits vocal/backing stems (Demucs), transcribes lyrics (Whisper), computes the 
 
 **2. Train the student model (no teacher — fastest way to sanity-check the pipeline)**
 ```powershell
-uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/my_dit_model.pt --epochs 30 --batch-size 4 --model-type dit --dim 256 --depth 4 --heads 4
+uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/my_dit_model.pt --epochs 30 --batch-size 4 --dim 256 --depth 4 --heads 4
 ```
 
 **3. (Optional) Knowledge-distill from the real DiffRhythm2 teacher**
@@ -94,7 +94,7 @@ uv run python cli.py train-distill --dataset dataset/diff_rhythm_dataset --stude
 
 **4. Generate a song (inference)**
 ```powershell
-uv run python cli.py generate-local --text "Đêm nay Hà Nội ngập tràn tiếng mưa rơi." --duration 8.0 --vocoder vocos --model-type dit --checkpoint outputs/my_dit_model.pt --out outputs/my_song
+uv run python cli.py generate-local --text "Đêm nay Hà Nội ngập tràn tiếng mưa rơi." --duration 8.0 --vocoder vocos --checkpoint outputs/my_dit_model.pt --out outputs/my_song
 ```
 Loads whichever checkpoint you point it at (from step 2 or 3), samples with CFM, and decodes to `outputs/my_song/final.wav` via the Vocos vocoder.
 
@@ -149,7 +149,7 @@ uv run python scripts/run_kaggle_experiment_matrix.py --max-files 40 --whisper-m
 `vocos` (default, recommended) decodes with the pretrained Vocos neural vocoder; `griffinlim` is a real iterative-phase-estimation fallback if Vocos is unavailable. Both require the mel format to match Vocos's native convention exactly, which this project's default `MusicDiffusionConfig` and `preprocess-raw` output always do (see [docs/experiments/vocoder_fix.md](docs/experiments/vocoder_fix.md) for why this specific detail mattered a lot in practice):
 ```powershell
 # Generate audio using the Vocos Vocoder for natural voice reconstruction:
-uv run python cli.py generate-local --text "Đêm nay Hà Nội ngập tràn tiếng mưa rơi." --duration 8.0 --vocoder vocos --model-type dit --out outputs/my_song
+uv run python cli.py generate-local --text "Đêm nay Hà Nội ngập tràn tiếng mưa rơi." --duration 8.0 --vocoder vocos --out outputs/my_song
 ```
 
 ### 2. Manual Preprocessing
@@ -169,7 +169,7 @@ You can train the diffusion denoiser from scratch or perform knowledge distillat
   uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/my_model.pt --epochs 5 --batch-size 4
   
   # Train MicroDiT (Transformer-based) model with real MuQ-MuLan Audio Style Anchor conditioning (recommended):
-  uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/my_dit_model.pt --epochs 5 --batch-size 4 --model-type dit --dim 256 --depth 4 --heads 4
+  uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/my_dit_model.pt --epochs 5 --batch-size 4 --dim 256 --depth 4 --heads 4
   ```
   `--dim`/`--depth`/`--heads`/`--ff-mult` control MicroDiT's architecture size (default: ~5.6M trainable params).
 

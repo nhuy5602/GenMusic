@@ -9,7 +9,7 @@ from pathlib import Path
 from src.data.vietnamese_g2p import vietnamese_g2p
 from src.data.vietnamese_text import normalize_vietnamese_lyrics
 from src.integrations.kaggle_auto import DEFAULT_KAGGLE_DATASET_SLUG, DEFAULT_MODEL, KaggleJobConfig, resolve_training_dataset_ref, run_local_generation, stage_text_to_music_job, validate_dataset_ref
-from src.models.text_to_music_diffusion import build_lyric_timing, encode_text, estimate_minimum_lyric_duration
+from src.models.text_to_music_diffusion import build_lyric_timing, estimate_minimum_lyric_duration
 from src.training.distill_training import _load_teacher
 from src.training.self_diffusion import create_random_dataset, train_model, validate_dataset
 from server import PROJECT_ROOT, WEB_ROOT, _is_relative_to
@@ -114,7 +114,6 @@ class SelfDiffusionTests(unittest.TestCase):
         self.assertEqual(len(result.tokens), 2)
 
     def test_model_preserves_lyric_line_structure(self) -> None:
-        self.assertEqual(encode_text("a\nb")[1], 2)
         timing = build_lyric_timing("Một câu chậm.\nMột câu khác.", 8)
         self.assertEqual(len(timing), 2)
         self.assertAlmostEqual(timing[-1]["end_seconds"], 8.0, places=3)

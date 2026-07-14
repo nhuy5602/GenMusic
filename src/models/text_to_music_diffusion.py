@@ -1,19 +1,18 @@
-"""Self-contained conditional diffusion model for text-to-music experiments.
+"""MicroDiT/CFM text-to-music model: config, mel/waveform I/O, checkpointing.
 
-This is intentionally small enough to train on a Kaggle GPU smoke run while
-keeping the essential generative path: text conditioning, noise schedule,
-denoising network, checkpointing and mel-to-waveform rendering.
+The denoising network itself lives in `dit_transformer.py` (MicroDiT) and
+`cfm_flow.py` (Conditional Flow Matching loss/sampling); this module holds the
+shared config, mel-spectrogram <-> waveform conversion, and checkpoint I/O.
 """
 
 from __future__ import annotations
 
 import json
 import math
-import random
 import wave
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 
@@ -29,20 +28,18 @@ class MusicDiffusionConfig:
     n_fft: int = 1024
     hop_length: int = 256
     frames_per_chunk: int = 128
-    text_vocab_size: int = 256
-    text_max_length: int = 256
-    text_dim: int = 96
-    conditioner_layers: int = 2
-    hidden_dim: int = 96
-    residual_layers: int = 4
-    diffusion_steps: int = 32
     chunk_seconds: float = 4.0
 
 
-def encode_text(text: str, *, max_length: int = 256, vocab_size: int = 256) -> list[int]:
-    character_space = max(1, vocab_size - 3)
-    values = [2 if char == "\n" else 3 + (ord(char) % character_space) for char in text[:max_length]]
-    return values or [0]
+def _config_from_dict(data: dict) -> "MusicDiffusionConfig":
+    """Build a config from a saved dict, ignoring unknown keys.
+
+    Checkpoints/configs saved by older code (the removed Conv1D architecture)
+    may carry fields no longer in this dataclass -- drop them rather than
+    failing to load an otherwise-fine checkpoint.
+    """
+    known = {field.name for field in fields(MusicDiffusionConfig)}
+    return MusicDiffusionConfig(**{key: value for key, value in data.items() if key in known})
 
 
 def _torch():
@@ -84,216 +81,6 @@ def compute_mel_spectrogram(waveform, config: "MusicDiffusionConfig"):
     mel = mel_transform(waveform)
     log_mel = torch.log(torch.clip(mel, min=VOCOS_MEL_CLIP))
     return log_mel.squeeze(0)
-
-
-def _sinusoidal_embedding(timesteps, dimension: int):
-    torch, _ = _torch()
-    half = max(1, dimension // 2)
-    frequencies = torch.exp(
-        -math.log(10_000.0) * torch.arange(half, device=timesteps.device).float() / max(1, half - 1)
-    )
-    angles = timesteps.float().unsqueeze(1) * frequencies.unsqueeze(0)
-    embedding = torch.cat((angles.sin(), angles.cos()), dim=1)
-    return embedding[:, :dimension]
-
-
-class TextConditioner:
-    def __init__(self, config: MusicDiffusionConfig):
-        torch, nn = _torch()
-        self.config = config
-        self.embedding = nn.Embedding(config.text_vocab_size, config.text_dim)
-        self.position = nn.Embedding(config.text_max_length, config.text_dim)
-        attention_layer = nn.TransformerEncoderLayer(
-            d_model=config.text_dim,
-            nhead=4,
-            dim_feedforward=config.text_dim * 2,
-            dropout=0.0,
-            activation="gelu",
-            batch_first=True,
-            norm_first=False,
-        )
-        self.encoder = nn.TransformerEncoder(attention_layer, num_layers=config.conditioner_layers)
-        self.projection = nn.Sequential(
-            nn.Linear(config.text_dim, config.text_dim),
-            nn.SiLU(),
-            nn.Linear(config.text_dim, config.text_dim),
-        )
-
-    def modules(self):
-        return [self.embedding, self.position, self.encoder, self.projection]
-
-    def __call__(self, tokens):
-        torch, _ = _torch()
-        mask = (tokens != 0).float().unsqueeze(-1)
-        width = tokens.shape[1]
-        positions = torch.arange(width, device=tokens.device).clamp_max(self.config.text_max_length - 1)
-        values = self.embedding(tokens) + self.position(positions).unsqueeze(0)
-        values = self.encoder(values, src_key_padding_mask=~mask.squeeze(-1).bool())
-        pooled = (values * mask).sum(1) / mask.sum(1).clamp_min(1.0)
-        return self.projection(pooled)
-
-
-class ResidualDenoiser:
-    """A compact conditional Conv1D denoiser used by the diffusion sampler."""
-
-    def __init__(self, config: MusicDiffusionConfig):
-        torch, nn = _torch()
-        self.config = config
-        self.input = nn.Conv1d(config.n_mels, config.hidden_dim, 3, padding=1)
-        self.time = nn.Sequential(
-            nn.Linear(config.hidden_dim, config.hidden_dim),
-            nn.SiLU(),
-            nn.Linear(config.hidden_dim, config.hidden_dim),
-        )
-        self.conditioner = TextConditioner(config)
-        self.blocks = nn.ModuleList(
-            [
-                nn.Sequential(
-                    nn.GroupNorm(8, config.hidden_dim),
-                    nn.SiLU(),
-                    nn.Conv1d(config.hidden_dim, config.hidden_dim, 3, padding=1),
-                    nn.GroupNorm(8, config.hidden_dim),
-                    nn.SiLU(),
-                    nn.Conv1d(config.hidden_dim, config.hidden_dim, 3, padding=1),
-                )
-                for _ in range(config.residual_layers)
-            ]
-        )
-        self.output = nn.Sequential(
-            nn.GroupNorm(8, config.hidden_dim),
-            nn.SiLU(),
-            nn.Conv1d(config.hidden_dim, config.n_mels, 3, padding=1),
-        )
-
-    def modules(self):
-        return [self.input, self.time, *self.conditioner.modules(), self.blocks, self.output]
-
-    def parameters(self):
-        for module in self.modules():
-            yield from module.parameters()
-
-    def state_dict(self):
-        state = {}
-        for module_name, module in (
-            ("input", self.input),
-            ("time", self.time),
-            ("conditioner.embedding", self.conditioner.embedding),
-            ("conditioner.position", self.conditioner.position),
-            ("conditioner.encoder", self.conditioner.encoder),
-            ("conditioner.projection", self.conditioner.projection),
-            ("blocks", self.blocks),
-            ("output", self.output),
-        ):
-            state.update({f"{module_name}.{key}": value for key, value in module.state_dict().items()})
-        return state
-
-    def load_state_dict(self, state, strict: bool = True):
-        # `strict` accepted only for call-signature parity with nn.Module.load_state_dict
-        # (see load_checkpoint) -- submodules below are always loaded non-strictly.
-        groups = {
-            "input": self.input,
-            "time": self.time,
-            "conditioner.embedding": self.conditioner.embedding,
-            "conditioner.position": self.conditioner.position,
-            "conditioner.encoder": self.conditioner.encoder,
-            "conditioner.projection": self.conditioner.projection,
-            "blocks": self.blocks,
-            "output": self.output,
-        }
-        for name, module in groups.items():
-            prefix = name + "."
-            values = {key.removeprefix(prefix): value for key, value in state.items() if key.startswith(prefix)}
-            if values:
-                module.load_state_dict(values, strict=False)
-
-    def train(self, mode: bool = True):
-        for module in self.modules():
-            module.train(mode)
-        return self
-
-    def eval(self):
-        return self.train(False)
-
-    def to(self, device):
-        for module in self.modules():
-            module.to(device)
-        return self
-
-    def __call__(self, noisy, timesteps, tokens):
-        torch, _ = _torch()
-        time_condition = self.time(_sinusoidal_embedding(timesteps, self.config.hidden_dim)).unsqueeze(-1)
-        text_condition = self.conditioner(tokens).unsqueeze(-1)
-        hidden = self.input(noisy) + time_condition + text_condition
-        for block in self.blocks:
-            hidden = hidden + block(hidden)
-        return self.output(hidden)
-
-
-def make_model(config: MusicDiffusionConfig | None = None) -> ResidualDenoiser:
-    return ResidualDenoiser(config or MusicDiffusionConfig())
-
-
-def diffusion_schedule(config: MusicDiffusionConfig, device):
-    torch, _ = _torch()
-    beta = torch.linspace(1e-4, 0.02, config.diffusion_steps, device=device)
-    alpha = 1.0 - beta
-    cumulative = torch.cumprod(alpha, dim=0)
-    return beta, alpha, cumulative
-
-
-def text_batch(texts: Iterable[str], config: MusicDiffusionConfig, device):
-    torch, _ = _torch()
-    values = [encode_text(text, vocab_size=config.text_vocab_size) for text in texts]
-    width = max(len(value) for value in values)
-    result = torch.zeros((len(values), width), dtype=torch.long, device=device)
-    for index, value in enumerate(values):
-        result[index, : len(value)] = torch.tensor(value, dtype=torch.long, device=device)
-    return result
-
-
-def diffusion_loss(model: ResidualDenoiser, clean_mel, texts: list[str], config: MusicDiffusionConfig):
-    torch, _ = _torch()
-    device = clean_mel.device
-    beta, _, cumulative = diffusion_schedule(config, device)
-    timesteps = torch.randint(0, config.diffusion_steps, (clean_mel.shape[0],), device=device)
-    noise = torch.randn_like(clean_mel)
-    alpha_bar = cumulative[timesteps].view(-1, 1, 1)
-    noisy = alpha_bar.sqrt() * clean_mel + (1.0 - alpha_bar).sqrt() * noise
-    prediction = model(noisy, timesteps.float() / config.diffusion_steps, text_batch(texts, config, device))
-    return torch.nn.functional.mse_loss(prediction, noise)
-
-
-def sample_mel(
-    model: ResidualDenoiser,
-    text: str,
-    frames: int,
-    *,
-    config: MusicDiffusionConfig,
-    device,
-    steps: int | None = None,
-    seed: int | None = None,
-    noise_scale: float = 0.0,
-):
-    torch, _ = _torch()
-    if seed is not None:
-        torch.manual_seed(seed)
-    model.eval()
-    steps = max(1, min(config.diffusion_steps, int(steps or config.diffusion_steps)))
-    beta, alpha, cumulative = diffusion_schedule(config, device)
-    indices = torch.linspace(config.diffusion_steps - 1, 0, steps, device=device).long()
-    tokens = text_batch([text], config, device)
-    sample = torch.randn((1, config.n_mels, frames), device=device)
-    with torch.no_grad():
-        for index in indices:
-            timestep = index.float().view(1)
-            prediction = model(sample, timestep / config.diffusion_steps, tokens)
-            current_alpha = alpha[index]
-            current_beta = beta[index]
-            current_cumulative = cumulative[index]
-            sample = (sample - current_beta / (1.0 - current_cumulative).sqrt() * prediction) / current_alpha.sqrt()
-            if int(index) > 0 and noise_scale > 0.0:
-                sample = sample + current_beta.sqrt() * float(noise_scale) * torch.randn_like(sample)
-    return sample.clamp(-12.0, 4.0)
 
 
 def build_lyric_timing(text: str, duration_seconds: float) -> list[dict[str, Any]]:
@@ -389,7 +176,7 @@ def _write_wav(audio: np.ndarray, destination: Path, sample_rate: int) -> Path:
     return destination.resolve()
 
 
-def save_checkpoint(model: ResidualDenoiser, path: str | Path, config: MusicDiffusionConfig, *, optimizer=None, epoch: int = 0, loss: float | None = None, arch: dict[str, int] | None = None) -> Path:
+def save_checkpoint(model, path: str | Path, config: MusicDiffusionConfig, *, optimizer=None, epoch: int = 0, loss: float | None = None, arch: dict[str, int] | None = None) -> Path:
     torch, _ = _torch()
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -405,31 +192,25 @@ def save_checkpoint(model: ResidualDenoiser, path: str | Path, config: MusicDiff
     return destination.resolve()
 
 
-def load_checkpoint(path: str | Path, *, device="cpu", model_type: str | None = None, roberta_model: str = "xlm-roberta-base") -> tuple[nn.Module, MusicDiffusionConfig, dict[str, Any]]:
+def load_checkpoint(path: str | Path, *, device="cpu", roberta_model: str = "xlm-roberta-base") -> tuple[Any, MusicDiffusionConfig, dict[str, Any]]:
     torch, _ = _torch()
+    from .dit_transformer import MicroDiT
+
     payload = torch.load(path, map_location=device, weights_only=False)
-    config = MusicDiffusionConfig(**payload["config"])
+    config = _config_from_dict(payload["config"])
 
-    # Detect model type based on saved state dict keys
-    state_keys = payload["model"].keys()
-    is_dit = any("transformer_blocks" in k or "text_encoder" in k for k in state_keys)
+    # Reconstruct with the exact architecture size the checkpoint was trained
+    # with (defaults match the old hardcoded values, for checkpoints saved
+    # before "arch" was tracked) -- a size mismatch here would silently fail
+    # to load most weights via load_state_dict(strict=False).
+    arch = payload.get("arch") or {}
+    model = MicroDiT(
+        config, roberta_model=roberta_model,
+        dim=arch.get("dim", 256), depth=arch.get("depth", 4),
+        heads=arch.get("heads", 4), ff_mult=arch.get("ff_mult", 4),
+        style_dim=arch.get("style_dim", 512),
+    ).to(device)
 
-    if model_type == "dit" or (model_type is None and is_dit):
-        from .dit_transformer import MicroDiT
-        # Reconstruct with the exact architecture size the checkpoint was trained
-        # with (defaults match the old hardcoded values, for checkpoints saved
-        # before "arch" was tracked) -- a size mismatch here would silently fail
-        # to load most weights via load_state_dict(strict=False).
-        arch = payload.get("arch") or {}
-        model = MicroDiT(
-            config, roberta_model=roberta_model,
-            dim=arch.get("dim", 256), depth=arch.get("depth", 4),
-            heads=arch.get("heads", 4), ff_mult=arch.get("ff_mult", 4),
-            style_dim=arch.get("style_dim", 512),
-        ).to(device)
-    else:
-        model = make_model(config).to(device)
-        
     # strict=False: checkpoints deliberately omit the frozen RoBERTa encoder
     # weights (see save_checkpoint) -- those are already loaded fresh from
     # HuggingFace by the model constructor above.
@@ -437,7 +218,7 @@ def load_checkpoint(path: str | Path, *, device="cpu", model_type: str | None = 
     return model, config, payload
 
 
-def generate_audio(model: ResidualDenoiser, text: str, style: str, destination: str | Path, *, duration_seconds: float, config: MusicDiffusionConfig, device="cpu", steps: int = 6, seed: int = 5602, mel_output: str | Path | None = None, vocoder_type: str = "istft") -> dict[str, Any]:
+def generate_audio(model, text: str, style: str, destination: str | Path, *, duration_seconds: float, config: MusicDiffusionConfig, device="cpu", steps: int = 6, seed: int = 5602, mel_output: str | Path | None = None, vocoder_type: str = "vocos") -> dict[str, Any]:
     torch, _ = _torch()
     model.to(device)
     duration_seconds = max(float(duration_seconds), estimate_minimum_lyric_duration(text))
@@ -453,12 +234,8 @@ def generate_audio(model: ResidualDenoiser, text: str, style: str, destination: 
                 f"sing naturally across {chunk_duration:.2f} seconds; keep space between lyric lines."
             )
             chunk_frames = max(8, int(chunk_duration * config.sample_rate / config.hop_length))
-            is_dit = model.__class__.__name__ == "MicroDiT"
-            if is_dit:
-                from .cfm_flow import sample_cfm
-                mel = sample_cfm(model, [chunk_text], chunk_frames, config=config, device=device, steps=steps, seed=seed + section_number)
-            else:
-                mel = sample_mel(model, chunk_text, chunk_frames, config=config, device=device, steps=steps, seed=seed + section_number)
+            from .cfm_flow import sample_cfm
+            mel = sample_cfm(model, [chunk_text], chunk_frames, config=config, device=device, steps=steps, seed=seed + section_number)
             rendered.append(mel.squeeze(0))
             section_number += 1
     mel = torch.cat(rendered, dim=1)
