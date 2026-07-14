@@ -67,12 +67,15 @@ Check `outputs/local_smoke_test/summary.json` afterward. Expect:
 - `preprocess.status: "completed"`, `records_count: 2`.
 - `vocoder_roundtrip.logmel_corr` > 0.95 (this is the regression test for the vocoder
   distortion bug — if it drops well below this, something broke the mel/vocoder match).
-- `distillation.distillation_active: false` locally is **expected and correct** — the
-  real DiffRhythm2 teacher isn't cloned locally, so the honest fallback should kick in
-  (`teacher_status` will say so explicitly). Seeing `distillation_active: true` here
-  would actually be suspicious.
-- `generation.baseline.sanity_stats` and `generation.distilled.sanity_stats`: both
-  `has_nan_or_inf: false`, `silence_ratio` well under 1%.
+- `distillation.status: "failed"` with an error mentioning the DiffRhythm2 package not
+  being importable is **expected and correct** with no `PYTHONPATH` set — `train-distill`
+  raises rather than silently completing as ground-truth-only training under the
+  distillation name (see `docs/model.md`'s Distillation section). `generation.distilled`
+  will correspondingly be `{"status": "no_checkpoint"}` since no checkpoint was produced.
+  If you *do* have a patched DiffRhythm2 clone on `PYTHONPATH` (see §3 below), expect
+  `distillation.distillation_active: true` and a real `generation.distilled` entry instead.
+- `generation.baseline.sanity_stats`: `has_nan_or_inf: false`, `silence_ratio` well
+  under 1%.
 
 If any of these look wrong, don't proceed to a real Kaggle run yet — something in the
 environment or the code changed in a way that needs fixing first.

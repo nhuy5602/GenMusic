@@ -46,13 +46,15 @@ uv run python cli.py train-distill --dataset dataset/diff_rhythm_dataset --stude
 ```
 
 Without `--teacher-checkpoint`, this downloads the real teacher from
-`ASLP-lab/DiffRhythm2` on HuggingFace. **This only works inside a Kaggle kernel
-that has cloned the DiffRhythm2 GitHub repo onto `PYTHONPATH`** (see
-`scripts/run_kaggle_distill.py` / `scripts/run_kaggle_experiment_matrix.py`) —
-running it locally without that clone falls back to ground-truth CFM loss
-alone, and says so explicitly via the `teacher_status`/`distillation_active`
-fields in the returned report (never a silent fake teacher). `--alpha-feature`
-blends teacher-matching loss vs. ground-truth loss (`1.0` = ground-truth only).
+`ASLP-lab/DiffRhythm2` on HuggingFace. **Needs the DiffRhythm2 GitHub repo cloned
+onto `PYTHONPATH` with its dependencies installed** — automated on Kaggle (see
+`scripts/run_kaggle_distill.py` / `scripts/run_kaggle_experiment_matrix.py`), or
+doable locally by cloning it yourself (verified working on Windows/CPU too, not
+Kaggle-only). Without that clone, or without internet, `train-distill` **raises
+immediately** rather than silently completing as ground-truth-only training
+under the distillation name (use `train-self` for that) — never a silent fake
+teacher, never a silent downgrade either. `--alpha-feature` blends
+teacher-matching loss vs. ground-truth loss (`1.0` = ground-truth only).
 See `docs/experiments/distillation_fix.md` for the real teacher call contract
 this replicates, and `docs/PROJECT_REPORT.md` §3.5 for the comparison
 experiment (`scripts/run_experiment_matrix.py`) meant to answer whether this

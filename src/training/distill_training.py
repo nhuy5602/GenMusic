@@ -13,11 +13,12 @@ pass (the KV-cache in the original is a streaming/perf optimization only, not a
 semantic difference from a single full-context forward pass).
 
 If the teacher (or its lyric tokenizer) cannot be loaded -- e.g. no internet, or
-the DiffRhythm2 repo isn't vendored on PYTHONPATH -- this trains the student on
-the ground-truth CFM loss alone and says so plainly in the report, rather than
-silently distilling against a randomly-initialized stand-in (the previous
-"DummyTeacher" behavior, which produced a meaningless training signal with no
-error surfaced to the user).
+the DiffRhythm2 repo isn't vendored on PYTHONPATH -- `run_distillation_training`
+raises immediately rather than either (a) silently distilling against a
+randomly-initialized stand-in (the old "DummyTeacher" behavior) or (b) silently
+falling back to ground-truth-only training under the `train-distill` name. If you
+want ground-truth-only training, call `train-self` instead; `train-distill`
+always means a real teacher was actually used, no exceptions.
 """
 
 import json
@@ -333,17 +334,24 @@ def run_distillation_training(
 
     teacher_backbone, teacher_config, teacher_status = _load_teacher(repo_id, teacher_checkpoint_path, selected_device)
     print(f"Teacher load status: {teacher_status}", flush=True)
+    if teacher_backbone is None:
+        raise RuntimeError(
+            f"train-distill requires the real DiffRhythm2 teacher; it failed to load: {teacher_status}. "
+            "Use train-self for ground-truth-only training instead -- train-distill never silently "
+            "falls back to a fake/randomly-initialized stand-in teacher."
+        )
     teacher_mel_dim = teacher_config.get("mel_dim") if teacher_config else None
-    if teacher_backbone is not None and teacher_mel_dim is not None and teacher_mel_dim != config.n_mels:
+    if teacher_mel_dim is not None and teacher_mel_dim != config.n_mels:
         print(
             f"Teacher mel_dim={teacher_mel_dim} != dataset n_mels={config.n_mels}; "
             "bridging with a trainable linear adapter (see docs/experiments/distillation_fix.md).",
             flush=True,
         )
 
-    parse_lyrics_fn, tokenizer_status = (None, "skipped (no teacher)") if teacher_backbone is None else _load_lyric_tokenizer()
-    if teacher_backbone is not None:
-        print(f"Lyric tokenizer status: {tokenizer_status}", flush=True)
+    parse_lyrics_fn, tokenizer_status = _load_lyric_tokenizer()
+    print(f"Lyric tokenizer status: {tokenizer_status}", flush=True)
+    if parse_lyrics_fn is None:
+        raise RuntimeError(f"train-distill requires the real lyric tokenizer; it failed to load: {tokenizer_status}.")
 
     model_student = MicroDiT(config, dim=dim, depth=depth, heads=heads, ff_mult=ff_mult, style_dim=TEACHER_COND_DIM).to(selected_device)
 
@@ -370,12 +378,9 @@ def run_distillation_training(
     )
     trainable_params = [p for p in model_student.parameters() if p.requires_grad] + trainer.adapter_parameters()
     trainer.optimizer = torch.optim.AdamW(trainable_params, lr=learning_rate)
-    distillation_active = trainer.teacher is not None and trainer.parse_lyrics_fn is not None
-    print(
-        f"Starting {'distillation' if distillation_active else 'ground-truth-only (teacher unavailable)'} "
-        f"training for {epochs} epochs on {selected_device}...",
-        flush=True,
-    )
+    # Always true here -- the raises above guarantee a real teacher + tokenizer.
+    distillation_active = True
+    print(f"Starting distillation training for {epochs} epochs on {selected_device}...", flush=True)
 
     start_time = time.perf_counter()
     losses = []
@@ -409,7 +414,7 @@ def run_distillation_training(
         "backend": "genmusic-vn-dit-distillation",
         "distillation_active": distillation_active,
         "teacher_status": teacher_status,
-        "tokenizer_status": tokenizer_status if teacher_backbone is not None else "skipped (no teacher)",
+        "tokenizer_status": tokenizer_status,
         "teacher_mel_dim": teacher_mel_dim,
         "student_mel_dim": config.n_mels,
         "mel_adapter_used": trainer.to_teacher_mel is not None,

@@ -147,10 +147,15 @@ these adapters. See `docs/experiments/distillation_fix.md`.
 
 **Loss**: `loss = (1 - alpha_feature) * MSE(v_student, v_teacher) + alpha_feature * MSE(v_student, x_1 - x_0)`,
 i.e. a blend of teacher-matching and ground-truth CFM loss, with `alpha_feature`
-exposed via `--alpha-feature`. If the teacher or its lyric tokenizer cannot be loaded
-(no internet, package not vendored), training falls back to `alpha_feature=1.0`
-(ground-truth only) and reports this plainly (`teacher_status`, `distillation_active`
-fields) rather than silently substituting a fake teacher.
+exposed via `--alpha-feature`. `run_distillation_training()` (called by `train-distill`)
+requires a real teacher and a real lyric tokenizer to actually be loaded — if either
+fails (no internet, package not vendored), it raises immediately rather than either
+(a) silently substituting a fake teacher, or (b) silently downgrading to ground-truth-only
+training under the `train-distill` name. Ground-truth-only training is what `train-self`
+is for; `train-distill` completing successfully always means a real teacher was used.
+(`_load_teacher()`/`_load_lyric_tokenizer()` themselves stay non-raising — they return
+a status string so diagnostics/status checks can inspect availability without a training
+run — the raise happens one level up, in `run_distillation_training()`.)
 
 ### 2.3 Mel representation & vocoder (`src/models/text_to_music_diffusion.py`)
 
@@ -293,6 +298,57 @@ verified in isolation (a unit test with a fake teacher of mismatched mel_dim, fo
 backward + optimizer step all succeed) but never end-to-end against the real teacher
 before quota ran out.
 
+### 3.7 Real-teacher distillation confirmed locally (`distillation_active: true`, first time end-to-end)
+
+After §3.6, Kaggle quota ran out entirely, so this was verified on CPU instead: a fresh
+shallow clone of `github.com/ASLP-lab/DiffRhythm2` was patched locally to work around
+transformers version skew (`StaticCache`/`FlashAttentionKwargs` import paths moved,
+`LlamaConfig.rope_theta` routing changed) and a chain of ~20 missing Python packages plus
+three Windows cp1252-vs-UTF-8 file-encoding bugs in the *vendored DiffRhythm2 code itself*
+(not this project's code). With `espeak-ng` installed as a system package and the patched
+clone on `PYTHONPATH`, both `_load_teacher()` (`teacher_status: "ok"`) and
+`_load_lyric_tokenizer()` (`tokenizer_status: "ok"`) now load the real teacher and real
+lyric tokenizer on a plain Windows/CPU machine — no Kaggle required for this part.
+
+A real 30-epoch distillation run (2 real songs, batch_size=2, `dim=128, depth=2`) then
+completed with `distillation_active: true` for the first time against the actual
+1,136,249,664-param DiffRhythm2 teacher (vs. the student's 745,188 trainable params —
+teacher is ~1,525× larger, which is the whole point of distillation). Isolated timing:
+one teacher forward pass at batch_size=1 costs ≈3s on CPU (inference-only, no backward);
+the dominant cost in every distillation step.
+
+**Comparing against a baseline (no-teacher) run on the same 2 songs/30 epochs**:
+final `loss_gt` ≈17.9 (distilled) vs. ≈15.7 (baseline) — statistically indistinguishable.
+This is *not* evidence against distillation; it's an artifact of scale: with only 2 songs
+and `batch_size=2` there is exactly 1 gradient step per epoch, and CFM's random per-step
+timestep sampling makes loss swing from ~3.5 to ~229 within the *same run* independent of
+learning progress. 30 such steps isn't enough to average that variance out. Answering
+"does distillation help" still requires either more songs, more steps per epoch, or both
+— this local run's contribution is proving the *mechanism* is real and correct end-to-end
+(mel-dim adapter, teacher call contract, lyric tokenization all genuinely exercised), not
+answering the quality question, which remains exactly as open as §3.5/§4 already said.
+
+**Full-corpus feasibility** (`sonlest/vietnamese-music-dataset-version3-part6` = 201
+songs, 2.52GB, confirmed via the Kaggle API): preprocessing extrapolates to ≈3.9 GPU-hours
+(measured 12-song Kaggle rate ≈70s/song), comfortably within a weekly quota. Baseline
+training is trivial at any scale (≈5 min extrapolated, tiny student). Real-teacher
+distillation's GPU cost is *not* measured, only extrapolated from the CPU numbers above
+with a generic CPU→T4 speedup assumption (≈15–50×, unverified) — landing around 30
+minutes to a few hours for a full run. No Kaggle GPU distillation run has ever completed
+even once (every attempt hit a bug or ran out of quota first), so this number carries
+real uncertainty; a small (~12-song) real-teacher GPU smoke test is the next step to
+replace the estimate with a measurement, before committing quota to the full corpus.
+
+**Behavior change**: `run_distillation_training()` (i.e. `train-distill`) now raises
+immediately if the real teacher or its lyric tokenizer fails to load, rather than
+silently downgrading to ground-truth-only training under the `train-distill` name (which
+is what it did through all of §3.1–§3.6 above, reported honestly via
+`distillation_active: false` but still a "successful" run that didn't do what was asked).
+`_load_teacher()`/`_load_lyric_tokenizer()` themselves are unchanged and still
+non-raising, for callers that just want a status check. Ground-truth-only training is
+what `train-self` is for; a `train-distill` run that completes now always means a real
+teacher was used, full stop.
+
 ---
 
 ## 4. Conclusion
@@ -308,14 +364,23 @@ before quota ran out.
   `mel_dim=64` is the clearest example of this trap, and it recurred independently in
   the parallel `origin/master` work this session merged with (§1.5), which is some
   evidence it's a natural mistake for this kind of integration, not a one-off.
-- **The distillation-helps-or-not question is open, not answered.** Every pipeline stage
-  is verified correct end-to-end (twice — Kaggle and local), and the teacher-adapter
-  mechanism is verified correct in isolation, but the actual at-scale comparison
-  (`scripts/run_experiment_matrix.py`) never got GPU time before Kaggle quota ran out.
-  This is explicitly *not* being reported as "distillation works" or "distillation
-  doesn't help" — neither claim has evidence yet. The honest state is: the machinery to
-  find out is built, tested, and ready; running it is the very next step, not a research
-  problem.
+- **The distillation-helps-or-not question is still open, but the mechanism itself is no
+  longer just "verified in isolation."** §3.7 got `distillation_active: true` end-to-end
+  against the real ~1.14B-param teacher, locally, for the first time — the mel-dim
+  adapter, teacher call contract, and lyric tokenization are all genuinely exercised, not
+  simulated. What that local run *can't* answer is quality: at 2 songs/30 epochs/1
+  step-per-epoch, CFM's random-timestep loss variance (3.5–229 within one run) swamps any
+  real learning signal. The at-scale comparison (`scripts/run_experiment_matrix.py`) still
+  never got GPU time before Kaggle quota ran out, and no Kaggle distillation run has
+  completed even once — so this remains the most important open item, now with a clearer
+  next step (a small real-teacher GPU smoke test to replace an extrapolated cost estimate
+  with a measurement, §3.7) rather than a purely engineering blocker.
+- `train-distill` now raises immediately if the real teacher/tokenizer can't be loaded,
+  instead of silently completing as ground-truth-only training under the distillation
+  name (§3.7). This closes a real gap: every §3.1–§3.6 "successful" distillation run
+  before §3.7 was, by construction, either a real distillation or a same-named
+  ground-truth-only run depending on environment — correctly *reported* via
+  `distillation_active`, but easy to miss if you didn't check that field.
 - Small-model architecture choice (`dim=256, depth=4, heads=4`, a few million trainable
   parameters vs. the teacher's few-hundred-million) was carried through as the working
   default throughout, with `--dim`/`--depth`/`--heads`/`--ff-mult` exposed for the size

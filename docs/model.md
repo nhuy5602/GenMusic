@@ -47,10 +47,11 @@ and the student's 100-mel space for the distillation loss only. If the teacher
 (or its lyric tokenizer) can't be loaded — no internet, DiffRhythm2 repo not
 on `PYTHONPATH` with its dependencies installed (works on Kaggle via
 `scripts/run_kaggle_distill.py`, or locally by cloning it yourself and
-installing deps as they come up) — training falls back to ground-truth CFM
-loss alone and reports this plainly via `teacher_status`/`distillation_active`
-in the returned report, rather than silently substituting a fake teacher (the
-previous behavior).
+installing deps as they come up) — `train-distill` **raises immediately**
+rather than either silently substituting a fake teacher or silently
+downgrading to ground-truth-only training under the distillation name. Use
+`train-self` for ground-truth-only training; a `train-distill` run that
+completes always means a real teacher was used.
 
 **`distillation_active: true` has been confirmed locally** (CPU, real
 DiffRhythm2 teacher + real lyric tokenizer, 2-song dataset, 30 epochs) — the

@@ -10,7 +10,7 @@ from src.data.vietnamese_g2p import vietnamese_g2p
 from src.data.vietnamese_text import normalize_vietnamese_lyrics
 from src.integrations.kaggle_auto import DEFAULT_KAGGLE_DATASET_SLUG, DEFAULT_MODEL, KaggleJobConfig, resolve_training_dataset_ref, run_local_generation, stage_text_to_music_job, validate_dataset_ref
 from src.models.text_to_music_diffusion import build_lyric_timing, estimate_minimum_lyric_duration
-from src.training.distill_training import _load_teacher
+from src.training.distill_training import _load_teacher, run_distillation_training
 from src.training.self_diffusion import create_random_dataset, train_model, validate_dataset
 from server import PROJECT_ROOT, WEB_ROOT, _is_relative_to
 
@@ -106,6 +106,17 @@ class SelfDiffusionTests(unittest.TestCase):
         self.assertIsNone(model_config)
         self.assertIsInstance(status, str)
         self.assertTrue(status)
+
+    def test_train_distill_raises_when_teacher_unavailable(self) -> None:
+        # train-distill must never silently downgrade to ground-truth-only training
+        # under the distillation name -- it should raise so the failure is impossible
+        # to miss, instead of only being visible via the distillation_active field.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            dataset = root / "dataset"
+            create_random_dataset(dataset, count=2, frames=32)
+            with self.assertRaises(RuntimeError):
+                run_distillation_training(dataset, root / "model.pt", epochs=1, batch_size=2)
 
     def test_vietnamese_text_contract(self) -> None:
         self.assertIn("mười hai", normalize_vietnamese_lyrics("Mưa 12 ngày, ko về."))
