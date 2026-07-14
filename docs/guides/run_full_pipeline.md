@@ -5,6 +5,37 @@ distillation → generation, either as a quick local correctness check or as a r
 Kaggle GPU run. Read `docs/PROJECT_REPORT.md` and `docs/experiments/*.md` first if you
 want the *why* behind these steps — this doc is just the *how*.
 
+## TL;DR: the 4 commands
+
+Run `uv sync` once first. Everything below assumes you're in the project root.
+
+**1. Preprocess raw songs → training dataset:**
+```powershell
+uv run python cli.py preprocess-raw --input dataset/vietnamese_songs --output dataset/diff_rhythm_dataset --whisper-model tiny
+```
+
+**2. Train the student model (baseline, no teacher):**
+```powershell
+uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/my_model.pt --model-type dit --epochs 60 --dim 256 --depth 4 --heads 4
+```
+
+**3. Distill from the real DiffRhythm2 teacher instead of step 2:**
+```powershell
+$env:PYTHONPATH = "C:\path\to\DiffRhythm2"   # clone from github.com/ASLP-lab/DiffRhythm2 first
+uv run python cli.py train-distill --dataset dataset/diff_rhythm_dataset --student-checkpoint outputs/distilled_model.pt --epochs 60 --dim 256 --depth 4 --heads 4
+```
+
+**4. Download the checkpoint (if trained on Kaggle) and run inference:**
+```powershell
+uv run python -m kaggle kernels output <kernel_ref> -p outputs/downloaded -o    # skip if trained locally
+uv run python cli.py generate-local --text "Đêm nay Hà Nội ngập tràn tiếng mưa rơi." --checkpoint outputs/my_model.pt --model-type dit --vocoder vocos --duration 8 --out outputs/my_song
+```
+Output lands at `outputs/my_song/final.wav`.
+
+Everything past this point is detail and troubleshooting for running the same 4 steps
+at Kaggle GPU scale — read on if something above doesn't work, or you need real
+training scale rather than a quick check.
+
 ## 0. One-time setup
 
 ```powershell
