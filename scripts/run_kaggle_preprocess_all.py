@@ -24,8 +24,15 @@ def _write_source_zip(project_root: Path, destination: Path) -> None:
                 continue
             archive.write(path, relative.as_posix())
 
-def _kernel_script_content(raw_dataset_slug: str, output_dataset_ref: str, kaggle_username: str, kaggle_key: str) -> str:
-    # Script runs on Kaggle GPU instance and processes ALL files, then uploads to a new Kaggle dataset
+def _kernel_script_content(
+    raw_dataset_slug: str,
+    output_dataset_ref: str,
+    kaggle_username: str,
+    kaggle_key: str,
+    max_files: str | None = None,
+) -> str:
+    # Script runs on Kaggle GPU instance and processes the requested file set.
+    kernel_max_files = str(max_files or "")
     return f'''import os
 import json
 import shutil
@@ -247,9 +254,11 @@ try:
         "--demucs-device", "cuda",
         "--whisper-device", "cuda"
     ]
-    if os.environ.get("KAGGLE_PREPROCESS_MAX_FILES"):
-        preprocess_command.extend(["--max-files", os.environ["KAGGLE_PREPROCESS_MAX_FILES"]])
-    preprocess_timeout = 1800 if os.environ.get("KAGGLE_PREPROCESS_MAX_FILES") else 43200
+    max_files_value = "{kernel_max_files}"
+    if max_files_value:
+        print("Preprocessing limit: " + max_files_value + " file(s)", flush=True)
+        preprocess_command.extend(["--max-files", max_files_value])
+    preprocess_timeout = 1800 if max_files_value else 43200
     preprocess_result = run_logged(preprocess_command, "preprocess", preprocess_timeout)
     records_path = preprocessed_dir / "records.jsonl"
     record_count = sum(1 for line in records_path.read_text(encoding="utf-8").splitlines() if line.strip()) if records_path.exists() else 0
@@ -318,6 +327,13 @@ def main():
     raw_dataset_slug = raw_dataset_ref.split("/")[-1]
     
     output_dataset_ref = os.getenv("KAGGLE_PROCESSED_DATASET_REF") or tokens.get("KAGGLE_PROCESSED_DATASET_REF", f"{username}/vietnamese-music-processed-dataset")
+    max_files = os.getenv("KAGGLE_PREPROCESS_MAX_FILES") or tokens.get("KAGGLE_PREPROCESS_MAX_FILES")
+    if max_files:
+        try:
+            if int(max_files) < 1:
+                raise ValueError
+        except ValueError as exc:
+            raise ValueError("KAGGLE_PREPROCESS_MAX_FILES must be a positive integer") from exc
 
     run_id = f"preprocess-all-{int(time.time())}"
     job_dir = project_root / "outputs" / "kaggle_preprocess" / run_id
@@ -361,7 +377,7 @@ def main():
     kernel_slug = f"genmusic-prep-{int(time.time())}"
     kernel_ref = f"{username}/{kernel_slug}"
     
-    kernel_script = _kernel_script_content(raw_dataset_slug, output_dataset_ref, username, tokens["KAGGLE_KEY"])
+    kernel_script = _kernel_script_content(raw_dataset_slug, output_dataset_ref, username, tokens["KAGGLE_KEY"], max_files)
     (kernel_dir / "run_preprocess.py").write_text(kernel_script, encoding="utf-8")
     (kernel_dir / "kernel-metadata.json").write_text(json.dumps({
         "id": kernel_ref,
