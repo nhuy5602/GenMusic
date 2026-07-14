@@ -20,3 +20,5 @@ kaggle.json
 /dataset/vietnamese_songs/
 /dataset/random_self_diffusion*/
 *.egg-info/
+/ckpt/
+/.claude/

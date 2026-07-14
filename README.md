@@ -65,6 +65,43 @@ KAGGLE_PROCESSED_DATASET_REF=your_kaggle_username/vietnamese-music-processed-dat
 
 ---
 
+## ⚡ Quick Start: Train & Run Inference
+
+The minimum path from raw audio to a generated song, run locally with `cli.py`. Every command below is copy-pasteable; swap paths as needed.
+
+**1. Preprocess raw songs into a training dataset**
+```powershell
+uv run python cli.py preprocess-raw --input dataset/vietnamese_songs --output dataset/diff_rhythm_dataset --whisper-model tiny
+```
+Splits vocal/backing stems (Demucs), transcribes lyrics (Whisper), computes the Audio Style Anchor (MuQ-MuLan), and writes mel-spectrograms in Vocos-native format. Produces `dataset/diff_rhythm_dataset/{config.json, records.jsonl, mels/}`.
+
+**2. Train the student model (no teacher — fastest way to sanity-check the pipeline)**
+```powershell
+uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/my_dit_model.pt --epochs 30 --batch-size 4 --model-type dit --dim 256 --depth 4 --heads 4
+```
+
+**3. (Optional) Knowledge-distill from the real DiffRhythm2 teacher**
+Needs the [DiffRhythm2 repo](https://github.com/ASLP-lab/DiffRhythm2) checked out somewhere with its dependencies installed, and its path on `PYTHONPATH` — this works both on Kaggle (see `scripts/run_kaggle_distill.py`) and locally (clone it yourself, `uv pip install --no-deps <missing deps as they come up>`, `espeak-ng` installed as a system package for the lyric tokenizer). Without it, the command below still runs and trains ground-truth-only, but reports that honestly (`teacher_status`/`distillation_active` in the output) instead of silently faking distillation:
+```powershell
+$env:PYTHONPATH = "C:\path\to\DiffRhythm2"
+uv run python cli.py train-distill --dataset dataset/diff_rhythm_dataset --student-checkpoint outputs/distilled_student.pt --epochs 30 --batch-size 4 --dim 256 --depth 4 --heads 4
+```
+
+**4. Generate a song (inference)**
+```powershell
+uv run python cli.py generate-local --text "Đêm nay Hà Nội ngập tràn tiếng mưa rơi." --duration 8.0 --vocoder vocos --model-type dit --checkpoint outputs/my_dit_model.pt --out outputs/my_song
+```
+Loads whichever checkpoint you point it at (from step 2 or 3), samples with CFM, and decodes to `outputs/my_song/final.wav` via the Vocos vocoder.
+
+**5. Evaluate the result**
+```powershell
+uv run python cli.py evaluate-self --generated outputs/my_song/final.wav --out outputs/evaluation_report
+```
+
+For running the same pipeline on Kaggle GPUs instead (recommended for anything past a smoke test — CPU-only teacher forward passes are ~3s/sample), see the automated scripts below and [docs/guides/run_full_pipeline.md](docs/guides/run_full_pipeline.md).
+
+---
+
 ## 🚀 Usage Guide for Automated Scripts
 
 All key workflows are packaged into automated scripts in the `scripts/` directory:
@@ -132,7 +169,7 @@ You can train the diffusion denoiser from scratch or perform knowledge distillat
   `--dim`/`--depth`/`--heads`/`--ff-mult` control MicroDiT's architecture size (default: ~5.6M trainable params).
 
 * **Knowledge Distillation:**
-  Replicates the real DiffRhythm2 teacher's call contract (see [docs/experiments/distillation_fix.md](docs/experiments/distillation_fix.md)) — this only works inside a Kaggle kernel that has cloned the DiffRhythm2 repo onto `PYTHONPATH` (see `scripts/run_kaggle_distill.py`). Running it without that clone, or without internet, falls back to ground-truth-only training and reports this explicitly via `teacher_status`/`distillation_active` in the output — never a silent fake teacher.
+  Replicates the real DiffRhythm2 teacher's call contract (see [docs/experiments/distillation_fix.md](docs/experiments/distillation_fix.md)). Needs a clone of the [DiffRhythm2 repo](https://github.com/ASLP-lab/DiffRhythm2) on `PYTHONPATH` with its dependencies installed — done automatically on Kaggle (see `scripts/run_kaggle_distill.py`), or manually locally (see Quick Start step 3 above; verified working on Windows/CPU too, not just Kaggle). Running without that clone, or without internet, falls back to ground-truth-only training and reports this explicitly via `teacher_status`/`distillation_active` in the output — never a silent fake teacher.
   - If `--teacher-checkpoint` is omitted, the script automatically downloads the latest model weights (`model.safetensors`) from the Hugging Face repo: `ASLP-lab/DiffRhythm2`.
   ```powershell
   uv run python cli.py train-distill --dataset dataset/diff_rhythm_dataset --student-checkpoint outputs/distilled_student.pt --epochs 5 --batch-size 4 --alpha-feature 0.5
