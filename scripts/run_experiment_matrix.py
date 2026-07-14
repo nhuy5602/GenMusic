@@ -50,6 +50,8 @@ CONFIGS = [
 
 
 def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser()
     parser.add_argument("--raw-dataset", required=True)
     parser.add_argument("--output-root", default="/kaggle/working")
@@ -71,7 +73,7 @@ def main():
         keep_separated_count=1, max_files=args.max_files,
     )
     summary["preprocess"] = {k: v for k, v in preprocess_report.items() if k != "failures"}
-    (output_root / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
+    (output_root / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
     if preprocess_report.get("status") != "completed":
         print("[FATAL] preprocessing failed, aborting.", flush=True)
         return
@@ -103,7 +105,7 @@ def main():
 
             report = {"status": "failed", "error": str(e), "traceback": traceback.format_exc()}
         summary["configs"][name] = {"training": report}
-        (output_root / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
+        (output_root / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
 
         if ckpt_path.exists():
             try:
@@ -119,11 +121,11 @@ def main():
                 import traceback
 
                 summary["configs"][name]["generation"] = {"status": "failed", "error": str(e), "traceback": traceback.format_exc()}
-        (output_root / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
+        (output_root / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
 
     summary["finished_at"] = time.time()
     summary["elapsed_seconds"] = round(summary["finished_at"] - summary["started_at"], 1)
-    (output_root / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
+    (output_root / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
     print("=" * 70, "\nALL CONFIGS COMPLETE\n", "=" * 70, sep="", flush=True)
 
 

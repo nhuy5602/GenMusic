@@ -79,6 +79,8 @@ def wav_sanity_stats(path: Path) -> dict:
 
 
 def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser()
     parser.add_argument("--raw-dataset", required=True)
     parser.add_argument("--output-root", default="/kaggle/working")
@@ -101,7 +103,7 @@ def main():
         keep_separated_count=3, max_files=args.max_files,
     )
     summary["preprocess"] = preprocess_report
-    (output_root / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
+    (output_root / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
     if preprocess_report.get("status") != "completed":
         print("[FATAL] preprocessing failed, aborting.", flush=True)
         return
@@ -109,7 +111,7 @@ def main():
     print("=" * 70, "\nSTAGE 2: Vocoder round-trip sanity check\n", "=" * 70, sep="", flush=True)
     summary["vocoder_roundtrip"] = vocoder_roundtrip_check(dataset_dir, output_root)
     print(json.dumps(summary["vocoder_roundtrip"], indent=2), flush=True)
-    (output_root / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
+    (output_root / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
 
     print("=" * 70, "\nSTAGE 3: Baseline DiT training (no teacher)\n", "=" * 70, sep="", flush=True)
     baseline_ckpt = output_root / "baseline_dit.pt"
@@ -122,7 +124,7 @@ def main():
 
         baseline_report = {"status": "failed", "error": str(e), "traceback": traceback.format_exc()}
     summary["baseline_training"] = baseline_report
-    (output_root / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
+    (output_root / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
 
     print("=" * 70, "\nSTAGE 4: Distillation attempt\n", "=" * 70, sep="", flush=True)
     distilled_ckpt = output_root / "distilled_student.pt"
@@ -138,7 +140,7 @@ def main():
 
         distill_report = {"status": "failed", "error": str(e), "traceback": traceback.format_exc()}
     summary["distillation"] = distill_report
-    (output_root / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
+    (output_root / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
 
     print("=" * 70, "\nSTAGE 5: Generation samples\n", "=" * 70, sep="", flush=True)
     records = [json.loads(l) for l in (dataset_dir / "records.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
@@ -163,11 +165,11 @@ def main():
             import traceback
 
             summary["generation"][name] = {"status": "failed", "error": str(e), "traceback": traceback.format_exc()}
-        (output_root / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
+        (output_root / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
 
     summary["finished_at"] = time.time()
     summary["elapsed_seconds"] = round(summary["finished_at"] - summary["started_at"], 1)
-    (output_root / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
+    (output_root / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
     print("=" * 70, "\nALL STAGES COMPLETE\n", "=" * 70, sep="", flush=True)
     print(json.dumps(summary, indent=2, ensure_ascii=False), flush=True)
 

@@ -77,10 +77,79 @@ approximation, not an exact mapping — both mel spaces are different linear-ish
 downsamplings of the same underlying STFT magnitude spectrum, so a linear adapter is a
 reasonable bridge, but it is not claimed to be a perfect one.
 
-## Run 3 — pending
+## Run 3 — `genmusic-fullexp-1783991479` (12 files) — hung ~11 hours, killed
 
-Resubmitted with the mel-dim adapter fix; awaiting results. This section will be updated
-with `distillation_active` status and final losses once the run completes.
+Resubmitted with the mel-dim adapter fix. This run (and a concurrently-submitted
+`genmusic-expmatrix-1783993977` experiment-matrix run) never produced output: both sat at
+Kaggle status "RUNNING" for **~11 hours** (confirmed via wall-clock, not a measurement
+error) against an expected ~15–45 minutes, before being manually killed via `kaggle
+kernels delete` (there is no `kernels stop` command). Root cause: `distill_training.py`'s
+lyric-tokenizer loader did `import inference` (DiffRhythm2's own `inference.py`) just to
+reach two small helper functions. That module's top-level `from bigvgan.model import
+Generator` chain runs a **CUDA extension JIT compile**
+(`torch.utils.cpp_extension.load()` in `bigvgan/alias_free_activation/cuda/activation1d.py`,
+executed as a bare module-level statement) which hung indefinitely. Fixed by vendoring
+only the actual tokenizer logic (`g2p.g2p_generation.chn_eng_g2p` + a small `parse_lyrics`
+reimplementation) instead of importing `inference.py` — see `src/training/distill_training.py`'s
+`_load_lyric_tokenizer()`. This consumed a meaningful fraction of the session's Kaggle GPU
+budget before being caught.
+
+## Merge with parallel origin/master work
+
+Mid-session, `git fetch` revealed `origin/master` had advanced 13 commits with
+independent, heavily overlapping work on the same files (someone else, or another
+session, working on this repo in parallel). That work included its own partial fix for
+the vocoder distortion (an opt-in `--vocos-compatible` flag rather than a corrected
+default, plus a post-hoc spectral denoising filter) and its own distillation attempt
+(still using a placeholder teacher with a call signature borrowed from a different model
+family, F5-TTS, not DiffRhythm2's real `DiT`) — both less complete than the fixes in this
+log. It also included genuinely new, non-overlapping improvements: batched/resumable
+Demucs separation with cuda→cpu retry, P100 CUDA-compatibility repair + dependency
+probing in the Kaggle preprocessing kernel, Whisper segment-level timestamps, and
+random-offset+segment-aligned mel/lyric cropping during training. All of this was
+merged by hand (not blindly): the root-cause vocoder/distillation fixes from this log
+were kept as the base, the genuinely new Kaggle-robustness work was ported in, and the
+now-redundant `--vocos-compatible` flag and denoising filter were dropped. Full test
+suite (10/10) and the vocoder correlation number (0.997) were re-verified after merging
+— see `git log` around commit `c92905f`.
+
+## Kaggle GPU quota exhausted — pivoted to local-only testing
+
+After the Run 3 hang and the merge, the user's Kaggle GPU quota was exhausted before a
+proper at-scale comparison experiment (`scripts/run_experiment_matrix.py`, baseline vs.
+distillation at several `alpha_feature` values, 40 songs / 60 epochs) could be run. The
+tooling for that experiment is complete and ready (`scripts/run_kaggle_experiment_matrix.py`
+as the local launcher) — running it once quota resets is the natural next step, not a
+redesign.
+
+**In the meantime, the full pipeline was re-verified end-to-end locally** (Windows,
+CPU-only, no GPU) against the 2 real local songs in `dataset/vietnamese_songs/`, using
+`scripts/run_full_experiment.py` directly (no Kaggle):
+- Preprocessing: 2/2 records, 0 failures (Demucs batching + resumability, Whisper tiny,
+  MuQ-MuLan gracefully degrading to a zero-vector style embedding since `muq` isn't
+  installed locally — expected, not an error).
+- Vocoder round-trip on a real local song: **logmel corr = 0.986** (consistent with the
+  0.993–0.997 seen on Kaggle and locally on a different song earlier).
+- Baseline DiT training: completed (5 epochs × 1 step, CPU).
+- Distillation: correctly reported `distillation_active: false` with the honest
+  `teacher_status` message ("diffrhythm2 package not importable ... only works on
+  Kaggle") — the fallback mechanism itself is being exercised and works as designed, just
+  without a real teacher signal (DiffRhythm2 isn't cloned locally).
+- Generation from both checkpoints: completed, valid non-degenerate audio (peak ~0.8,
+  RMS 0.07–0.10, silence ratio <0.2%, no NaN/Inf).
+
+This run also caught and fixed a **Windows-only bug** invisible on Kaggle (Linux, UTF-8
+locale by default): `Path.write_text()`/`print()` default to the process's locale
+encoding, which on Windows is cp1252 and cannot encode Vietnamese diacritics — every
+`summary.json` write and the final console print crashed with `UnicodeEncodeError` until
+`encoding="utf-8"` was added explicitly (`scripts/run_full_experiment.py`,
+`scripts/run_experiment_matrix.py`) and `sys.stdout.reconfigure(encoding="utf-8")` was
+added to both scripts' `main()`, matching the pattern already used in `cli.py`.
+
+**Scope note:** 2 songs / 5 epochs / CPU is enough to prove every stage of the pipeline
+is wired correctly and produces valid, non-crashing output — it is not enough data or
+compute to demonstrate anything about whether distillation improves quality (see "Known
+limitations" below; that comparison still requires the Kaggle-scale experiment matrix).
 
 ## Known limitations / what "good" doesn't mean yet
 

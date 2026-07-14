@@ -6,8 +6,11 @@ experiments run to validate and improve it, and what was concluded. It is kept i
 with the codebase — see the note at the end of each section for where to look if the
 code has moved on since this was written.
 
-**Status as of 2026-07-14**: this report is being written *during* an active debugging
-and experimentation session; the Experiment section is updated as runs complete.
+**Status as of 2026-07-14**: session complete. Every pipeline stage (preprocess → train
+→ distill-attempt → generate) is verified working end-to-end, on Kaggle at moderate scale
+and locally at small scale. The one experiment *not* completed is a proper at-scale
+comparison of distillation vs. no-distillation — Kaggle GPU quota ran out mid-session
+before it could run; §3.6 and §4 explain exactly what's needed to finish it.
 
 ---
 
@@ -75,6 +78,18 @@ time domain, chosen here because it is a generic, pretrained, drop-in decoder fo
 *standard* 100-mel/24kHz representation this project can align its student to exactly,
 with no extra training required. Section 3/4 covers why this specific choice mattered a
 great deal in practice.
+
+### 1.5 Collaborative development note
+
+Partway through this session, `origin/master` was found to have advanced 13 commits via
+independent, unrelated work on the same files (see
+[docs/experiments/kaggle_runs.md](experiments/kaggle_runs.md) for the merge log). That
+work is itself informative as a point of comparison: it reached for very similar fixes
+(a Vocos-format flag, a distillation attempt) via less complete means (an opt-in flag
+instead of a corrected default; a placeholder teacher with the wrong call signature),
+which is one data point suggesting these particular pitfalls (silent format mismatches,
+guessing a black-box teacher's interface instead of reading its source) are natural ones
+to fall into on this kind of integration, not one-off mistakes.
 
 *(To extend: add citations for Whisper (ASR), Demucs (source separation),
 xlm-roberta-base (text encoder) if the report needs a full bibliography — currently just
@@ -150,15 +165,26 @@ single highest-impact fix in this project's history. A Griffin-Lim fallback
 
 ### 2.4 Data pipeline (`src/data/preprocess_raw_vietnamese.py`)
 
-Per song: Demucs (`htdemucs`, two-stem) separates vocals/backing (falls back to treating
-the whole mix as backing if separation fails, now flagged via a `demucs_separated`
-field rather than silently degrading); Whisper (`tiny`/`small`, configurable)
-transcribes the vocal stem with `language="vi"` for the lyric text; MuQ-MuLan computes
-the style embedding on the first 10s of the original mix; both mel channels are computed
-with the same `compute_mel_spectrogram`. Output: `records.jsonl` (one record per song:
-lyric text, style tag, BPM, paths to backing/vocal mel + style embedding tensors) plus
-`config.json` (the mel format, consumed by training to reconstruct `MusicDiffusionConfig`
-exactly).
+Per song: Demucs (`htdemucs`, two-stem) separates vocals/backing, batched (loads the
+Demucs model once per batch of up to 8 files rather than once per file), resumable
+(skips files whose stems already exist on disk), and retries cuda→cpu on failure —
+falling back to treating the whole mix as backing if separation fails entirely, flagged
+via `demucs_separated`/`vocal_source` fields rather than silently degrading. Whisper
+(`tiny`/`small`, configurable, with cuda→cpu retry) transcribes the vocal stem with
+`language="vi"`, keeping word/segment-level timestamps (`segments` field) so training
+crops can align lyric text to the actual audio window rather than the whole-song
+transcript. MuQ-MuLan computes one style embedding per song on the first 10s of the
+original mix. Both mel channels are computed with the same `compute_mel_spectrogram`.
+Output: `records.jsonl` (one record per song: lyric text + timestamped segments, style
+tag, BPM, paths to backing/vocal mel + style embedding tensors) plus `config.json` (the
+mel format, consumed by training to reconstruct `MusicDiffusionConfig` exactly).
+
+**Training-time augmentation** (`MusicDiffusionDataset.__getitem__` in
+`src/training/self_diffusion.py`): for songs longer than one training chunk, a random
+offset is chosen each epoch and applied identically to both the vocal and backing mel
+(keeping them temporally aligned) — different epochs see different windows of longer
+songs — and the lyric text used for that item is trimmed to just the segments whose
+timestamps fall inside the cropped window, using the ASR segment timestamps above.
 
 ### 2.5 What's *not* wired in (by design, for now)
 
@@ -218,45 +244,85 @@ HuggingFace on load instead); `load_checkpoint` now uses `strict=False` to accom
 this. Verified: checkpoint size ~67MB for the default architecture (down from ~1.1GB),
 generation from a loaded checkpoint still works correctly.
 
-### 3.5 Does distillation actually help? (comparison experiment)
+### 3.5 Does distillation actually help? (comparison experiment — not completed)
 
-*(This subsection is being filled in as the comparison-matrix Kaggle run
-(`scripts/run_experiment_matrix.py`, run id `expmatrix-1783993939`) completes. It trains
-baseline-no-teacher vs. distillation-with-adapter at several `alpha_feature` values, and
-a smaller architecture variant, all against the same 40-song preprocessed dataset for
-the same epoch budget, tracking ground-truth CFM loss (`loss_gt`) as the common
-comparison axis — see §2.2 for why this is the fair metric to compare on, since the
-baseline's loss *is* `loss_gt` and the distilled runs' blended loss is not directly
-comparable without decomposing it.)*
-
-**[PLACEHOLDER — results pending]**
+A proper comparison (`scripts/run_experiment_matrix.py`: baseline-no-teacher vs.
+distillation-with-adapter at several `alpha_feature` values, plus a smaller architecture
+variant, all against one 40-song dataset for equal epoch budget, tracking ground-truth
+CFM loss `loss_gt` as the common comparison axis since the baseline's loss *is* `loss_gt`
+and a distilled run's blended loss isn't directly comparable without decomposing it) was
+built and submitted (`genmusic-expmatrix-1783993977`), but never produced results — see
+§3.6. **This experiment was not completed this session.** The script and its local
+launcher (`scripts/run_kaggle_experiment_matrix.py`) are ready to run as-is once Kaggle
+GPU quota is available again; no further engineering work is needed to attempt it, only
+GPU time. This is the most important open item — see §4 and
+`docs/guides/run_full_pipeline.md`.
 
 ### 3.6 End-to-end pipeline validation
 
-*(Filled in once the final chosen configuration is re-verified end-to-end: preprocess →
-train (baseline and/or distill) → generate → basic sanity checks, on Kaggle, with no
-crashes and non-degenerate audio output.)*
+**On Kaggle** (`genmusic-fullexp-1783972294`, 12 real songs, T4 GPU): preprocessing
+12/12 succeeded, vocoder round-trip scored 0.993 log-mel correlation, baseline DiT
+training completed (120 steps), and both baseline and (honest-fallback) generation
+produced valid non-degenerate audio (peak ~0.8, RMS 0.08–0.15, silence ratio <0.13%, no
+NaN/Inf).
 
-**[PLACEHOLDER — results pending]**
+**A second Kaggle attempt** (`genmusic-fullexp-1783991479`) with the mel-dim adapter
+applied hung for ~11 hours before being killed — see
+[docs/experiments/kaggle_runs.md](experiments/kaggle_runs.md) for the root cause (an
+unrelated top-level import triggering a CUDA extension JIT compile) and fix. This
+consumed a meaningful fraction of the session's Kaggle GPU budget and, combined with
+further usage, exhausted it before a re-run could confirm `distillation_active: true`
+at Kaggle scale.
+
+**Locally** (Windows, CPU-only, no GPU, 2 real songs from `dataset/vietnamese_songs/`,
+after the fix + a large merge with parallel work — see
+[docs/experiments/kaggle_runs.md](experiments/kaggle_runs.md)): every stage ran
+end-to-end with real data — preprocessing (2/2 records), vocoder round-trip (0.986
+correlation), baseline training, distillation's honest fallback (`distillation_active:
+false`, teacher correctly reported as unavailable rather than faked), and generation
+from both checkpoints (valid non-degenerate audio, peak ~0.8, RMS 0.07–0.10, silence
+ratio <0.2%, no NaN/Inf). Full test suite: 10/10 passing. This run also surfaced and
+fixed a Windows-only `UnicodeEncodeError` (cp1252 console/file encoding vs. Vietnamese
+diacritics) invisible on Kaggle's Linux/UTF-8 environment.
+
+**Net result**: the pipeline is verified correct end-to-end, twice, in two different
+environments. What's *not* verified is whether real distillation (`distillation_active:
+true`, i.e. the real DiffRhythm2 teacher successfully loaded and contributed signal)
+completes a full training run without error at Kaggle scale — the adapter path was
+verified in isolation (a unit test with a fake teacher of mismatched mel_dim, forward +
+backward + optimizer step all succeed) but never end-to-end against the real teacher
+before quota ran out.
 
 ---
 
 ## 4. Conclusion
 
-*(To be finalized once §3.5/3.6 land — drafted now with what's already solid.)*
-
 - The single highest-leverage fix in this project's history was **not** a model or
   training change at all — it was the audio rendering path. A model can only be judged
   once its output can be faithfully turned into sound; before this session, it could
-  not be.
+  not be (0.15 log-mel correlation with ground truth, i.e. the default output path was
+  producing structured noise regardless of model quality).
 - Getting distillation to do anything real required treating the teacher as a black box
   whose interface had to be *read from its actual source code*, not inferred from
-  variable names or class defaults (the `mel_dim=100` default vs. the real checkpoint's
-  `mel_dim=64` is the clearest example of this trap).
-- **[Pending final numbers]**: whether the measured comparison supports the thesis that
-  distillation helps this specific small student converge faster/better than
-  ground-truth-only training at equal compute, and what config (architecture size,
-  alpha_feature) is recommended as "the good direction" for further scaling.
-- Honest scope limits: this remains a data- and compute-constrained validation, not a
-  quality result. The recommended next steps for anyone continuing this work are listed
-  in `docs/guides/run_full_pipeline.md`.
+  variable names or class defaults — the `mel_dim=100` default vs. the real checkpoint's
+  `mel_dim=64` is the clearest example of this trap, and it recurred independently in
+  the parallel `origin/master` work this session merged with (§1.5), which is some
+  evidence it's a natural mistake for this kind of integration, not a one-off.
+- **The distillation-helps-or-not question is open, not answered.** Every pipeline stage
+  is verified correct end-to-end (twice — Kaggle and local), and the teacher-adapter
+  mechanism is verified correct in isolation, but the actual at-scale comparison
+  (`scripts/run_experiment_matrix.py`) never got GPU time before Kaggle quota ran out.
+  This is explicitly *not* being reported as "distillation works" or "distillation
+  doesn't help" — neither claim has evidence yet. The honest state is: the machinery to
+  find out is built, tested, and ready; running it is the very next step, not a research
+  problem.
+- Small-model architecture choice (`dim=256, depth=4, heads=4`, a few million trainable
+  parameters vs. the teacher's few-hundred-million) was carried through as the working
+  default throughout, with `--dim`/`--depth`/`--heads`/`--ff-mult` exposed for the size
+  ablation the comparison experiment was designed to include — this part of "small model,
+  good quality" is set up correctly even though the "good quality" half is unverified.
+- Honest scope limits: everything reported here is either a wiring/correctness result
+  (pipeline runs, produces valid non-degenerate audio, honest fallbacks work as designed)
+  or a data point from a tiny (2–12 song) dataset run for a handful of epochs — none of it
+  is a claim about musical quality. See `docs/guides/run_full_pipeline.md` for exactly
+  what to run next once Kaggle GPU quota is available again.
