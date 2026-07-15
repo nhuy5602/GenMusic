@@ -10,8 +10,8 @@ from src.data.vietnamese_g2p import vietnamese_g2p
 from src.data.vietnamese_text import normalize_vietnamese_lyrics
 from src.integrations.kaggle_auto import DEFAULT_KAGGLE_DATASET_SLUG, DEFAULT_MODEL, KaggleJobConfig, resolve_training_dataset_ref, run_local_generation, stage_text_to_music_job, validate_dataset_ref
 from src.models.text_to_music_diffusion import build_lyric_timing, estimate_minimum_lyric_duration
-from src.training.distill_training import _load_teacher, run_distillation_training
-from src.training.self_diffusion import create_random_dataset, train_model, validate_dataset
+from src.training.distill_training import KnowledgeDistillationTrainer, _load_teacher, run_distillation_training
+from src.training.self_diffusion import create_random_dataset, load_reference_conditioning, train_model, validate_dataset
 from server import PROJECT_ROOT, WEB_ROOT, _is_relative_to
 
 
@@ -46,6 +46,42 @@ class SelfDiffusionTests(unittest.TestCase):
             validation = validate_dataset(root)
             self.assertEqual(validation["status"], "invalid")
             self.assertTrue(any(item["stem"] == "vocal" for item in validation["missing"]))
+
+    def test_load_reference_conditioning_extracts_real_backing_and_style(self) -> None:
+        # generate_audio()'s default (no reference) conditions on a zero backing_mel
+        # and a pooled-text style vector -- a real train/inference mismatch, since
+        # training uses the real backing_mel + MuQ-MuLan style anchor. This is the
+        # extraction path that lets generation match training instead.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "dataset"
+            create_random_dataset(root, count=1, frames=32)
+            import torch
+
+            vocal_tensor = torch.load(root / "mels" / "sample_00000.pt", weights_only=True)
+            backing_tensor = vocal_tensor + 1.0
+            style_tensor = torch.arange(512, dtype=torch.float32)
+            torch.save(vocal_tensor, root / "mels" / "vocal.pt")
+            torch.save(backing_tensor, root / "mels" / "backing.pt")
+            torch.save(style_tensor, root / "mels" / "style.pt")
+            (root / "records.jsonl").write_text(
+                json.dumps({
+                    "id": "song-1",
+                    "text": "Mot cau hat.",
+                    "style": "pop",
+                    "frames": 32,
+                    "vocal_mel_path": "mels/vocal.pt",
+                    "backing_mel_path": "mels/backing.pt",
+                    "style_embed_path": "mels/style.pt",
+                }) + "\n",
+                encoding="utf-8",
+            )
+            reference = load_reference_conditioning(root)
+            self.assertEqual(reference["id"], "song-1")
+            self.assertTrue(torch.equal(reference["backing_mel"], backing_tensor))
+            self.assertTrue(torch.equal(reference["style_anchor"], style_tensor))
+
+            reference_by_id = load_reference_conditioning(root, record_id="song-1")
+            self.assertEqual(reference_by_id["id"], "song-1")
 
     def test_training_and_local_generation(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -106,6 +142,48 @@ class SelfDiffusionTests(unittest.TestCase):
         self.assertIsNone(model_config)
         self.assertIsInstance(status, str)
         self.assertTrue(status)
+
+    def test_mel_adapter_gradient_flow(self) -> None:
+        # Regression test for a real bug: to_teacher_mel/from_teacher_mel used to be
+        # computed entirely inside train_epoch's torch.no_grad() block, so neither
+        # ever received a gradient despite being registered as trainable adapter
+        # params (see docs/experiments/distillation_fix.md). to_teacher_mel is now a
+        # fixed deterministic resize (its output feeds the frozen teacher's own
+        # no_grad-scoped forward pass, which must stay cheap); from_teacher_mel stays
+        # a real trainable adapter and must receive a real gradient.
+        import torch
+        import torch.nn as nn
+        from src.models.dit_transformer import MicroDiT
+        from src.models.text_to_music_diffusion import MusicDiffusionConfig
+
+        class FakeTeacher(nn.Module):
+            def __init__(self, cond_dim=512, mel_dim=64):
+                super().__init__()
+                self.text_embed = nn.Embedding(600, cond_dim)
+                self.latent_embed = nn.Sequential(nn.Linear(mel_dim, cond_dim))
+                self.proj_out = nn.Linear(cond_dim, mel_dim)
+
+            def forward(self, x, time, position_ids, style_prompt, attn_mask, use_cache=False, past_key_value=None):
+                return self.proj_out(x), None, None
+
+        config = MusicDiffusionConfig(frames_per_chunk=16)
+        student = MicroDiT(config, dim=32, depth=1, heads=2, ff_mult=1, style_dim=512)
+        trainer = KnowledgeDistillationTrainer(
+            teacher_model=FakeTeacher(), student_model=student, config=config, optimizer=None,
+            device="cpu", alpha_feature=0.5, parse_lyrics_fn=lambda text: [500, 3, 4, 511], teacher_mel_dim=64,
+        )
+        self.assertFalse(hasattr(trainer, "to_teacher_mel"))
+        self.assertIsNotNone(trainer.from_teacher_mel)
+
+        xt = torch.randn(2, 16, 100)
+        t = torch.rand(2)
+        style = torch.randn(2, 512)
+        v_teacher = trainer._teacher_velocity(xt, t, ["xin chao"] * 2, style)
+        v_student = student(x=xt, cond=torch.zeros_like(xt), texts=["xin chao"] * 2, timestep=t, style_prompt=style)
+        (v_student - v_teacher).pow(2).mean().backward()
+
+        self.assertIsNotNone(trainer.from_teacher_mel.weight.grad)
+        self.assertGreater(trainer.from_teacher_mel.weight.grad.abs().sum().item(), 0.0)
 
     def test_train_distill_raises_when_teacher_unavailable(self) -> None:
         # train-distill must never silently downgrade to ground-truth-only training

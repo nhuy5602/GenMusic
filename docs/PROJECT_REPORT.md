@@ -141,9 +141,15 @@ reverse-engineering this is based on).
 
 **Mel-dim adapter**: because the teacher's real checkpoint uses `mel_dim=64` and the
 student's mel space is 100-dim (a hard requirement from the vocoder choice, §2.3), a
-small trainable `Linear(100→64)` / `Linear(64→100)` pair bridges the two spaces solely
-for the distillation loss computation — the student's own generative path never touches
-these adapters. See `docs/experiments/distillation_fix.md`.
+pair bridges the two spaces solely for the distillation loss computation — the
+student's own generative path never touches these. `to_teacher_mel` (student→teacher)
+is a **fixed deterministic mel-bin interpolation**, not a trainable layer: its output
+feeds directly into the frozen teacher's `torch.no_grad()`-scoped forward pass, so a
+trainable layer there would (and, until this was found and fixed, did) never receive
+a gradient — see `docs/experiments/distillation_fix.md`'s "Mel-dim adapter gradient
+bug" section. `from_teacher_mel` (teacher→student) has no such constraint and is a
+real trainable `Linear(64→100)`, verified with a real backward pass
+(`tests/test_self_diffusion.py::test_mel_adapter_gradient_flow`).
 
 **Loss**: `loss = (1 - alpha_feature) * MSE(v_student, v_teacher) + alpha_feature * MSE(v_student, x_1 - x_0)`,
 i.e. a blend of teacher-matching and ground-truth CFM loss, with `alpha_feature`
@@ -348,6 +354,44 @@ is what it did through all of §3.1–§3.6 above, reported honestly via
 non-raising, for callers that just want a status check. Ground-truth-only training is
 what `train-self` is for; a `train-distill` run that completes now always means a real
 teacher was used, full stop.
+
+### 3.8 Two independent bugs behind a coworker's "almost entirely noise" report
+
+A teammate reported that generation from a real run (~250 songs, 60 epochs,
+`train-distill`) came out nearly all noise. Investigating found two separate, unrelated
+bugs, both now fixed:
+
+**Bug 1 — generation was always zero-conditioned.** `generate_audio()`'s call to
+`sample_cfm` never passed `backing_mel`/`style_prompt`, so every `generate-local` run
+(and every automated generation stage in `run_full_experiment.py`/
+`run_experiment_matrix.py`) conditioned on a zero backing-track and a pooled-text
+stand-in instead of a real MuQ-MuLan style anchor — a real train/inference mismatch,
+worse at real scale (250 songs, mostly real non-zero backing_mel from successful Demucs
+separation) than in this session's earlier 2-song tests (where zero-fallback was common
+anyway). Fixed by `load_reference_conditioning()` (`src/training/self_diffusion.py`),
+which extracts a real `backing_mel`/`style_anchor` pair from an existing preprocessed
+dataset record; `generate-local --reference-dataset --reference-id` wires it into the
+CLI, and both experiment scripts now pass it automatically to their own generation
+stage. Verified end-to-end: `generation.baseline.reference_conditioning` now reports
+`{"has_backing_mel": true, "has_style_anchor": true}` instead of not existing at all.
+
+**Bug 2 — the mel-dim adapter's gradient was cut for real distillation runs.** See §2.2
+and `docs/experiments/distillation_fix.md`'s "Mel-dim adapter gradient bug" section —
+`to_teacher_mel`/`from_teacher_mel` were both computed inside `torch.no_grad()`, so
+neither ever received a gradient despite being registered as trainable and handed to
+the optimizer, for every `train-distill` run where `mel_adapter_used: true` (i.e. every
+real run against the actual teacher, whose `mel_dim=64` never matches the student's
+`100`). Fixed: `from_teacher_mel` now receives a real gradient (verified with an actual
+`.backward()` call); `to_teacher_mel` was replaced with a fixed deterministic mel-bin
+interpolation instead of a nominally-trainable-but-structurally-untrainable layer,
+since fully fixing it would require backward through the ~1.14B-param teacher every
+step.
+
+**Which one explains the coworker's report?** Unknown — the report was from a
+`train-distill` checkpoint, so both bugs applied simultaneously; this hasn't been
+isolated to one cause via a controlled re-run (train the same 250-song dataset again
+post-fix, listen to the result) which is the natural next step. Bug 1 alone applies to
+`train-self` (baseline) too; Bug 2 is `train-distill`-specific.
 
 ---
 

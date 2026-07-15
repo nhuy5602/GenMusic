@@ -48,6 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
     local.add_argument("--out", required=True)
     local.add_argument("--vocoder", default="vocos", choices=["vocos", "griffinlim"], help="Chọn bộ giải mã spectrogram thành âm thanh.")
     local.add_argument("--roberta-model", default="xlm-roberta-base", help="Tên model RoBERTa dùng làm Text Encoder.")
+    local.add_argument("--reference-dataset", default=None, help="Thư mục dataset đã preprocess -- lấy backing_mel + style_anchor thật từ một record để sinh nhạc có điều kiện đúng như lúc train, thay vì mặc định zero-conditioned.")
+    local.add_argument("--reference-id", default=None, help="ID record cụ thể trong --reference-dataset (mặc định lấy record đầu tiên).")
 
     random_data = sub.add_parser("make-random-dataset", help="Tạo dataset mel random cho smoke training.")
     random_data.add_argument("--out", required=True)
@@ -170,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "refresh-kaggle":
         report = refresh_kaggle_job(args.state)
     elif args.command == "generate-local":
-        report = run_local_generation(text=args.text, style=args.style, output_dir=args.out, duration_seconds=args.duration, checkpoint=args.checkpoint, steps=args.steps, seed=args.seed, device=args.device, vocoder=args.vocoder, roberta_model=args.roberta_model)
+        report = run_local_generation(text=args.text, style=args.style, output_dir=args.out, duration_seconds=args.duration, checkpoint=args.checkpoint, steps=args.steps, seed=args.seed, device=args.device, vocoder=args.vocoder, roberta_model=args.roberta_model, reference_dataset=args.reference_dataset, reference_id=args.reference_id)
     elif args.command == "make-random-dataset":
         target_bytes = int(args.target_gb * (1024 ** 3)) if args.target_gb > 0 else None
         report = create_random_dataset(args.out, count=args.count, frames=args.frames, seed=args.seed, target_bytes=target_bytes)

@@ -173,6 +173,11 @@ uv run python scripts/run_kaggle_experiment_matrix.py --max-files 40 --whisper-m
 # Generate audio using the Vocos Vocoder for natural voice reconstruction:
 uv run python cli.py generate-local --text "Đêm nay Hà Nội ngập tràn tiếng mưa rơi." --duration 8.0 --vocoder vocos --out outputs/my_song
 ```
+Without `--reference-dataset`, generation conditions on a zero backing-track and falls back to a pooled-text style vector instead of a real MuQ-MuLan style anchor — a real train/inference mismatch, since the model is trained on real backing_mel + style_anchor conditioning. To condition generation the same way training did, extract both from an already-preprocessed dataset record instead of needing new raw audio input:
+```powershell
+uv run python cli.py generate-local --text "Đêm nay Hà Nội ngập tràn tiếng mưa rơi." --duration 8.0 --checkpoint outputs/my_dit_model.pt --reference-dataset dataset/diff_rhythm_dataset --reference-id <record_id> --out outputs/my_song
+```
+`--reference-id` defaults to the dataset's first record if omitted. See `load_reference_conditioning()` in `src/training/self_diffusion.py`.
 
 ### 2. Manual Preprocessing
 Preprocess audio files with Demucs stem separation and Whisper lyric transcription. pYIN F0 extraction is removed to dramatically speed up data preparation:

@@ -30,6 +30,18 @@ chosen to exactly match the pretrained Vocos vocoder's own native format, not
 any dimension DiffRhythm2 itself uses — this was the single highest-impact fix
 in this project's history (see `docs/experiments/vocoder_fix.md`).
 
+**Generation conditioning**: `generate_audio()` accepts `backing_mel`/`style_anchor`
+tensors; without them (the default), generation uses a zero backing-track and a
+pooled-text stand-in for the style vector instead of a real MuQ-MuLan anchor — a
+genuine train/inference mismatch, not a deliberate simplification, since training
+always conditions on real `backing_mel` + a real (or zero-fallback) style anchor.
+`load_reference_conditioning()` (`src/training/self_diffusion.py`) extracts both
+from an existing preprocessed dataset record, and `generate-local --reference-dataset
+--reference-id` wires it into the CLI — see README's Local Generation section.
+Long lyrics spanning multiple flow-matching chunks get the *matching* time window of
+the reference backing track per chunk (not always frame 0), wrapping around if the
+reference is shorter than the requested duration.
+
 Architecture size is configurable: `--dim`/`--depth`/`--heads`/`--ff-mult` on
 both `train-self` and `train-distill`. Default
 `dim=256, depth=4, heads=4` is ~5.6M trainable parameters (plus 278M frozen

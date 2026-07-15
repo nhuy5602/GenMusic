@@ -182,6 +182,33 @@ def _load_mel(path: Path, *, device="cpu"):
     value = torch.load(path, map_location=device, weights_only=True)
     return value["mel"] if isinstance(value, dict) else value
 
+def load_reference_conditioning(dataset_dir: str | Path, record_id: str | None = None) -> dict[str, Any]:
+    """Pulls one record's real backing_mel + style_anchor out of an already-preprocessed
+    dataset, for conditioned generation that matches what the model actually saw during
+    training -- instead of generate_audio()'s zero-conditioned default (see
+    docs/PROJECT_REPORT.md). Picks the first record if record_id is omitted.
+
+    Returns raw (unbatched) tensors: backing_mel is (n_mels, frames) or None if the
+    dataset has no separated backing stem; style_anchor is (512,) or None if the
+    dataset never computed one (both are legitimate for older/synthetic datasets).
+    """
+    root = Path(dataset_dir)
+    records = _read_records(root)
+    record = next((r for r in records if r["id"] == record_id), records[0]) if record_id else records[0]
+
+    backing_mel = _load_mel(root / record["backing_mel_path"]) if record.get("backing_mel_path") else None
+
+    style_path = record.get("style_embed_path")
+    style_anchor = _load_mel(root / style_path).float().view(-1) if style_path and (root / style_path).exists() else None
+
+    return {
+        "id": record["id"],
+        "text": record["text"],
+        "style": record["style"],
+        "backing_mel": backing_mel,
+        "style_anchor": style_anchor,
+    }
+
 def _record_path(root: Path, record: dict[str, Any]) -> Path:
     path_str = record.get("mel_path") or record.get("backing_mel_path") or record.get("vocal_mel_path")
     if not path_str:

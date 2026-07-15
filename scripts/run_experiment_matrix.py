@@ -113,6 +113,7 @@ def main():
                 gen_report = run_local_generation(
                     text=lyric_text, style=sample_style, output_dir=gen_dir, duration_seconds=8.0,
                     checkpoint=ckpt_path, steps=32, vocoder="vocos",
+                    reference_dataset=dataset_dir, reference_id=records[0]["id"] if records else None,
                 )
                 wav_path = Path(gen_report["audio_path"])
                 gen_report["sanity_stats"] = wav_sanity_stats(wav_path)

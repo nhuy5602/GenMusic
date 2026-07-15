@@ -100,6 +100,43 @@ Read directly from the official ASLP-lab/DiffRhythm2 GitHub repo
   `tokenizer_status` / `distillation_active` fields — no more silent `DummyTeacher`.
 - Removed the dead `temperature` parameter.
 
+## Mel-dim adapter gradient bug (found from a user-shared analysis, fixed)
+
+The mel-dim bridge added in "The fix" above (`to_teacher_mel: Linear(100, 64)`,
+`from_teacher_mel: Linear(64, 100)`) had a real bug since it was introduced:
+`train_epoch()` called `_teacher_velocity()` (which computes *both* adapters)
+entirely inside `torch.no_grad()`. A tensor produced under `torch.no_grad()` has
+`requires_grad=False` unconditionally — regardless of whether the layer that
+produced it is itself trainable — so **neither adapter ever received a gradient**,
+despite both being registered via `adapter_parameters()` and handed to the
+optimizer. They sat at their random initialization for the entire training run,
+every time `mel_adapter_used: true` (i.e. every real run against the actual
+DiffRhythm2 teacher, since its checkpoint's `mel_dim=64` never matches the
+student's `100`).
+
+**Fix, and why it's not a full symmetric fix**: `from_teacher_mel` only touches the
+teacher's *already-computed* output, so moving it outside `torch.no_grad()` is free
+— it now receives a real gradient from `loss_velocity`, verified with a real
+`.backward()` call (`tests/test_self_diffusion.py::test_mel_adapter_gradient_flow`).
+`to_teacher_mel`'s output feeds directly into the frozen teacher's own forward pass,
+which must stay `torch.no_grad()`-scoped — running a full backward through the
+teacher's ~1.14B parameters every training step would be prohibitively expensive
+(roughly 2-3x the per-step cost, on top of an already ~3s/sample CPU forward-only
+cost measured this session). Rather than leave a "trainable" layer that
+structurally can never train (the original bug), `to_teacher_mel` was replaced with
+a fixed, deterministic linear interpolation across the mel-bin axis
+(`_resize_mel_bins`) — no training needed, no wasted optimizer state, and no
+arbitrary random projection scrambling the teacher's input.
+
+**Practical impact**: every prior `train-distill` run with `mel_adapter_used: true`
+trained with a *fully* untrained (random) bridge in both directions. This doesn't
+break the ground-truth loss term (`loss_gt`, always correctly gradiented into the
+student), but it does mean any `loss_velocity` contribution before this fix was
+distilling against a target passed through noise on the way in and (before this
+fix) noise on the way out too — a real candidate explanation for anomalously bad
+`train-distill` output, independent of the separate zero-conditioning bug at
+generation time (see the reference-conditioning fix in this session's later work).
+
 ## Known residual limitations
 
 - The one-shot (non-cached) equivalence to the teacher's block-cached streaming

@@ -38,6 +38,18 @@ from src.training.self_diffusion import MusicDiffusionDataset, _torch
 TEACHER_COND_DIM = 512
 
 
+def _resize_mel_bins(mel: torch.Tensor, target_bins: int) -> torch.Tensor:
+    """Deterministic resize across the mel-frequency-bin axis (last dim) via linear
+    interpolation. Used to bridge the student's mel-filterbank dimension into the
+    teacher's, without a trainable layer whose output would feed into the frozen
+    teacher's no_grad-scoped forward pass and therefore never receive a gradient
+    anyway (see docs/experiments/distillation_fix.md)."""
+    batch, seq_len, n_mels = mel.shape
+    flattened = mel.reshape(batch * seq_len, 1, n_mels)
+    resized = F.interpolate(flattened, size=target_bins, mode="linear", align_corners=False)
+    return resized.reshape(batch, seq_len, target_bins)
+
+
 def _load_teacher(repo_id: str, teacher_checkpoint_path: str | Path | None, device: str) -> tuple[nn.Module | None, dict | None, str]:
     """Downloads/loads the real DiffRhythm2 DiT backbone with its own config.json
     dimensions (not guessed). Returns (module_or_None, model_config_or_None, status_message).
@@ -195,16 +207,18 @@ class KnowledgeDistillationTrainer:
         # The teacher's real checkpoint (mel_dim=64, read from its own config.json)
         # does not match our student's Vocos-native mel space (mel_dim=100, chosen
         # to fix the vocoder distortion bug -- see docs/experiments/vocoder_fix.md).
-        # A small trainable linear adapter bridges the two mel-filterbank spaces so
-        # distillation can still transfer signal, without touching the student's own
-        # generative/decode path. Both are smooth linear-ish remappings of the same
-        # underlying STFT magnitude spectrum, so a learned linear map is a reasonable
-        # (if imperfect) bridge -- see docs/experiments/distillation_fix.md.
-        self.to_teacher_mel = None
-        self.from_teacher_mel = None
-        if self.teacher is not None and teacher_mel_dim is not None and teacher_mel_dim != config.n_mels:
-            self.to_teacher_mel = nn.Linear(config.n_mels, teacher_mel_dim).to(device)
-            self.from_teacher_mel = nn.Linear(teacher_mel_dim, config.n_mels).to(device)
+        # Bridging student->teacher (to_teacher_mel) uses a fixed deterministic
+        # interpolation across the mel-bin axis, NOT a trainable layer: its output
+        # feeds directly into the frozen teacher's forward pass, which must stay
+        # torch.no_grad()-scoped (backward through the ~1.14B-param teacher every
+        # step would be prohibitively expensive) -- so a "trainable" layer here
+        # would silently never receive a gradient (see docs/experiments/distillation_fix.md
+        # for the bug this replaces). Bridging teacher->student (from_teacher_mel) has
+        # no such constraint (it only touches the teacher's already-computed output),
+        # so it stays a real trainable linear adapter.
+        self.teacher_mel_dim = teacher_mel_dim
+        self.needs_mel_resize = self.teacher is not None and teacher_mel_dim is not None and teacher_mel_dim != config.n_mels
+        self.from_teacher_mel = nn.Linear(teacher_mel_dim, config.n_mels).to(device) if self.needs_mel_resize else None
 
         if self.teacher is not None:
             self.teacher.eval()
@@ -212,10 +226,7 @@ class KnowledgeDistillationTrainer:
                 param.requires_grad = False
 
     def adapter_parameters(self) -> list[torch.nn.Parameter]:
-        params = []
-        if self.to_teacher_mel is not None:
-            params += list(self.to_teacher_mel.parameters()) + list(self.from_teacher_mel.parameters())
-        return params
+        return list(self.from_teacher_mel.parameters()) if self.from_teacher_mel is not None else []
 
     def _teacher_velocity(self, xt: torch.Tensor, t: torch.Tensor, texts: list[str], style_prompt: torch.Tensor) -> torch.Tensor | None:
         if self.teacher is None or self.parse_lyrics_fn is None:
@@ -229,30 +240,33 @@ class KnowledgeDistillationTrainer:
         text_time = torch.full((batch_size, text_len), -1.0, device=self.device, dtype=xt.dtype)
         text_position_ids = torch.arange(text_len, device=self.device).unsqueeze(0).repeat(batch_size, 1)
 
-        teacher_xt = self.to_teacher_mel(xt) if self.to_teacher_mel is not None else xt
-        noisy_latent = self.teacher.latent_embed(teacher_xt)  # (B, seq_len, cond_dim)
-        noisy_time = t[:, None].repeat(1, seq_len)
-        noisy_position_ids = torch.arange(seq_len, device=self.device).unsqueeze(0).repeat(batch_size, 1)
+        teacher_xt = _resize_mel_bins(xt, self.teacher_mel_dim) if self.needs_mel_resize else xt
 
-        x = torch.cat([text_emb, noisy_latent], dim=1)
-        time = torch.cat([text_time, noisy_time], dim=1)
-        position_ids = torch.cat([text_position_ids, noisy_position_ids], dim=1)
+        with torch.no_grad():
+            noisy_latent = self.teacher.latent_embed(teacher_xt)  # (B, seq_len, cond_dim)
+            noisy_time = t[:, None].repeat(1, seq_len)
+            noisy_position_ids = torch.arange(seq_len, device=self.device).unsqueeze(0).repeat(batch_size, 1)
 
-        total_len = text_len + seq_len
-        key_valid = torch.cat([token_valid, torch.ones(batch_size, seq_len, dtype=torch.bool, device=self.device)], dim=1)
-        attn_mask = key_valid[:, None, None, :].repeat(1, 1, total_len, 1)  # (B, 1, total_len, total_len), True=attend
+            x = torch.cat([text_emb, noisy_latent], dim=1)
+            time = torch.cat([text_time, noisy_time], dim=1)
+            position_ids = torch.cat([text_position_ids, noisy_position_ids], dim=1)
 
-        outputs = self.teacher(
-            x=x,
-            time=time,
-            position_ids=position_ids,
-            style_prompt=style_prompt,
-            attn_mask=attn_mask,
-            use_cache=False,
-            past_key_value=None,
-        )
-        pred = outputs[0] if isinstance(outputs, tuple) else outputs
-        teacher_velocity = pred[:, text_len:]
+            total_len = text_len + seq_len
+            key_valid = torch.cat([token_valid, torch.ones(batch_size, seq_len, dtype=torch.bool, device=self.device)], dim=1)
+            attn_mask = key_valid[:, None, None, :].repeat(1, 1, total_len, 1)  # (B, 1, total_len, total_len), True=attend
+
+            outputs = self.teacher(
+                x=x,
+                time=time,
+                position_ids=position_ids,
+                style_prompt=style_prompt,
+                attn_mask=attn_mask,
+                use_cache=False,
+                past_key_value=None,
+            )
+            pred = outputs[0] if isinstance(outputs, tuple) else outputs
+            teacher_velocity = pred[:, text_len:].detach()
+
         if self.from_teacher_mel is not None:
             teacher_velocity = self.from_teacher_mel(teacher_velocity)
         return teacher_velocity
@@ -281,8 +295,10 @@ class KnowledgeDistillationTrainer:
 
             self.optimizer.zero_grad(set_to_none=True)
 
-            with torch.no_grad():
-                v_teacher = self._teacher_velocity(xt, t, texts, style_anchor)
+            # Not wrapped in torch.no_grad() here -- from_teacher_mel (inside
+            # _teacher_velocity) is a real trainable adapter and needs gradient
+            # tracking; only the frozen teacher's own forward pass is no_grad-scoped.
+            v_teacher = self._teacher_velocity(xt, t, texts, style_anchor)
 
             v_student = self.student(x=xt, cond=cond, texts=texts, timestep=t, style_prompt=style_anchor)
 
@@ -417,7 +433,8 @@ def run_distillation_training(
         "tokenizer_status": tokenizer_status,
         "teacher_mel_dim": teacher_mel_dim,
         "student_mel_dim": config.n_mels,
-        "mel_adapter_used": trainer.to_teacher_mel is not None,
+        "mel_adapter_used": trainer.needs_mel_resize,
+        "mel_adapter_trainable": trainer.from_teacher_mel is not None,
         "student_checkpoint": str(student_checkpoint.resolve()),
         "epochs": epochs,
         "step_count": len(losses),
