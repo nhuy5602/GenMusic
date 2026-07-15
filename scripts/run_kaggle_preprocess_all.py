@@ -111,7 +111,7 @@ try:
 
     print("--- STEP 3: Checking dependencies ---")
     dependency_probe = subprocess.run(
-        [sys.executable, "-c", "import torch, torchaudio, librosa, whisper, demucs, vocos, encodec, imageio_ffmpeg, muq"],
+        [sys.executable, "-c", "import torch, torchaudio, librosa, whisper, demucs.separate, vocos, encodec, imageio_ffmpeg, muq"],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -136,6 +136,21 @@ try:
                 "librosa",
                 "openai-whisper",
                 "demucs==4.0.1",
+                # demucs's own runtime deps (--no-deps skips these too): demucs.separate
+                # does `from dora.log import fatal`, which on import executes dora's
+                # __init__.py -> explore/conf/grid/git_save/link/main/shep/xp submodules.
+                # Traced the ACTUAL import chain (not the full dora requirements.txt,
+                # most of which -- hydra-core, pytorch_lightning -- isn't touched by this
+                # narrow usage) via github.com/facebookresearch/dora source:
+                "dora-search",
+                "treetable",
+                "omegaconf",
+                "antlr4-python3-runtime==4.9.*",
+                "retrying",
+                "submitit",
+                "cloudpickle",
+                "typing_extensions",
+                "openunmix",  # htdemucs.py (the model actually used) needs openunmix.filtering
                 "imageio-ffmpeg",
                 "vocos",
                 "muq",
@@ -169,7 +184,7 @@ try:
             900,
         )
         dependency_verify = subprocess.run(
-            [sys.executable, "-c", "import torch, torchaudio, librosa, whisper, demucs, vocos, encodec, imageio_ffmpeg, muq"],
+            [sys.executable, "-c", "import torch, torchaudio, librosa, whisper, demucs.separate, vocos, encodec, imageio_ffmpeg, muq"],
             capture_output=True,
             text=True,
             encoding="utf-8",
