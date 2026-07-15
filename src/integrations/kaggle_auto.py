@@ -27,6 +27,27 @@ DEFAULT_MODEL = "genmusic-vn-self-diffusion-v1"
 DEFAULT_KAGGLE_DATASET_SLUG = "genmusic-vn-self-diffusion-training"
 KAGGLE_DATASET_ENV = "GENMUSIC_KAGGLE_DATASET_REF"
 
+# Shared by every scripts/run_kaggle_*.py: directories that must never end up in the
+# "source code" zip pushed to Kaggle. `ckpt` in particular is a HuggingFace download
+# cache (the real DiffRhythm2 teacher checkpoint, ~4.3GB) that _load_teacher() recreates
+# locally on demand -- previously missing here, this once ballooned a "source code"
+# upload to ~4GB with no functional benefit (the preprocess/train kernels never read it).
+SOURCE_ZIP_EXCLUDED_DIRS = {".git", "outputs", "__pycache__", ".pytest_cache", ".venv", ".kaggle", "dataset", "datasets", "scratch", "ckpt"}
+
+
+def write_source_zip(project_root: Path, destination: Path) -> None:
+    """Zips the project source (excluding SOURCE_ZIP_EXCLUDED_DIRS, .env*, kaggle.json)
+    for upload as a Kaggle Dataset so a pushed kernel can copy it into /kaggle/working."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in project_root.rglob("*"):
+            relative = path.relative_to(project_root)
+            if not path.is_file() or any(part in SOURCE_ZIP_EXCLUDED_DIRS for part in relative.parts):
+                continue
+            if relative.name.startswith(".env") or relative.name == "kaggle.json":
+                continue
+            archive.write(path, relative.as_posix())
+
 
 class SelfMusicError(RuntimeError):
     pass

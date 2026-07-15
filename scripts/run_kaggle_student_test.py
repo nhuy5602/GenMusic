@@ -9,8 +9,7 @@ from pathlib import Path
 # Add project root to sys.path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from src.integrations.kaggle_auto import load_kaggle_api_tokens, resolve_kaggle_username, kaggle_cli_command
-from scripts.run_kaggle_distill import _write_source_zip
+from src.integrations.kaggle_auto import load_kaggle_api_tokens, resolve_kaggle_username, kaggle_cli_command, write_source_zip
 
 def _kernel_script_content(dataset_slug: str) -> str:
     return f'''import os
@@ -102,7 +101,7 @@ def run_kaggle_student_test(distill_kernel_ref: str):
     
     # 1. Zip source code using standard helper
     print("Zipping local source code...")
-    _write_source_zip(project_root, dataset_dir / "genmusic_vn_source.zip")
+    write_source_zip(project_root, dataset_dir / "genmusic_vn_source.zip")
     
     # 2. Upload source code zip as a Kaggle Dataset
     source_dataset_slug = f"genmusic-source-{run_id}"

@@ -2,26 +2,13 @@ import json
 import os
 import sys
 import time
-import zipfile
 import subprocess
 from pathlib import Path
 
 # Add project root to sys.path to allow imports from src package
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from src.integrations.kaggle_auto import load_kaggle_api_tokens, resolve_kaggle_username, kaggle_cli_command
-
-def _write_source_zip(project_root: Path, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    excluded = {".git", "outputs", "__pycache__", ".pytest_cache", ".venv", ".kaggle", "dataset", "datasets"}
-    with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
-        for path in project_root.rglob("*"):
-            relative = path.relative_to(project_root)
-            if not path.is_file() or any(part in excluded for part in relative.parts):
-                continue
-            if relative.name.startswith(".env") or relative.name == "kaggle.json":
-                continue
-            archive.write(path, relative.as_posix())
+from src.integrations.kaggle_auto import load_kaggle_api_tokens, resolve_kaggle_username, kaggle_cli_command, write_source_zip
 
 def _kernel_script_content() -> str:
     return f'''import os
@@ -141,7 +128,7 @@ def run_kaggle_distillation() -> None:
 
     # 1. Zip source code
     print("Zipping local source code...")
-    _write_source_zip(project_root, dataset_dir / "genmusic_vn_source.zip")
+    write_source_zip(project_root, dataset_dir / "genmusic_vn_source.zip")
 
     # 2. Upload source code zip as a Kaggle Dataset
     source_dataset_slug = f"genmusic-source-{run_id}"
