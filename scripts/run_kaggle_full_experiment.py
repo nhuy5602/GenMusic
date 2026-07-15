@@ -35,7 +35,9 @@ def _kernel_script_content(raw_dataset_slug: str, max_files: int, whisper_model:
 import shutil
 import subprocess
 import sys
+import tarfile
 import traceback
+import urllib.request
 from pathlib import Path
 
 os.environ["PYTHONUNBUFFERED"] = "1"
@@ -55,8 +57,14 @@ try:
     source_root = Path("/kaggle/working/GenMusic")
     shutil.copytree(source_dataset_dir, source_root, dirs_exist_ok=True)
 
-    print("--- STEP 3: Cloning DiffRhythm2 (for distillation teacher) ---")
-    subprocess.run(["git", "clone", "https://github.com/ASLP-lab/DiffRhythm2.git", str(source_root / "DiffRhythm2-main")], check=True)
+    print("--- STEP 3: Downloading DiffRhythm2 (for distillation teacher) ---")
+    # Plain tarball download instead of git clone -- skips git history/protocol
+    # overhead entirely, much faster on a fresh Kaggle kernel (GPU quota matters).
+    diffrhythm2_tar = "/kaggle/working/diffrhythm2.tar.gz"
+    urllib.request.urlretrieve("https://github.com/ASLP-lab/DiffRhythm2/archive/refs/heads/main.tar.gz", diffrhythm2_tar)
+    with tarfile.open(diffrhythm2_tar) as tar:
+        tar.extractall(str(source_root))
+    os.remove(diffrhythm2_tar)
 
     # DiffRhythm2's lyric tokenizer uses phonemizer's eSpeak backend, which is not
     # installed in the default Kaggle image. Install only this missing system package.
