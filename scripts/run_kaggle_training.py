@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import shutil
@@ -151,6 +152,11 @@ def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
 
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--batch-size", type=int, default=4)
+    args = parser.parse_args()
+
     # Resolved parent because it is located inside the scripts/ directory
     project_root = Path(__file__).resolve().parents[1]
     tokens = load_kaggle_api_tokens()
@@ -204,8 +210,8 @@ def main():
         "ngochuy5602/genmusic-vn-part3-vocal-vocos-smoke" if not processed_kernel_ref else None,
     )
     processed_dataset_slug = (processed_kernel_ref or processed_dataset_ref).split("/")[-1]
-    epochs = os.getenv("KAGGLE_TRAIN_EPOCHS") or tokens.get("KAGGLE_TRAIN_EPOCHS", "5")
-    batch_size = os.getenv("KAGGLE_TRAIN_BATCH_SIZE") or tokens.get("KAGGLE_TRAIN_BATCH_SIZE", "4")
+    epochs = args.epochs
+    batch_size = args.batch_size
     
     run_id = f"train-run-{int(time.time())}"
     job_dir = project_root / "outputs" / "kaggle_training" / run_id

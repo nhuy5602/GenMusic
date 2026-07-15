@@ -120,7 +120,7 @@ environment (cloning DiffRhythm2, installing `espeak-ng` + Python deps, etc.) in
 the Kaggle kernel, so **no local dependency chasing is needed**:
 ```powershell
 # Training-only (baseline, no teacher):
-uv run python scripts/run_kaggle_training.py
+uv run python scripts/run_kaggle_training.py --epochs 5 --batch-size 4
 
 # Knowledge distillation from the real DiffRhythm2 teacher:
 uv run python scripts/run_kaggle_distill.py
@@ -150,7 +150,7 @@ uv run python scripts/run_kaggle_training.py
 ### 3. Run Batch Preprocessing on Kaggle
 Perform stem separation (Demucs) and transcription (Whisper) on raw audio tracks on Kaggle. Automatically cleans up intermediate heavy WAV files to prevent Disk OOM.
 ```powershell
-uv run python scripts/run_kaggle_preprocess_all.py
+uv run python scripts/run_kaggle_preprocess_all.py --max-files 40
 ```
 
 ### 4. Run the Full Pipeline in One Kaggle Kernel (recommended)

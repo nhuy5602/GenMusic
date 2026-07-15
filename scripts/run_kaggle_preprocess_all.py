@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import sys
@@ -281,6 +282,10 @@ def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
 
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--max-files", type=int, default=None, help="Limit how many raw files to preprocess.")
+    args = parser.parse_args()
+
     # Resolved parent because it is located inside the scripts/ directory
     project_root = Path(__file__).resolve().parents[1]
     tokens = load_kaggle_api_tokens()
@@ -315,13 +320,9 @@ def main():
     raw_dataset_ref = os.getenv("KAGGLE_RAW_DATASET_REF") or tokens.get("KAGGLE_RAW_DATASET_REF", "sonlest/vietnamese-music-dataset-version3-part6")
     raw_dataset_slug = raw_dataset_ref.split("/")[-1]
     
-    max_files = os.getenv("KAGGLE_PREPROCESS_MAX_FILES") or tokens.get("KAGGLE_PREPROCESS_MAX_FILES")
-    if max_files:
-        try:
-            if int(max_files) < 1:
-                raise ValueError
-        except ValueError as exc:
-            raise ValueError("KAGGLE_PREPROCESS_MAX_FILES must be a positive integer") from exc
+    if args.max_files is not None and args.max_files < 1:
+        raise ValueError("--max-files must be a positive integer")
+    max_files = args.max_files
 
     run_id = f"preprocess-all-{int(time.time())}"
     job_dir = project_root / "outputs" / "kaggle_preprocess" / run_id
