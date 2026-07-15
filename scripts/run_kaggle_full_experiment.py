@@ -58,6 +58,12 @@ try:
     print("--- STEP 3: Cloning DiffRhythm2 (for distillation teacher) ---")
     subprocess.run(["git", "clone", "https://github.com/ASLP-lab/DiffRhythm2.git", str(source_root / "DiffRhythm2-main")], check=True)
 
+    # DiffRhythm2's lyric tokenizer uses phonemizer's eSpeak backend, which is not
+    # installed in the default Kaggle image. Install only this missing system package.
+    print("--- STEP 3.5: Installing espeak-ng for the lyric tokenizer ---")
+    subprocess.run(["apt-get", "update", "-y"], check=False)
+    subprocess.run(["apt-get", "install", "-y", "-q", "--no-install-recommends", "espeak-ng"], check=True)
+
     print("--- STEP 4: Installing dependencies ---")
     subprocess.run([sys.executable, "-m", "pip", "install", "-q",
         "torch", "torchaudio", "librosa", "matplotlib", "openai-whisper", "demucs",
