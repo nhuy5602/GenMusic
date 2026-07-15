@@ -139,6 +139,18 @@ try:
                 "imageio-ffmpeg",
                 "vocos",
                 "muq",
+                # muq's own runtime deps (--no-deps above skips these, so list them
+                # explicitly -- confirmed via PyPI metadata for x-clip; torch/einops
+                # are already covered above). Deliberately NOT adding torchvision here:
+                # x-clip's metadata pins it to an exact torch version, and blindly
+                # installing --no-deps risks a torch/torchvision ABI mismatch worse than
+                # the missing-module error this is fixing, with no evidence (the actual
+                # traceback) that torchvision is even missing on the Kaggle base image.
+                "x-clip",
+                "beartype",
+                "ftfy",
+                "wcwidth",
+                "regex",
                 "encodec",
                 "einops",
                 "huggingface-hub",
