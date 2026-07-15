@@ -217,22 +217,77 @@ def load_checkpoint(path: str | Path, *, device="cpu", roberta_model: str = "xlm
     return model, config, payload
 
 
-def generate_audio(model, text: str, style: str, destination: str | Path, *, duration_seconds: float, config: MusicDiffusionConfig, device="cpu", steps: int = 6, seed: int = 5602, mel_output: str | Path | None = None, vocoder_type: str = "vocos", backing_mel=None, style_anchor=None) -> dict[str, Any]:
-    """``backing_mel`` (n_mels, frames) and ``style_anchor`` (512,) let generation
-    condition on a real backing track / MuQ-MuLan style embedding, the same way
-    the model was trained (see ``src.training.self_diffusion.load_reference_conditioning``
-    to pull these from an existing preprocessed dataset record). Without them,
-    generation falls back to zero backing-track conditioning and a pooled-text
-    style vector -- a real train/inference mismatch, not a deliberate choice."""
+def generate_audio(
+    model,
+    text: str,
+    style: str,
+    destination: str | Path,
+    *,
+    duration_seconds: float,
+    config: MusicDiffusionConfig,
+    device="cpu",
+    steps: int = 6,
+    seed: int = 5602,
+    mel_output: str | Path | None = None,
+    vocoder_type: str = "vocos",
+    backing_mel=None,
+    style_anchor=None,
+    style_prompt=None,
+) -> dict[str, Any]:
+    """Generate audio with the same backing/style inputs used during training.
+
+    ``backing_mel`` and ``style_anchor`` can come from
+    ``src.training.self_diffusion.load_reference_conditioning``. Without them,
+    generation falls back to zero backing conditioning and the model's text
+    style path. ``style_prompt`` is retained as a compatibility alias for local
+    callers that already passed a MuQ-MuLan anchor directly.
+    """
     torch, _ = _torch()
     model.to(device)
+
+    normalized_backing = None
+    if backing_mel is not None:
+        normalized_backing = torch.as_tensor(backing_mel, dtype=torch.float32, device=device)
+        if normalized_backing.dim() == 2:
+            if normalized_backing.shape[0] == config.n_mels:
+                normalized_backing = normalized_backing.unsqueeze(0)
+            elif normalized_backing.shape[1] == config.n_mels:
+                normalized_backing = normalized_backing.transpose(0, 1).unsqueeze(0)
+            else:
+                raise ValueError(
+                    f"backing_mel must contain an n_mels={config.n_mels} axis, got {tuple(normalized_backing.shape)}"
+                )
+        elif normalized_backing.dim() == 3:
+            if normalized_backing.shape[0] != 1:
+                raise ValueError("generate_audio currently generates one item and requires backing batch size 1")
+            if normalized_backing.shape[1] != config.n_mels and normalized_backing.shape[2] == config.n_mels:
+                normalized_backing = normalized_backing.transpose(1, 2)
+            elif normalized_backing.shape[1] != config.n_mels:
+                raise ValueError(
+                    f"backing_mel must contain an n_mels={config.n_mels} axis, got {tuple(normalized_backing.shape)}"
+                )
+        else:
+            raise ValueError(f"backing_mel must have 2 or 3 dimensions, got {tuple(normalized_backing.shape)}")
+
+    if style_anchor is not None and style_prompt is not None:
+        raise ValueError("Pass only one of style_anchor or style_prompt")
+    style_condition = style_anchor if style_anchor is not None else style_prompt
+    normalized_style = None
+    if style_condition is not None:
+        normalized_style = torch.as_tensor(style_condition, dtype=torch.float32, device=device)
+        if normalized_style.dim() == 1:
+            normalized_style = normalized_style.unsqueeze(0)
+        if normalized_style.dim() != 2 or normalized_style.shape[0] != 1:
+            raise ValueError(
+                "generate_audio currently generates one item and requires a style anchor shape "
+                "(style_dim,) or (1, style_dim)"
+            )
+
     duration_seconds = max(float(duration_seconds), estimate_minimum_lyric_duration(text))
     rendered = []
     lyric_timing = build_lyric_timing(text, duration_seconds)
-    style_prompt = style_anchor.to(device).unsqueeze(0) if style_anchor is not None else None
-    backing_mel_full = backing_mel.to(device) if backing_mel is not None else None
-    frame_cursor = 0
     section_number = 0
+    backing_frame_cursor = 0
     for section in lyric_timing:
         section_count = max(1, math.ceil(section["duration_seconds"] / config.chunk_seconds))
         chunk_duration = section["duration_seconds"] / section_count
@@ -242,21 +297,37 @@ def generate_audio(model, text: str, style: str, destination: str | Path, *, dur
                 f"sing naturally across {chunk_duration:.2f} seconds; keep space between lyric lines."
             )
             chunk_frames = max(8, int(chunk_duration * config.sample_rate / config.hop_length))
-            chunk_backing_mel = None
-            if backing_mel_full is not None:
-                # Slice the matching time window out of the reference backing track
-                # rather than always reusing frame 0 for every chunk -- wraps around
-                # if the reference is shorter than the requested duration.
-                total_frames = backing_mel_full.shape[1]
-                indices = torch.arange(frame_cursor, frame_cursor + chunk_frames) % total_frames
-                chunk_backing_mel = backing_mel_full[:, indices].unsqueeze(0)
             from .cfm_flow import sample_cfm
+
+            # Training crops the real backing mel at the same temporal offset as
+            # the target vocal. Preserve that alignment while generating chunks
+            # instead of repeatedly conditioning every chunk on frame zero. Wrap
+            # a short reference so later chunks remain conditioned rather than
+            # silently becoming zero-padded.
+            chunk_backing = None
+            if normalized_backing is not None:
+                total_frames = normalized_backing.shape[2]
+                if total_frames == 0:
+                    raise ValueError("backing_mel must contain at least one frame")
+                indices = torch.arange(
+                    backing_frame_cursor,
+                    backing_frame_cursor + chunk_frames,
+                    device=device,
+                ) % total_frames
+                chunk_backing = normalized_backing.index_select(2, indices)
             mel = sample_cfm(
-                model, [chunk_text], chunk_frames, config=config, device=device, steps=steps,
-                seed=seed + section_number, backing_mel=chunk_backing_mel, style_prompt=style_prompt,
+                model,
+                [chunk_text],
+                chunk_frames,
+                config=config,
+                device=device,
+                steps=steps,
+                seed=seed + section_number,
+                backing_mel=chunk_backing,
+                style_prompt=normalized_style,
             )
             rendered.append(mel.squeeze(0))
-            frame_cursor += chunk_frames
+            backing_frame_cursor += chunk_frames
             section_number += 1
     mel = torch.cat(rendered, dim=1)
     target_frames = max(1, int(float(duration_seconds) * config.sample_rate / config.hop_length))
@@ -266,7 +337,18 @@ def generate_audio(model, text: str, style: str, destination: str | Path, *, dur
         mel_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save({"mel": mel.detach().cpu(), "text": text, "style": style}, mel_path)
     audio_path = render_mel_to_wav(mel, destination, config, vocoder_type=vocoder_type)
-    return {"status": "complete", "backend": "genmusic-vn-self-diffusion", "audio_path": str(audio_path), "mel_path": str(Path(mel_output).resolve()) if mel_output else None, "duration_seconds": float(duration_seconds), "diffusion_steps": steps, "seed": seed, "lyric_timing": lyric_timing}
+    return {
+        "status": "complete",
+        "backend": "genmusic-vn-self-diffusion",
+        "audio_path": str(audio_path),
+        "mel_path": str(Path(mel_output).resolve()) if mel_output else None,
+        "duration_seconds": float(duration_seconds),
+        "diffusion_steps": steps,
+        "seed": seed,
+        "lyric_timing": lyric_timing,
+        "backing_conditioned": normalized_backing is not None,
+        "muq_style_conditioned": normalized_style is not None,
+    }
 
 
 def structured_random_mel(config: MusicDiffusionConfig, frames: int, *, seed: int):

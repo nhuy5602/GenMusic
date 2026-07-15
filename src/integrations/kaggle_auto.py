@@ -65,7 +65,41 @@ class KaggleJobConfig:
     training_dataset_ref: str | None = None
 
 
-def run_local_generation(*, text: str, style: str, output_dir: str | Path, duration_seconds: float, checkpoint: str | Path | None = None, steps: int = 6, seed: int = 5602, device: str | None = None, mel_output: str | Path | None = None, vocoder: str = "vocos", roberta_model: str = "xlm-roberta-base", reference_dataset: str | Path | None = None, reference_id: str | None = None) -> dict[str, Any]:
+def _load_generation_condition(path: str | Path | None, *, keys: tuple[str, ...]):
+    if path is None:
+        return None
+    import torch
+
+    condition_path = Path(path)
+    payload = torch.load(condition_path, map_location="cpu", weights_only=True)
+    if isinstance(payload, torch.Tensor):
+        return payload
+    if isinstance(payload, dict):
+        for key in keys:
+            value = payload.get(key)
+            if isinstance(value, torch.Tensor):
+                return value
+    raise ValueError(f"Condition file does not contain a tensor: {condition_path}")
+
+
+def run_local_generation(
+    *,
+    text: str,
+    style: str,
+    output_dir: str | Path,
+    duration_seconds: float,
+    checkpoint: str | Path | None = None,
+    steps: int = 6,
+    seed: int = 5602,
+    device: str | None = None,
+    mel_output: str | Path | None = None,
+    vocoder: str = "vocos",
+    roberta_model: str = "xlm-roberta-base",
+    reference_dataset: str | Path | None = None,
+    reference_id: str | None = None,
+    backing_mel: str | Path | None = None,
+    style_anchor: str | Path | None = None,
+) -> dict[str, Any]:
     normalized = normalize_vietnamese_lyrics(text).strip()
     if not normalized:
         raise SelfMusicError("Văn bản input đang trống.")
@@ -73,13 +107,29 @@ def run_local_generation(*, text: str, style: str, output_dir: str | Path, durat
     destination.mkdir(parents=True, exist_ok=True)
     selected_device = device or _default_device()
 
-    backing_mel = style_anchor = None
+    backing_condition = None
+    style_condition = None
     reference_info = None
     if reference_dataset:
         from ..training.self_diffusion import load_reference_conditioning
+
         reference = load_reference_conditioning(reference_dataset, reference_id)
-        backing_mel, style_anchor = reference["backing_mel"], reference["style_anchor"]
-        reference_info = {"id": reference["id"], "has_backing_mel": backing_mel is not None, "has_style_anchor": style_anchor is not None}
+        backing_condition = reference["backing_mel"]
+        style_condition = reference["style_anchor"]
+        reference_info = {
+            "id": reference["id"],
+            "has_backing_mel": backing_condition is not None,
+            "has_style_anchor": style_condition is not None,
+        }
+
+    # Explicit condition files intentionally override the selected dataset
+    # record, which makes it possible to mix a chosen backing and style anchor.
+    if backing_mel:
+        backing_condition = _load_generation_condition(backing_mel, keys=("mel", "backing_mel"))
+    if style_anchor:
+        style_condition = _load_generation_condition(
+            style_anchor, keys=("style", "style_anchor", "embedding")
+        )
     if checkpoint and Path(checkpoint).exists():
         model, config, payload = load_checkpoint(checkpoint, device=selected_device, roberta_model=roberta_model)
         checkpoint_path = str(Path(checkpoint).resolve())
@@ -107,10 +157,24 @@ def run_local_generation(*, text: str, style: str, output_dir: str | Path, durat
         seed=int(seed),
         mel_output=mel_output,
         vocoder_type=vocoder,
-        backing_mel=backing_mel,
-        style_anchor=style_anchor,
+        backing_mel=backing_condition,
+        style_anchor=style_condition,
     )
-    report.update({"text": normalized, "style": style, "checkpoint": checkpoint_path, "checkpoint_epoch": checkpoint_epoch, "device": selected_device, "requested_duration_seconds": requested_duration, "minimum_lyric_duration_seconds": minimum_duration, "duration_auto_adjusted": effective_duration > requested_duration, "reference_conditioning": reference_info})
+    report.update(
+        {
+            "text": normalized,
+            "style": style,
+            "checkpoint": checkpoint_path,
+            "checkpoint_epoch": checkpoint_epoch,
+            "device": selected_device,
+            "requested_duration_seconds": requested_duration,
+            "minimum_lyric_duration_seconds": minimum_duration,
+            "duration_auto_adjusted": effective_duration > requested_duration,
+            "reference_conditioning": reference_info,
+            "backing_mel_path": str(Path(backing_mel).resolve()) if backing_mel else None,
+            "style_anchor_path": str(Path(style_anchor).resolve()) if style_anchor else None,
+        }
+    )
     mp3_path = _convert_to_mp3(Path(report["audio_path"]))
     if mp3_path:
         report["mp3_path"] = str(mp3_path)

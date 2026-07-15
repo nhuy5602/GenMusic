@@ -39,6 +39,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     local = sub.add_parser("generate-local", help="Sinh WAV/MP3 bằng model tự code tại local.")
     local.add_argument("--text", required=True)
+    local.add_argument("--backing-mel", default=None, help="Backing mel condition saved by preprocessing.")
+    local.add_argument("--style-anchor", default=None, help="MuQ-MuLan style embedding saved by preprocessing.")
     local.add_argument("--style", default="Vietnamese pop, warm piano, clear melody")
     local.add_argument("--duration", type=float, default=4.0)
     local.add_argument("--checkpoint", default=None)
@@ -172,7 +174,22 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "refresh-kaggle":
         report = refresh_kaggle_job(args.state)
     elif args.command == "generate-local":
-        report = run_local_generation(text=args.text, style=args.style, output_dir=args.out, duration_seconds=args.duration, checkpoint=args.checkpoint, steps=args.steps, seed=args.seed, device=args.device, vocoder=args.vocoder, roberta_model=args.roberta_model, reference_dataset=args.reference_dataset, reference_id=args.reference_id)
+        report = run_local_generation(
+            text=args.text,
+            style=args.style,
+            output_dir=args.out,
+            duration_seconds=args.duration,
+            checkpoint=args.checkpoint,
+            steps=args.steps,
+            seed=args.seed,
+            device=args.device,
+            vocoder=args.vocoder,
+            roberta_model=args.roberta_model,
+            reference_dataset=args.reference_dataset,
+            reference_id=args.reference_id,
+            backing_mel=args.backing_mel,
+            style_anchor=args.style_anchor,
+        )
     elif args.command == "make-random-dataset":
         target_bytes = int(args.target_gb * (1024 ** 3)) if args.target_gb > 0 else None
         report = create_random_dataset(args.out, count=args.count, frames=args.frames, seed=args.seed, target_bytes=target_bytes)
