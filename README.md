@@ -54,7 +54,6 @@ Create a `.env` file in the root directory based on the `.env.example` template:
 RAW_AUDIO_INPUT_DIR=dataset/vietnamese_songs
 PROCESSED_DATASET_DIR=dataset/diff_rhythm_dataset
 MODEL_CHECKPOINT_PATH=outputs/my_trained_model.pt
-GENMUSIC_OUTPUT_DIR=outputs
 
 # Kaggle API tokens (For scheduling training tasks to GPU Cloud)
 KAGGLE_USERNAME=your_kaggle_username
@@ -66,7 +65,10 @@ KAGGLE_RAW_DATASET_REF=sonlest/vietnamese-music-dataset-version3-part6
 KAGGLE_PROCESSED_KERNEL_REF=your_kaggle_username/genmusic-prep-1234567890
 # Legacy fallback: a pre-existing published Dataset, used only if the above is unset.
 KAGGLE_PROCESSED_DATASET_REF=your_kaggle_username/vietnamese-music-processed-dataset
+# Fixed training dataset ref used by the `generate` (Kaggle job staging) command:
+GENMUSIC_KAGGLE_DATASET_REF=your_kaggle_username/genmusic-vn-self-diffusion-training
 ```
+See `.env.example` for the full list, including optional per-run overrides.
 
 ---
 

@@ -7,7 +7,6 @@ shared config, mel-spectrogram <-> waveform conversion, and checkpoint I/O.
 
 from __future__ import annotations
 
-import json
 import math
 import wave
 from dataclasses import asdict, dataclass, fields

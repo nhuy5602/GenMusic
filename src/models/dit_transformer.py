@@ -1,6 +1,5 @@
 import torch
 from torch import nn
-from pathlib import Path
 from transformers import AutoTokenizer, AutoModel
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer, LlamaRotaryEmbedding
 from transformers.models.llama import LlamaConfig

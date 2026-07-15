@@ -23,7 +23,6 @@ try:
     ffmpeg_dir = os.path.dirname(ffmpeg_exe)
     target_ffmpeg = os.path.join(ffmpeg_dir, "ffmpeg.exe")
     if not os.path.exists(target_ffmpeg):
-        import shutil
         shutil.copy2(ffmpeg_exe, target_ffmpeg)
     os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ["PATH"]
 except ImportError:

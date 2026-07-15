@@ -40,10 +40,10 @@ has practical run instructions.
 - `src/data/lyric_alignment.py`: lyric timing and LRC helpers.
 - `src/data/preprocess_raw_vietnamese.py`: recursive audio discovery, Demucs
   separation, Whisper transcription, and Mel tensor export.
-- `src/models/text_to_music_diffusion.py`: configuration, text conditioning,
-  Conv1D denoiser, sampling, and audio rendering.
-- `src/models/dit_transformer.py`: optional MicroDiT backbone with text and
-  audio-style conditioning.
+- `src/models/text_to_music_diffusion.py`: shared config, mel/waveform
+  conversion, and checkpoint I/O.
+- `src/models/dit_transformer.py`: MicroDiT backbone with text and
+  audio-style conditioning (the only model architecture).
 - `src/models/cfm_flow.py`: Conditional Flow Matching loss and Euler sampling.
 - `src/training/self_diffusion.py`: dataset contract, validation, and local
   training loop.

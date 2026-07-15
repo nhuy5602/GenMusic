@@ -18,7 +18,7 @@ from diffrhythm2.cfm import CFM
 from diffrhythm2.backbones.dit import DiT
 from bigvgan.model import Generator
 import inference as _inference_module
-from inference import CNENTokenizer, parse_lyrics, make_fake_stereo, inference
+from inference import CNENTokenizer, parse_lyrics, inference
 
 def run_teacher_test():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

@@ -23,7 +23,6 @@ always means a real teacher was actually used, no exceptions.
 
 import json
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Any
 

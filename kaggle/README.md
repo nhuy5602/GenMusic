@@ -8,8 +8,9 @@ work on this project (local execution is CPU-only, for smoke tests). **See
 preprocess→train→distill→generate sequence in one Kaggle kernel, which matters
 for GPU quota (Kaggle gives ~30 GPU-hours/week; one consolidated kernel per
 experiment burns far less than five separate round trips). This file documents
-the older, narrower single-song "generate" job flow below, which still exists
-for the legacy Conv1D model path.
+the older, narrower single-song "generate" job flow below, kept for staging a
+one-off request against an already-trained checkpoint rather than a full
+experiment run.
 
 The local project stages a request dataset containing the lyric request,
 LRC timing, source code, and links to the fixed training dataset.
