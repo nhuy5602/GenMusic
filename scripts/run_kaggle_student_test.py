@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import sys
@@ -65,7 +66,7 @@ except Exception as e:
     sys.exit(1)
 '''
 
-def run_kaggle_student_test():
+def run_kaggle_student_test(distill_kernel_ref: str):
     project_root = Path(__file__).resolve().parents[1]
     
     # 0. Load tokens and authenticate
@@ -135,9 +136,12 @@ def run_kaggle_student_test():
     kernel_slug = f"genmusic-studenttest-{int(time.time())}"
     kernel_ref = f"{username}/{kernel_slug}"
     
-    # Reference the successful distillation run outputs
-    distill_output_kernel = "mvitanh/genmusic-distill-1783963847"
-    
+    # Reference a prior distillation run's output kernel (must still exist on Kaggle)
+    distill_output_kernel = distill_kernel_ref
+    processed_dataset_ref = os.getenv("KAGGLE_PROCESSED_KERNEL_REF") or os.getenv("KAGGLE_PROCESSED_DATASET_REF") or tokens.get(
+        "KAGGLE_PROCESSED_KERNEL_REF", tokens.get("KAGGLE_PROCESSED_DATASET_REF", f"{username}/vietnamese-music-processed-dataset")
+    )
+
     kernel_meta = {
         "id": kernel_ref,
         "title": kernel_slug,
@@ -150,7 +154,7 @@ def run_kaggle_student_test():
         "enable_internet": True,
         "dataset_sources": [
             source_dataset_ref,
-            "mvitanh/vietnamese-music-processed-dataset"
+            processed_dataset_ref
         ],
         "kernel_sources": [
             distill_output_kernel
@@ -178,4 +182,7 @@ def run_kaggle_student_test():
             time.sleep(15)
 
 if __name__ == "__main__":
-    run_kaggle_student_test()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--distill-kernel-ref", required=True, help="Kaggle kernel ref (owner/slug) of a prior run_kaggle_distill.py run whose output to test.")
+    args = parser.parse_args()
+    run_kaggle_student_test(args.distill_kernel_ref)
