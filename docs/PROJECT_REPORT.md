@@ -684,9 +684,19 @@ không chỉ nhìn riêng loss_gt — xem §5.
   `src/evaluation/jam_metrics.py` đã có hạ tầng cho việc này nhưng chưa dùng thật).
 - **Solver ODE bậc cao/thích ứng** cho CFM sampling (§2.4) — hợp lý khi chất lượng model
   không còn là nút thắt chính.
-- **MeanFlow (2025)**: literature gần đây (MusFlow — flow matching cho music generation,
-  đúng domain; MeanFlow — thay dự đoán vận tốc tức thời `v(x_t, t)` bằng vận tốc trung bình
-  tích hợp theo thời gian) né hẳn kiểu bài toán "khớp một điểm rồi tích phân nhiều bước" mà
-  §4.9/§4.12 đang gặp — có thể né được vấn đề collapse ngay từ công thức, không cần thêm
-  loss phụ. Đây là thay đổi kiến trúc/công thức lớn hơn các fix đã thử, chưa đánh giá chi
-  phí/lợi ích, ghi lại làm hướng nghiên cứu xa hơn.
+- **MeanFlow (2025) — đã thử prototype, chưa thành công, không nên tích hợp vội**: literature
+  gần đây (MusFlow — flow matching cho music generation, đúng domain; MeanFlow — thay dự
+  đoán vận tốc tức thời `v(x_t,t)` bằng vận tốc trung bình `u(x_t,r,t)` tích hợp theo thời
+  gian, sinh một-bước) né hẳn kiểu bài toán "khớp một điểm rồi tích phân nhiều bước" mà
+  §4.9/§4.12 đang gặp. Đã tự implement + verify một prototype nhỏ (toy 2D, mixture 2 Gaussian,
+  local, không tốn quota Kaggle) để kiểm tra trước khi động vào model thật — **không thành
+  công**: MSE(u,v) tại r=t (điều kiện biên, đáng lẽ phải ~0 vì công thức suy biến về flow
+  matching thường) vẫn ở mức 1.3-1.5 dù đã thử (a) ép một phần batch sample đúng r=t, (b) bỏ
+  `torch.no_grad()` quanh lệnh `jvp` (nghi ngờ ban đầu, hoá ra không phải nguyên nhân — kết quả
+  giống hệt), (c) tăng step 4000→12000 + gradient clipping (chỉ cải thiện nhẹ). Baseline flow
+  matching thường trên **đúng** bài toán/network/hyperparameter đó converge tốt (mean dist
+  0.34, gần 0% kẹt giữa) — xác nhận lỗi nằm ở phần MeanFlow-specific (khả năng cao là công
+  thức JVP/identity bị hiểu sai ở một chi tiết chưa tìm ra, không phải do thiếu step). **Kết
+  luận**: đúng như lo ngại ban đầu — MeanFlow khó implement đúng hơn các fix đã thử trong
+  §4.11/§4.12, cần đọc kỹ chính paper (không chỉ tóm tắt qua search) trước khi thử lại. Không
+  đưa vào model/pipeline thật ở trạng thái hiện tại.
