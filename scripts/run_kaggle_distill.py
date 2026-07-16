@@ -11,7 +11,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from src.integrations.kaggle_auto import load_kaggle_api_tokens, resolve_kaggle_username, kaggle_cli_command, write_source_zip
 
-def _kernel_script_content(epochs: str = "25", batch_size: str = "8") -> str:
+def _kernel_script_content(epochs: str = "25", batch_size: str = "8", dim: str = "256", depth: str = "4", heads: str = "4", ff_mult: str = "4") -> str:
     return f'''import os
 import shutil
 import subprocess
@@ -79,7 +79,11 @@ try:
         "--epochs", "{epochs}",
         "--batch-size", "{batch_size}",
         "--learning-rate", "1e-4",
-        "--alpha-feature", "0.5"
+        "--alpha-feature", "0.5",
+        "--dim", "{dim}",
+        "--depth", "{depth}",
+        "--heads", "{heads}",
+        "--ff-mult", "{ff_mult}",
     ], env=os.environ, check=True)
 
     print("DISTILLATION TRAINING COMPLETED SUCCESSFULLY!")
@@ -91,7 +95,7 @@ except Exception as e:
     sys.exit(1)
 '''
 
-def run_kaggle_distillation(epochs: int = 25, batch_size: int = 8, processed_kernel_ref_override: str | None = None) -> None:
+def run_kaggle_distillation(epochs: int = 25, batch_size: int = 8, processed_kernel_ref_override: str | None = None, dim: int = 256, depth: int = 4, heads: int = 4, ff_mult: int = 4) -> None:
     project_root = Path(__file__).resolve().parents[1]
 
     # 0. Load tokens and authenticate
@@ -164,7 +168,7 @@ def run_kaggle_distillation(epochs: int = 25, batch_size: int = 8, processed_ker
     kernel_slug = f"genmusic-distill-{int(time.time())}"
     kernel_ref = f"{username}/{kernel_slug}"
     
-    (kernel_dir / "run_distill.py").write_text(_kernel_script_content(str(epochs), str(batch_size)), encoding="utf-8")
+    (kernel_dir / "run_distill.py").write_text(_kernel_script_content(str(epochs), str(batch_size), str(dim), str(depth), str(heads), str(ff_mult)), encoding="utf-8")
 
     # Processed data source: a preprocess-kernel output (kernel_sources, no credentials
     # needed) takes priority; falls back to a pre-existing published Dataset for
@@ -212,8 +216,12 @@ def main():
     parser.add_argument("--epochs", type=int, default=25)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--processed-kernel-ref", type=str, default=None, help="Override KAGGLE_PROCESSED_KERNEL_REF for this run.")
+    parser.add_argument("--dim", type=int, default=256, help="Hidden dim of the MicroDiT student.")
+    parser.add_argument("--depth", type=int, default=4, help="Number of transformer blocks.")
+    parser.add_argument("--heads", type=int, default=4, help="Number of attention heads.")
+    parser.add_argument("--ff-mult", type=int, default=4, help="Feed-forward multiplier.")
     args = parser.parse_args()
-    run_kaggle_distillation(args.epochs, args.batch_size, args.processed_kernel_ref)
+    run_kaggle_distillation(args.epochs, args.batch_size, args.processed_kernel_ref, args.dim, args.depth, args.heads, args.ff_mult)
 
 if __name__ == "__main__":
     main()
