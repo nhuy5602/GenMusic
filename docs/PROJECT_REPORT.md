@@ -657,9 +657,21 @@ không chỉ nhìn riêng loss_gt — xem §5.
 - **Vì sao tín hiệu teacher giữ mel-variance thấp dù trọng số nhỏ?** (§4.12) — giả thuyết
   đáng kiểm chứng: đo trực tiếp variance của `v_teacher` (sau adapter `from_teacher_mel`)
   so với `target_velocity`, xem teacher có tự nhiên "mượt" hơn ground-truth không, độc lập
-  với mọi cấu hình phía student. Nếu đúng, hướng fix hợp lý là áp `loss_velocity` chỉ ở early
-  training rồi giảm dần (warmup ngược), hoặc bỏ chuẩn hóa gradient riêng cho 2 loss term
-  thay vì chỉ trộn theo `alpha_feature`.
+  với mọi cấu hình phía student.
+  - **Đã thử một góc rẻ** (local, không cần Kaggle): literature về mất cân bằng gradient
+    trong multi-loss training (GradNorm, ICLR 2018) gợi ý hệ số trộn scalar như
+    `alpha_feature` không kiểm soát được ảnh hưởng thật lên optimization — cái quyết định
+    là *độ lớn gradient* mỗi loss term tạo ra, có thể khác hẳn tỉ lệ trọng số danh nghĩa.
+    Đo thử bằng fake teacher (ngẫu nhiên, không train, dùng lại fixture test có sẵn):
+    ratio gradient velocity/gt = 0.53 ở alpha=0.5, giảm xuống 0.13 ở alpha=0.8 — tức
+    `alpha_feature` **có** điều chỉnh đúng hướng gradient theo lý thuyết, nhưng thực tế
+    trên Kaggle (job 5 vs job 6, teacher thật) lại không thấy std thay đổi tương ứng. Kết
+    quả **không xác nhận rõ** giả thuyết mất cân bằng gradient là nguyên nhân — có thể vì
+    fake teacher (ngẫu nhiên, không cấu trúc) không phải proxy tốt cho hành vi của teacher
+    thật (đã train, có cấu trúc). Cần đo lại đúng với teacher thật mới kết luận được.
+  - Nếu xác nhận teacher thật tự nhiên "mượt" hơn ground-truth, hướng fix hợp lý là áp
+    `loss_velocity` chỉ ở early training rồi giảm dần (warmup ngược), hoặc chuẩn hóa
+    gradient riêng cho 2 loss term (kiểu GradNorm) thay vì chỉ trộn theo `alpha_feature`.
 - **Style anchor đại diện hơn**: hiện lấy cố định 10 giây đầu bài cho mọi crop huấn luyện
   của bài đó (§3.1, §3.6) — thử lấy đoạn đại diện hơn (ví dụ đoạn giữa bài) hoặc trung bình
   nhiều đoạn, xem có cải thiện chất lượng không; cần preprocess lại nên cân nhắc quota
