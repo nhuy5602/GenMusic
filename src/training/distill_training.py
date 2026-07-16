@@ -23,6 +23,7 @@ always means a real teacher was actually used, no exceptions.
 
 import json
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +33,13 @@ from torch import nn
 
 from src.models.text_to_music_diffusion import MusicDiffusionConfig
 from src.models.dit_transformer import MicroDiT
-from src.training.self_diffusion import MusicDiffusionDataset, _torch
+from src.training.self_diffusion import (
+    MusicDiffusionDataset,
+    _filter_training_records,
+    _read_records,
+    _torch,
+    estimate_vocal_mel_stats,
+)
 
 TEACHER_COND_DIM = 512
 
@@ -330,12 +337,29 @@ class KnowledgeDistillationTrainer:
             v_student = self.student(x=xt, cond=cond, texts=texts, timestep=t, style_prompt=style_anchor)
 
             target_velocity = x1 - x0
-            # loss_gt stays MSE: CFM's theory requires it, since v_student is trained to
-            # approximate E[x1-x0 | x_t] over the random (x0,x1) coupling, and only the L2
-            # minimizer recovers that conditional expectation -- switching this to L1 would
-            # target the conditional median instead and break the marginal-ODE guarantee
-            # flow matching relies on.
-            loss_gt = F.mse_loss(v_student, target_velocity)
+            # loss_gt: same frame-weighted-MSE + reconstruction + time/frequency-delta
+            # formula as cfm_loss() (src/models/cfm_flow.py, train-self path), ported
+            # here rather than called directly because distillation needs v_student at
+            # the SAME (xt, t) used for the teacher-matching term below -- cfm_loss()
+            # samples its own xt/t internally, which would decouple the two losses onto
+            # different points. The frame reweighting keeps each frame's own pointwise
+            # minimizer at the true conditional velocity (still an MSE per frame, just a
+            # non-uniform average across frames), so it doesn't break the marginal-ODE
+            # guarantee CFM relies on the way switching to a bare L1 would. Validated
+            # on train-self before porting here: this combination raised generated mel
+            # std from 1.09 to 3.13 against a real-vocal target of 2.95 (see
+            # docs/PROJECT_REPORT.md §4.10/§5).
+            frame_energy = x1.mean(dim=-1)
+            activity_threshold = torch.quantile(frame_energy.detach(), 0.55, dim=1, keepdim=True)
+            activity = torch.sigmoid((frame_energy - activity_threshold) * 2.0)
+            frame_weights = (1.0 + 2.0 * activity).unsqueeze(-1)
+            frame_weights = frame_weights / frame_weights.mean(dim=(1, 2), keepdim=True).clamp_min(1e-6)
+            velocity_loss = ((v_student - target_velocity).square() * frame_weights).mean()
+            predicted_clean = xt + (1.0 - t.view(-1, 1, 1)) * v_student
+            reconstruction_loss = ((predicted_clean - x1).abs() * frame_weights).mean()
+            time_delta_loss = F.l1_loss(torch.diff(predicted_clean, dim=1), torch.diff(x1, dim=1))
+            frequency_delta_loss = F.l1_loss(torch.diff(predicted_clean, dim=2), torch.diff(x1, dim=2))
+            loss_gt = velocity_loss + 0.15 * reconstruction_loss + 0.05 * (time_delta_loss + frequency_delta_loss)
             loss_velocity = None
             if v_teacher is not None:
                 # loss_velocity is a distillation feature-matching term against a single
@@ -385,6 +409,15 @@ def run_distillation_training(
     selected_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
     config = MusicDiffusionConfig(**json.loads((root / "config.json").read_text(encoding="utf-8")))
+    # Auto-calibrate mel_mean/mel_std the same way train-self does (self_diffusion.py's
+    # train_model) -- without this, MusicDiffusionDataset applies identity normalization
+    # (mel_mean=0, mel_std=1 defaults), leaving the student to fit raw, unnormalized
+    # log-mel targets. See docs/PROJECT_REPORT.md §4.10/§5 for why this specifically
+    # matters here: it was one of the changes that fixed a measured low-variance
+    # ("regression to the mean") output on the train-self side.
+    usable_records = _filter_training_records(_read_records(root))
+    mel_mean, mel_std = estimate_vocal_mel_stats(root, usable_records)
+    config = replace(config, mel_mean=mel_mean, mel_std=mel_std)
 
     teacher_backbone, teacher_config, teacher_status = _load_teacher(repo_id, teacher_checkpoint_path, selected_device)
     print(f"Teacher load status: {teacher_status}", flush=True)
