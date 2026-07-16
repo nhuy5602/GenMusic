@@ -49,25 +49,32 @@ def _resize_mel_bins(mel: torch.Tensor, target_bins: int) -> torch.Tensor:
     return resized.reshape(batch, seq_len, target_bins)
 
 
-def _hf_hub_download_with_retry(*, attempts: int = 3, backoff_seconds: float = 5.0, **kwargs) -> str:
+def _hf_hub_download_with_retry(*, attempts: int = 8, initial_backoff_seconds: float = 5.0, max_backoff_seconds: float = 60.0, **kwargs) -> str:
     """`hf_hub_download` with no retry has a single-network-blip failure mode:
-    one transient DNS/TLS/Hub hiccup burns an entire multi-hour Kaggle job before
-    training even starts (observed twice in a row in practice -- see
-    docs/PROJECT_REPORT.md §4.10). Retries only the network fetch itself, with
-    a short backoff; a genuinely missing repo/file still raises after the last
-    attempt, it just doesn't die on the first blip.
+    one transient Hub hiccup burns an entire multi-hour Kaggle job before
+    training even starts (observed three times in practice -- see
+    docs/PROJECT_REPORT.md §4.10). All three were genuine HF Hub-side HTTP 504s
+    (confirmed by reproducing the same 504 from a completely different network,
+    where it self-resolved after ~130s once huggingface_hub's own built-in
+    retry rode it out) -- not a Kaggle-specific or code problem. A short 3x5s
+    retry budget is not generous enough for that; exponential backoff up to
+    `max_backoff_seconds`, doubling each attempt, gives it several minutes to
+    recover -- trivial next to the multi-hour job it protects. A genuinely
+    missing repo/file still raises after the last attempt.
     """
     from huggingface_hub import hf_hub_download
 
     last_error: Exception | None = None
+    backoff = initial_backoff_seconds
     for attempt in range(1, attempts + 1):
         try:
             return hf_hub_download(**kwargs)
         except Exception as e:
             last_error = e
             if attempt < attempts:
-                print(f"[hf_hub_download] attempt {attempt}/{attempts} failed ({e}); retrying in {backoff_seconds}s...", flush=True)
-                time.sleep(backoff_seconds)
+                print(f"[hf_hub_download] attempt {attempt}/{attempts} failed ({e}); retrying in {backoff:.0f}s...", flush=True)
+                time.sleep(backoff)
+                backoff = min(backoff * 2, max_backoff_seconds)
     raise last_error
 
 
