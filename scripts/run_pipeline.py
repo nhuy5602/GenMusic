@@ -80,8 +80,8 @@ def main():
 
     print("\n======================================================================")
     print("🎉 Pipeline Completed Successfully!")
-    print(f"  - Dataset: dataset/diff_rhythm_dataset/")
-    print(f"  - Checkpoint: outputs/my_rhythm_model.pt")
+    print("  - Dataset: dataset/diff_rhythm_dataset/")
+    print("  - Checkpoint: outputs/my_rhythm_model.pt")
     print(f"  - Generated Audio: {output_audio_dir}/final.wav")
     print(f"  - Evaluation: {eval_dir}/metric_report.json")
     print("======================================================================")

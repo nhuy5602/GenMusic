@@ -684,3 +684,9 @@ không chỉ nhìn riêng loss_gt — xem §5.
   `src/evaluation/jam_metrics.py` đã có hạ tầng cho việc này nhưng chưa dùng thật).
 - **Solver ODE bậc cao/thích ứng** cho CFM sampling (§2.4) — hợp lý khi chất lượng model
   không còn là nút thắt chính.
+- **MeanFlow (2025)**: literature gần đây (MusFlow — flow matching cho music generation,
+  đúng domain; MeanFlow — thay dự đoán vận tốc tức thời `v(x_t, t)` bằng vận tốc trung bình
+  tích hợp theo thời gian) né hẳn kiểu bài toán "khớp một điểm rồi tích phân nhiều bước" mà
+  §4.9/§4.12 đang gặp — có thể né được vấn đề collapse ngay từ công thức, không cần thêm
+  loss phụ. Đây là thay đổi kiến trúc/công thức lớn hơn các fix đã thử, chưa đánh giá chi
+  phí/lợi ích, ghi lại làm hướng nghiên cứu xa hơn.

@@ -38,7 +38,6 @@ def tail_kernel_log(kernel_ref: str, read_timeout: float = 8.0) -> str:
         chunks = []
         try:
             if content_type.startswith("text/event-stream"):
-                buffer = ""
                 for line in response.iter_lines(decode_unicode=True):
                     if line is None:
                         continue
