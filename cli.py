@@ -11,7 +11,6 @@ from src.data.vietnamese_text import normalize_vietnamese_lyrics
 from src.evaluation.jam_metrics import objective_metrics, write_metric_report
 from src.evaluation.jam_plots import write_jam_plots
 from src.evaluation.project_metrics import build_project_report
-from src.integrations.colab_auto import DEFAULT_COLAB_NOTEBOOK_URL, write_colab_notebook
 from src.integrations.kaggle_auto import DEFAULT_MODEL, KaggleJobConfig, refresh_kaggle_job, run_local_generation, submit_text_to_music_job, upload_dataset_to_kaggle
 from src.training.self_diffusion import create_random_dataset, train_model, validate_dataset
 
@@ -37,19 +36,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     refresh = sub.add_parser("refresh-kaggle", help="Cập nhật trạng thái và tải output Kaggle.")
     refresh.add_argument("--state", required=True)
-
-    colab = sub.add_parser("prepare-colab", help="Create a Google Colab notebook alongside Kaggle.")
-    colab.add_argument("--out", default="colab/GenMusic_Full_Training.ipynb")
-    colab.add_argument("--colab-url", default=DEFAULT_COLAB_NOTEBOOK_URL)
-    colab.add_argument("--repo-ref", default="master")
-    colab.add_argument("--epochs", type=int, default=40)
-    colab.add_argument("--batch-size", type=int, default=4)
-    colab.add_argument(
-        "--cache-data-on-drive",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
-    colab.add_argument("--checkpoint-every-steps", type=int, default=25)
 
     local = sub.add_parser("generate-local", help="Sinh WAV/MP3 bằng model tự code tại local.")
     local.add_argument("--text", required=True)
@@ -191,16 +177,6 @@ def main(argv: list[str] | None = None) -> int:
             duration_seconds=args.duration,
             genre=args.genre,
             config=KaggleJobConfig(model=args.model, username=args.username, machine_shape=args.machine_shape, submit=not args.no_submit, wait=args.wait, poll_seconds=args.poll_seconds, timeout_seconds=args.timeout_seconds, training_dataset_ref=args.dataset_ref),
-        )
-    elif args.command == "prepare-colab":
-        report = write_colab_notebook(
-            args.out,
-            colab_url=args.colab_url,
-            repo_ref=args.repo_ref,
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            cache_data_on_drive=args.cache_data_on_drive,
-            checkpoint_every_steps=args.checkpoint_every_steps,
         )
     elif args.command == "refresh-kaggle":
         report = refresh_kaggle_job(args.state)

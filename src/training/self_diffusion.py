@@ -428,7 +428,7 @@ def estimate_vocal_mel_stats(
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    """Keep the previous Drive progress file valid if Colab is preempted."""
+    """Keep the previous progress file valid if a worker is preempted."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
     try:
@@ -553,8 +553,8 @@ def train_model(
     batch_size_value = max(1, int(batch_size))
 
     def build_dataloader(epoch_index: int):
-        # A deterministic per-epoch sampler lets a resumed Colab session skip
-        # batches already covered by its latest mid-epoch checkpoint.
+        # A deterministic per-epoch sampler lets a resumed worker skip batches
+        # already covered by its latest mid-epoch checkpoint.
         generator = torch.Generator()
         generator.manual_seed(5602 + int(epoch_index))
         return DataLoaderClass(
@@ -679,8 +679,8 @@ def train_model(
         avg_loss = sum(d["loss"] for d in epoch_losses) / len(epoch_losses)
         loss_curve.append({"epoch": epoch + 1, "loss": avg_loss, "loss_gt": avg_loss, "loss_velocity": None})
         if save_every_epoch:
-            # Colab sessions are preemptible. Persist raw weights, optimizer,
-            # scheduler and EMA after each epoch so the next session can resume.
+            # Remote workers are preemptible. Persist raw weights, optimizer,
+            # scheduler and EMA after each epoch so the next worker can resume.
             save_checkpoint(
                 model,
                 checkpoint,

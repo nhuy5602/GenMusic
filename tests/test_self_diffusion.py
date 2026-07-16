@@ -137,7 +137,7 @@ class SelfDiffusionTests(unittest.TestCase):
                 state = kwargs.get("training_state") or {}
                 if not interrupted and state.get("batch_in_epoch") == 1:
                     interrupted = True
-                    raise RuntimeError("simulated Colab preemption")
+                    raise RuntimeError("simulated worker preemption")
                 return result
 
             with patch.object(

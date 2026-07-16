@@ -233,9 +233,9 @@ def save_checkpoint(
     if training_state is not None:
         payload["training_state"] = training_state
 
-    # Colab can terminate while Drive is being written. Save beside the previous
-    # checkpoint and replace it only after torch.save succeeds, so an interrupted
-    # write never destroys the last resumable checkpoint.
+    # A remote worker can terminate while storage is being written. Save beside
+    # the previous checkpoint and replace it only after torch.save succeeds, so
+    # an interrupted write never destroys the last resumable checkpoint.
     temporary = destination.with_name(destination.name + ".tmp")
     try:
         torch.save(payload, temporary)
