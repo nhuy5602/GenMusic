@@ -49,12 +49,33 @@ def _resize_mel_bins(mel: torch.Tensor, target_bins: int) -> torch.Tensor:
     return resized.reshape(batch, seq_len, target_bins)
 
 
+def _hf_hub_download_with_retry(*, attempts: int = 3, backoff_seconds: float = 5.0, **kwargs) -> str:
+    """`hf_hub_download` with no retry has a single-network-blip failure mode:
+    one transient DNS/TLS/Hub hiccup burns an entire multi-hour Kaggle job before
+    training even starts (observed twice in a row in practice -- see
+    docs/PROJECT_REPORT.md §4.10). Retries only the network fetch itself, with
+    a short backoff; a genuinely missing repo/file still raises after the last
+    attempt, it just doesn't die on the first blip.
+    """
+    from huggingface_hub import hf_hub_download
+
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return hf_hub_download(**kwargs)
+        except Exception as e:
+            last_error = e
+            if attempt < attempts:
+                print(f"[hf_hub_download] attempt {attempt}/{attempts} failed ({e}); retrying in {backoff_seconds}s...", flush=True)
+                time.sleep(backoff_seconds)
+    raise last_error
+
+
 def _load_teacher(repo_id: str, teacher_checkpoint_path: str | Path | None, device: str) -> tuple[nn.Module | None, dict | None, str]:
     """Downloads/loads the real DiffRhythm2 DiT backbone with its own config.json
     dimensions (not guessed). Returns (module_or_None, model_config_or_None, status_message).
     """
     try:
-        from huggingface_hub import hf_hub_download
         from safetensors.torch import load_file
     except ImportError as exc:
         return None, None, f"huggingface_hub/safetensors not installed: {exc}"
@@ -68,7 +89,7 @@ def _load_teacher(repo_id: str, teacher_checkpoint_path: str | Path | None, devi
         )
 
     try:
-        config_path = hf_hub_download(repo_id=repo_id, filename="config.json", local_dir="./ckpt")
+        config_path = _hf_hub_download_with_retry(repo_id=repo_id, filename="config.json", local_dir="./ckpt")
         with open(config_path) as f:
             model_config = json.load(f)
         model_config["use_flex_attn"] = False
@@ -78,7 +99,7 @@ def _load_teacher(repo_id: str, teacher_checkpoint_path: str | Path | None, devi
         if teacher_checkpoint_path is not None and Path(teacher_checkpoint_path).exists():
             ckpt_path = Path(teacher_checkpoint_path)
         else:
-            ckpt_path = Path(hf_hub_download(repo_id=repo_id, filename="model.safetensors", local_dir="./ckpt"))
+            ckpt_path = Path(_hf_hub_download_with_retry(repo_id=repo_id, filename="model.safetensors", local_dir="./ckpt"))
 
         if ckpt_path.name.endswith(".safetensors"):
             payload = load_file(str(ckpt_path))
