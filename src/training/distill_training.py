@@ -327,6 +327,24 @@ class KnowledgeDistillationTrainer:
             t = torch.rand(batch_size, device=self.device)
             xt = (1.0 - t.view(-1, 1, 1)) * x0 + t.view(-1, 1, 1) * x1
 
+            # Classifier-free condition dropout, ported from cfm_loss() (train-self,
+            # src/models/cfm_flow.py) -- forces the model to see backing/style/text
+            # dropped out ~10% of the time each, the same recipe that (along with the
+            # loss changes above) fixed train-self's mel-variance collapse. Applied
+            # before both the teacher and student calls so the teacher's supervision
+            # reflects the same conditioning the student actually sees at this step,
+            # not a mismatched fully-conditioned target for a partially-conditioned
+            # input. (backing_mel dropout only affects the student -- the teacher never
+            # takes backing_mel as an input in the first place, see _teacher_velocity.)
+            dropout = 0.1
+            backing_drop = torch.rand(batch_size, device=self.device) < dropout
+            style_drop = torch.rand(batch_size, device=self.device) < dropout
+            text_drop = torch.rand(batch_size, device=self.device) < dropout
+            cond = cond.masked_fill(backing_drop[:, None, None], 0.0)
+            style_anchor = style_anchor.masked_fill(style_drop[:, None], 0.0)
+            text_drop_flags = text_drop.detach().cpu().tolist()
+            texts = ["" if text_drop_flags[index] else text for index, text in enumerate(texts)]
+
             self.optimizer.zero_grad(set_to_none=True)
 
             # Not wrapped in torch.no_grad() here -- from_teacher_mel (inside
