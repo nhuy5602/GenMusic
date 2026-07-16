@@ -542,13 +542,19 @@ thật), nhưng **không đạt mức train-self đạt được** — khoảng 
 (1.40), thậm chí thấp hơn một chút (trong khoảng nhiễu giữa các lần chạy). Vậy trọng số
 teacher-matching không phải nguyên nhân chính của khoảng cách còn lại.
 
-**Tìm ra khác biệt còn sót**: `cfm_loss()` (train-self) áp dụng **classifier-free condition
-dropout** — drop ngẫu nhiên backing/style/text (mỗi loại 10%) trước khi forward — nhưng lúc
-port công thức loss ở §4.11 tôi chỉ chép phần tính loss, **quên phần dropout này**. Đã bổ
-sung vào `train_epoch()` của `distill_training.py` (áp dụng cho cả 2 lời gọi teacher và
-student, ngoại trừ backing dropout chỉ ảnh hưởng student vì teacher không nhận backing_mel
-làm input). **Lần thử thứ 7** (`ddvnam05/genmusic-distill-1784206082`, alpha=0.5 + condition
-dropout) đang chạy để kiểm tra giả thuyết này. *(Kết quả cập nhật tiếp.)*
+**Giả thuyết condition dropout cũng bị bác bỏ**: lúc port công thức loss ở §4.11, phần
+**classifier-free condition dropout** của `cfm_loss()` (drop ngẫu nhiên backing/style/text
+10% mỗi loại) đã bị bỏ sót. Bổ sung vào `train_epoch()` và chạy lần thử thứ 7
+(`ddvnam05/genmusic-distill-1784206082`, alpha=0.5 + dropout) — kết quả std=**1.35**, vẫn
+trong cùng khoảng 1.27-1.40 như các lần trước, không cải thiện thêm đáng kể.
+
+**Khác biệt thật tiếp theo tìm được: learning rate**. `cli.py`: `train-self` mặc định
+`--learning-rate 2e-4`, `train-distill` mặc định `1e-4` — **chỉ bằng một nửa**. Ở cùng 25
+epoch/1575 step, LR thấp hơn khiến model tiến chậm hơn tới cùng đích, một khác biệt hoàn
+toàn không liên quan gì tới việc có teacher hay không nhưng vẫn ảnh hưởng tới việc so sánh
+công bằng giữa 2 đường train. Thêm `--learning-rate` vào launcher, chạy **lần thử thứ 8**
+(`ddvnam05/genmusic-distill-1784208706`, LR=2e-4 khớp `train-self`) để kiểm tra.
+*(Kết quả cập nhật tiếp.)*
 
 **Lần thử thứ 4** (`ddvnam05/genmusic-distill-1784191327`, §4.10, 75 epoch, code CŨ) vẫn
 đang chạy độc lập song song — sẽ cho biết liệu code cũ (không có các fix chống collapse)
