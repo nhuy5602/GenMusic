@@ -330,10 +330,21 @@ class KnowledgeDistillationTrainer:
             v_student = self.student(x=xt, cond=cond, texts=texts, timestep=t, style_prompt=style_anchor)
 
             target_velocity = x1 - x0
+            # loss_gt stays MSE: CFM's theory requires it, since v_student is trained to
+            # approximate E[x1-x0 | x_t] over the random (x0,x1) coupling, and only the L2
+            # minimizer recovers that conditional expectation -- switching this to L1 would
+            # target the conditional median instead and break the marginal-ODE guarantee
+            # flow matching relies on.
             loss_gt = F.mse_loss(v_student, target_velocity)
             loss_velocity = None
             if v_teacher is not None:
-                loss_velocity = F.mse_loss(v_student, v_teacher)
+                # loss_velocity is a distillation feature-matching term against a single
+                # teacher output, not a marginal-expectation target, so it has no such
+                # requirement. L1 here specifically because pure-MSE feature-matching
+                # distillation is documented to cause "distributional averaging" (a
+                # blurry, low-variance mean prediction) -- see docs/PROJECT_REPORT.md
+                # §4.10 ablation and its cited sources (Dieleman 2024; DMD/ADM papers).
+                loss_velocity = F.l1_loss(v_student, v_teacher)
                 loss = (1.0 - self.alpha_feature) * loss_velocity + self.alpha_feature * loss_gt
             else:
                 loss = loss_gt
