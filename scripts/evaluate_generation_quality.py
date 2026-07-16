@@ -6,10 +6,19 @@ quality from vocoder artifacts, since both sides go through the same decode
 path. Metrics:
 
 - spectral_flatness (librosa): ~0 = tonal/harmonic (music-like), ~1 = white
-  noise. This is the direct proxy for "toan nhieu" (pure noise) complaints.
+  noise. This is a per-instant proxy for "toan nhieu" (pure noise) complaints
+  -- but NOT sufficient on its own (see voiced_ratio below).
 - clip_ratio: fraction of samples saturated at the waveform ceiling.
 - silence_ratio: fraction of near-zero samples (dead air).
 - rms: overall loudness, sanity-checked against a plausible range.
+- voiced_ratio / mean_voiced_prob (librosa.pyin): fraction of frames with a
+  detectable, *stable* pitch and the tracker's confidence. This is the metric
+  that actually distinguishes "sounds like singing" from "sounds like noise"
+  -- flatness only checks whether a single frame's spectrum is peaky, not
+  whether that peak holds together as a coherent note across frames. A run
+  with good mel std/flatness but near-zero voiced_ratio still sounds like
+  noise to a human ear (confirmed the hard way: see
+  docs/PROJECT_REPORT.md's correction after a real listening report).
 
 A synthesized white-noise clip is included as a fixed sanity anchor so the
 flatness numbers have a concrete "this is what noise looks like" reference.
@@ -38,11 +47,16 @@ def wav_metrics(path: Path) -> dict:
     if len(y) == 0:
         return {"error": "empty audio"}
     flatness = librosa.feature.spectral_flatness(y=y)
+    _, voiced_flag, voiced_prob = librosa.pyin(
+        y, fmin=librosa.note_to_hz("C2"), fmax=librosa.note_to_hz("C7"), sr=sr
+    )
     return {
         "spectral_flatness": float(np.mean(flatness)),
         "rms": float(np.sqrt(np.mean(y.astype(np.float64) ** 2))),
         "clip_ratio": float(np.mean(np.abs(y) > 0.98)),
         "silence_ratio": float(np.mean(np.abs(y) < 1e-4)),
+        "voiced_ratio": float(np.mean(voiced_flag)),
+        "mean_voiced_prob": float(np.mean(voiced_prob)),
         "duration_seconds": float(len(y) / sr),
     }
 
@@ -96,10 +110,14 @@ def main() -> None:
 
     flatness_gen = [s["generated"]["spectral_flatness"] for s in results["samples"]]
     flatness_real = [s["real_vocal_same_vocoder"]["spectral_flatness"] for s in results["samples"]]
+    voiced_gen = [s["generated"]["voiced_ratio"] for s in results["samples"]]
+    voiced_real = [s["real_vocal_same_vocoder"]["voiced_ratio"] for s in results["samples"]]
     results["summary"] = {
         "mean_flatness_generated": float(np.mean(flatness_gen)) if flatness_gen else None,
         "mean_flatness_real": float(np.mean(flatness_real)) if flatness_real else None,
         "white_noise_flatness": noise_metrics["spectral_flatness"],
+        "mean_voiced_ratio_generated": float(np.mean(voiced_gen)) if voiced_gen else None,
+        "mean_voiced_ratio_real": float(np.mean(voiced_real)) if voiced_real else None,
         "mean_clip_ratio_generated": float(np.mean([s["generated"]["clip_ratio"] for s in results["samples"]])) if results["samples"] else None,
         "mean_silence_ratio_generated": float(np.mean([s["generated"]["silence_ratio"] for s in results["samples"]])) if results["samples"] else None,
     }

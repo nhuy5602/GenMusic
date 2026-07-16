@@ -594,11 +594,93 @@ mượt hơn theo góc nhìn riêng, và việc khớp theo nó (dù ít) vẫn 
 hơn tỷ trọng danh nghĩa của loss gợi ý. Đây là giả thuyết chưa kiểm chứng đầy đủ, không phải
 kết luận chắc chắn — xem hướng phát triển ở §5.2.
 
-**Hệ quả thực tiễn quan trọng**: với ràng buộc quota hiện tại, `train-self` (không distill)
-đang cho kết quả gần target thật hơn *và* rẻ hơn nhiều (~20 phút vs ~1-2 giờ mỗi lần) so với
-mọi biến thể distillation đã thử. Lợi ích đã đo được của distillation (loss_gt thấp hơn
-hẳn, §4.8) và hạn chế mới đo được (mel-variance thấp hơn hẳn) cần được cân nhắc cùng nhau,
-không chỉ nhìn riêng loss_gt — xem §5.
+**Hệ quả thực tiễn (đã ĐÍNH CHÍNH ở §4.13 — đừng dừng đọc ở đây)**: kết luận ban đầu ở bản
+báo cáo này là "`train-self` thực tế hơn vì mel-std/flatness gần target thật hơn". §4.13 cho
+thấy đó là kết luận **sai**, vì mel-std/flatness không đo đúng thứ cần đo.
+
+### 4.13 Đính chính quan trọng: nghe thử thật cho thấy `train-self` vẫn ra nhiễu — mel std/flatness không đo đúng thứ cần đo
+
+Sau khi báo cáo (không chính xác) rằng `train-self` "gần đạt target thật", người dùng nghe
+thử trực tiếp file `train-self` (§4.9's checkpoint mới) và xác nhận: **vẫn nghe ra nhiễu**,
+không giống giọng hát. Điều này mâu thuẫn với mel-std=3.13 (vượt target 2.95) và flatness=
+0.028 (tốt hơn cả vocal thật) — hai chỉ số tôi đã dùng để kết luận "đã fix".
+
+**Nguyên nhân của mâu thuẫn**: `spectral_flatness` đo một khung hình *tại một thời điểm* có
+đỉnh tần số rõ (tonal) hay phẳng (nhiễu) — nó **không đo** đỉnh tần số đó có giữ nguyên qua
+nhiều khung liên tiếp để tạo thành một *nốt nhạc ổn định* hay không. Một âm nhảy loạn xạ
+giữa các tần số khác nhau mỗi khung vẫn cho flatness thấp (tonal tại mỗi khung) nhưng nghe
+hoàn toàn như nhiễu/rè — đúng thứ đang xảy ra.
+
+**Đo lại bằng chỉ số đúng hơn**: `voiced_ratio` (tỉ lệ khung có pitch ổn định phát hiện được,
+qua `librosa.pyin`) — đây là proxy trực tiếp cho "có nghe ra nốt hát không". Đã bổ sung vào
+`scripts/evaluate_generation_quality.py`. Đo lại trên **mọi** checkpoint đã tạo audio debug
+trong session này (cùng bài `-6s_eRHYqVM`, cùng điều kiện):
+
+| Checkpoint | mel std (§4.8-4.12) | voiced_ratio | |
+|---|---|---|---|
+| Vocal thật (mốc) | 2.95 | **90.1%** | |
+| `train-self` code mới (§4.9, "tốt nhất" theo std) | **3.13** | **8.5%** | ngược hẳn với std! |
+| Distill code cũ gốc, 25ep (§4.8) | 1.09 | 0% | khớp đúng khiếu nại gốc "gần như toàn nhiễu" |
+| Distill + loss mới, alpha=0.5 (job 5, §4.11) | 1.40 | **83.5%** | |
+| Distill + loss mới, alpha=0.8 (job 6) | 1.27 | **93.1%** | cao hơn cả vocal thật |
+| Distill + loss mới, dropout (job 7) | 1.35 | **82.7%** | |
+| Distill + loss mới, LR=2e-4 (job 8) | 1.25 | 0% | bất thường — LR cao có thể phá pitch dù mel std vẫn ổn |
+| Distill model to hơn, dim=384 (§4.9) | 1.06 | 34.9% | |
+
+**Đảo ngược hoàn toàn kết luận trước đó**: theo `voiced_ratio` — chỉ số gần với cảm nhận
+"có nghe ra hát không" hơn nhiều so với mel-std — **distillation (job 5/6/7) thắng áp đảo**,
+đạt 82-93% so với vocal thật 90%, trong khi `train-self` (dù mel-std "đẹp hơn") chỉ đạt 8.5%,
+gần như không có pitch ổn định nào. Diễn giải hợp lý: teacher DiffRhythm2 là model hát thật,
+đã train — dù chỉ chiếm 20-50% trọng số loss, tín hiệu của nó mang thông tin pitch/giai điệu
+thật mà student nhỏ không thể tự học chỉ từ 1575 step ground-truth thuần (khớp với việc
+`train-self`, không có teacher, gần như không có pitch nào). Mel-std cao của `train-self` hoá
+ra là **biến thiên hỗn loạn** (đúng nghĩa nhiễu), không phải **biến thiên có cấu trúc âm nhạc**
+— hai thứ trông giống nhau qua std/flatness nhưng khác hẳn khi nghe.
+
+**Điểm bất thường cần điều tra thêm**: job 8 (LR=2e-4) có mel-std bình thường (1.25, cùng tầm
+job 5-7) nhưng voiced_ratio=0% — như job distill code cũ gốc. Gợi ý LR cao hơn có thể phá vỡ
+cấu trúc pitch dù không ảnh hưởng rõ tới mel-std — chưa kết luận được, cần thêm dữ liệu (chỉ
+có 1 mẫu/checkpoint, chưa đủ để loại trừ nhiễu ngẫu nhiên giữa các lần train).
+
+**Bài học phương pháp**: metric khách quan không thay thế được việc nghe thử thật — mel-std/
+flatness là proxy hợp lý cho "có phải nhiễu trắng không" (đã đúng ở đó, xem mốc nhiễu trắng
+0.562 vs mọi checkpoint ≤0.09) nhưng **không đủ** để đánh giá "có nghe ra nhạc/hát không".
+`voiced_ratio` gần đúng hơn nhưng vẫn chỉ là proxy — đánh giá nghe thật có hệ thống (§5.2,
+MOS/CMOS) vẫn là việc chưa làm và nên làm trước khi tin tưởng hoàn toàn bất kỳ kết luận nào
+ở report này.
+
+#### Hướng dẫn nghe thử (`outputs/listening_guide/`)
+
+Toàn bộ file dưới đây sinh từ **cùng một điều kiện** (cùng câu lyric, cùng bài tham chiếu
+`-6s_eRHYqVM` làm backing/style, cùng seed=5602, cùng 16 bước sampling) để so sánh công bằng
+giữa các checkpoint — khác với các file `debug_*.wav` rải rác trước đó trong `outputs/`
+(tham số không hoàn toàn đồng nhất, nên **ưu tiên nghe bộ này**). Số liệu đo bằng
+`scripts/evaluate_generation_quality.py`, lưu đầy đủ ở `outputs/listening_guide/metrics_index.json`.
+Thứ mục không nằm trong git (`outputs/` được gitignore) — chỉ có trên máy đã chạy thực nghiệm.
+
+| File | Experiment (mục) | voiced_ratio | flatness | Mô tả |
+|---|---|---|---|---|
+| `exp00_real_vocal_reference.wav` | — (mốc so sánh) | 90.1% | 0.025 | Vocal thật, qua cùng vocoder Vocos |
+| `exp01_distill_oldcode_25ep.wav` | §4.8 — distill, code cũ | 4.5% | 0.077 | Trước khi fix loss chống collapse — gần đúng khiếu nại gốc "toàn nhiễu" |
+| `exp02_trainself_oldcode_25ep.wav` | §4.8 — self-diffusion, code cũ | 0% | 0.080 | Baseline không-teacher, code cũ |
+| `exp03_distill_biggermodel_dim384.wav` | §4.9 — model to hơn | 44.1% | 0.089 | Tăng size không giúp nhiều nhưng có pitch nhiều hơn exp01 (chưa rõ vì sao, có thể nhiễu ngẫu nhiên) |
+| `exp05_distill_newloss_alpha05.wav` | §4.11 — loss mới, alpha=0.5 | **83.3%** | 0.071 | Sau khi port loss chống collapse sang distillation |
+| `exp06_distill_newloss_alpha08.wav` | §4.12 — + alpha=0.8 | **92.7%** | 0.010 | **Gần vocal thật nhất** theo voiced_ratio |
+| `exp07_distill_newloss_dropout.wav` | §4.12 — + condition dropout | **77.0%** | 0.046 | |
+| `exp08_distill_newloss_lr2e-4.wav` | §4.12 — + LR=2e-4 | 0% | 0.091 | Bất thường — mel-std bình thường nhưng mất hết pitch, đáng điều tra |
+| `exp09_trainself_newloss.wav` | §4.9/§4.13 — self-diffusion, loss mới | 8.4% | 0.028 | Mel-std/flatness "đẹp nhất" trên giấy nhưng vẫn nghe ra nhiễu — đúng lý do có đính chính này |
+
+*(§4.10 — 75 epoch code cũ — không có file nghe vì chỉ tải log/report lúc đó, không tải
+checkpoint, để tiết kiệm băng thông.)*
+
+**Bộ phụ — test loại trừ giả thuyết sampling steps** (§4.9, dùng checkpoint `exp01`, chỉ đổi
+số bước Euler lúc sinh): `exp01_distill_oldcode_steps06/16/32/64.wav` — nghe gần như giống
+nhau dù 6 vs 64 bước, khớp kết luận "không phải do ít bước sampling" (mel std 1.09→1.11,
+không đổi đáng kể).
+
+**Gợi ý thứ tự nghe nếu muốn tiết kiệm thời gian**: `exp00` (mốc) → `exp02` hoặc `exp08`
+(ví dụ rõ nhất về "toàn nhiễu") → `exp06` (kết quả tốt nhất hiện tại) — nghe 3 file này đủ
+để cảm nhận sự khác biệt voiced_ratio đang đo được.
 
 ---
 
@@ -632,22 +714,31 @@ không chỉ nhìn riêng loss_gt — xem §5.
 - `train-distill` giờ raise ngay nếu không load được teacher/tokenizer thật, thay vì âm
   thầm hạ cấp về huấn luyện chỉ-ground-truth dưới tên `train-distill` (§4.6) — một
   `train-distill` chạy xong luôn có nghĩa là đã dùng teacher thật.
-- **Regression-to-the-mean có nguyên nhân trong literature, và fix được — nhưng chỉ fix
-  hoàn toàn cho `train-self`, không phải `train-distill`** (§4.9-§4.12). Mel-variance sụp
-  (std sinh ra chỉ ~37% so với thật) khớp đúng hiện tượng "distributional averaging" mà
-  Dieleman (2024) và các paper DMD/ADM mô tả cho MSE-based distillation. Kết hợp mel
-  normalization + loss trọng số theo năng lượng + reconstruction/delta loss + condition
-  dropout (từ một merge lớn của đồng nghiệp, ban đầu không nhằm fix vấn đề này) đưa
-  `train-self` từ std=1.09 lên **3.13** (vượt nhẹ target thật 2.95) — fix rõ ràng, đo được.
-  Port đúng công thức đó sang `train-distill` chỉ đưa std lên **1.25-1.40** dù thử cả 4 biến
-  thể (alpha_feature, condition dropout, learning rate) — khoảng cách còn lại nhiều khả năng
-  nằm ở chính tín hiệu teacher (qua adapter mel-dim), chưa kiểm chứng đầy đủ. **Với ràng buộc
-  quota hiện tại, `train-self` (rẻ hơn ~5-6 lần, và gần target thật hơn) là lựa chọn thực tế
-  hơn `train-distill` cho tới khi khoảng cách này được hiểu/fix rõ hơn** — dù `train-distill`
-  vẫn thắng rõ trên trục `loss_gt` thuần (§4.8).
+- **Regression-to-the-mean có nguyên nhân trong literature — nhưng mel-std/flatness KHÔNG
+  đủ để xác nhận đã fix, và kết luận chiến lược ban đầu dựa trên 2 chỉ số đó là SAI** (§4.9-
+  §4.13; §4.13 là đính chính sau khi nghe thử thật). Mel-variance sụp khớp hiện tượng
+  "distributional averaging" (Dieleman 2024, DMD/ADM) — kết hợp mel normalization + loss
+  trọng số theo năng lượng + reconstruction/delta + condition dropout đưa `train-self` từ
+  std=1.09 lên 3.13 (vượt target 2.95), flatness còn tốt hơn vocal thật. **Nhưng nghe thử
+  thật vẫn ra nhiễu** — đo lại bằng `voiced_ratio` (tỉ lệ khung có pitch ổn định, §4.13) lộ
+  ra: `train-self` chỉ 8.5% voiced (gần như không có nốt hát nào), còn các bản `train-distill`
+  dùng cùng công thức loss mới đạt **82-93% voiced** (khớp vocal thật 90%). **Kết luận đảo
+  ngược hoàn toàn so với bản trước**: `train-distill` (với loss mới) mới là hướng cho kết quả
+  nghe được, không phải `train-self` — dù rẻ hơn nhiều, `train-self` gần như không tạo ra
+  pitch/giai điệu thật nào ở quy mô dữ liệu/step hiện tại. Bài học: mel-std/flatness là proxy
+  tốt cho "có phải nhiễu trắng không" nhưng không đo được "có nghe ra hát không" —
+  `voiced_ratio` gần đúng hơn nhưng vẫn chỉ là proxy, chưa thay được việc nghe thật.
 
 ### 5.2 Hướng phát triển
 
+- **Ưu tiên cao nhất (sau đính chính §4.13): scale up `train-distill` với loss mới, không
+  phải `train-self`**. `voiced_ratio` cho thấy job 5-7 (distill + loss chống collapse) đạt
+  82-93% so với vocal thật 90% — đây là hướng nên đầu tư tiếp (thêm epoch, thêm dữ liệu),
+  không phải `train-self` như kết luận sai trước đó. Trước khi scale, nên: (a) verify lại
+  `voiced_ratio` trên nhiều bài hơn (hiện chỉ đo 1 bài/checkpoint, có thể là nhiễu ngẫu
+  nhiên), (b) điều tra vì sao job 8 (LR=2e-4) lại 0% voiced dù mel-std bình thường — có thể
+  LR cao phá cấu trúc pitch mà mel-std không phát hiện được, đáng cảnh báo khi chỉnh LR sau
+  này.
 - **Mở rộng dữ liệu thay vì tăng epoch**: §4.10 xác nhận tăng epoch đơn thuần (25→75, code
   cũ) không giúp `loss_gt` cải thiện thêm — chững lại thật, không phải chưa đủ thời gian.
   Hướng tiếp theo hợp lý hơn là mở rộng dữ liệu qua các script của đồng nghiệp
