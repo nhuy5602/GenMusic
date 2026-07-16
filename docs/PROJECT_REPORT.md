@@ -682,6 +682,21 @@ không đổi đáng kể).
 (ví dụ rõ nhất về "toàn nhiễu") → `exp06` (kết quả tốt nhất hiện tại) — nghe 3 file này đủ
 để cảm nhận sự khác biệt voiced_ratio đang đo được.
 
+**Xác nhận bằng nghe thật (2026-07-17)**: sự khác biệt giữa `exp06` và `exp08` nghe rõ ràng,
+khớp với voiced_ratio đo được — `exp06` là kết quả khả quan nhất hiện có. Nhưng **ngay cả
+`exp06` vẫn chưa nghe ra được lời hát hay giai điệu mạch lạc**, dù voiced_ratio (92.7%) gần
+bằng vocal thật (90.1%). Điều này lộ ra hạn chế tiếp theo của `voiced_ratio`: nó chỉ đo "có
+một pitch ổn định tại mỗi khung không", không đo (a) pitch đó có nối thành một *giai điệu*
+mạch lạc theo thời gian, hay (b) cấu trúc phoneme/formant có đủ rõ để nghe ra *từ ngữ* —
+cả hai đều là tầng cấu trúc cao hơn hẳn so với "có tonal hay không". Với quy mô hiện tại
+(250 bài, model vài triệu tham số, 1575 step), nhiều khả năng đây là **hạn chế về quy mô
+dữ liệu/step thật**, không phải một bug cụ thể còn sót — đã thử lần lượt loss formula, alpha,
+dropout, learning rate (§4.11-4.12) và không có hướng nào tạo bước nhảy lớn hơn từ pitch ổn
+định lên lời/giai điệu mạch lạc. Hướng khả thi hơn để kiểm chứng thêm (chưa làm, xem §5.2):
+mở rộng dữ liệu qua toàn bộ ~1843 bài (không chỉ 250), và/hoặc đo Word Error Rate bằng cách
+transcribe lại audio sinh ra với Whisper (đã có sẵn trong pipeline) so với lyric gốc — cho
+một con số cụ thể về mức độ "nghe ra từ" thay vì chỉ dựa cảm nhận.
+
 ---
 
 ## 5. Kết luận và hướng phát triển
