@@ -434,7 +434,18 @@ lần thử, backoff 5s) bọc quanh cả hai lệnh gọi. Test suite local cù
 `xlm-roberta-base` từ HF chậm bất thường — cùng khung giờ, cùng nguyên nhân khả năng cao
 (HF Hub chập chờn tạm thời), không phải bug riêng của project.
 
-Đang chạy lần thử thứ 3 (`ddvnam05/genmusic-distill-1784190525`) với fix trên.
+**Lần thử thứ 3** (`ddvnam05/genmusic-distill-1784190525`, với fix retry 3x5s trên) **vẫn
+fail** — log cho thấy retry có chạy (2 lần retry thấy rõ trong log) nhưng cả 3 lần thử đều
+lỗi giống nhau trong vòng ~30 giây, tức 3x5s không đủ dài. Verify trực tiếp bằng cách gọi
+`hf_hub_download` cho đúng file đó từ máy local (mạng hoàn toàn khác Kaggle): tái hiện được
+đúng lỗi **HTTP 504 (Gateway Timeout) từ chính HuggingFace Hub**, tự phục hồi sau ~130s nhờ
+retry mặc định của thư viện `huggingface_hub`. Điều này xác nhận nguyên nhân là **HF Hub
+đang suy giảm/chập chờn thật ở phía họ**, không phải lỗi mạng riêng của Kaggle hay bug của
+project. **Fix**: mở rộng `_hf_hub_download_with_retry()` lên 8 lần thử, backoff nhân đôi
+5s→60s (tổng ngân sách ~4 phút) — đủ dư địa so với ~130s phục hồi quan sát được, và không
+đáng kể so với job nhiều giờ nó bảo vệ.
+
+Đang chạy **lần thử thứ 4** (`ddvnam05/genmusic-distill-1784191327`) với retry budget mới.
 *(Kết quả sẽ cập nhật vào mục này khi job hoàn tất.)*
 
 ---
