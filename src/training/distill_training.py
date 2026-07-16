@@ -403,6 +403,12 @@ def run_distillation_training(
     for epoch in range(epochs):
         epoch_losses = trainer.train_epoch(dataloader)
         losses.extend(epoch_losses)
+        # Variable-length lyric batches make PyTorch's CUDA allocator create many
+        # differently-sized blocks; reserved-but-unallocated fragmentation grows
+        # epoch over epoch until an allocation that would otherwise fit fails.
+        # Releasing the cache back between epochs bounds that growth.
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         avg_loss = sum(d["loss"] for d in epoch_losses) / len(epoch_losses)
         avg_loss_gt = sum(d["loss_gt"] for d in epoch_losses) / len(epoch_losses)
         velocity_values = [d["loss_velocity"] for d in epoch_losses if d["loss_velocity"] is not None]

@@ -65,6 +65,11 @@ try:
     # Add source code and DiffRhythm2-main to PYTHONPATH
     os.environ["PYTHONPATH"] = str(source_root) + os.pathsep + str(source_root / "DiffRhythm2-main") + os.pathsep + os.environ.get("PYTHONPATH", "")
 
+    # Variable-length lyric batches produce many differently-sized CUDA
+    # allocations; expandable_segments reduces the fragmentation that caused
+    # a real run to OOM on epoch 3 despite epochs 1-2 fitting fine.
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
     print("--- STEP 4: Running Knowledge Distillation training ---")
     # Execute the train-distill command. By default it downloads the ASLP-lab/DiffRhythm2 teacher from HF
     subprocess.run([
