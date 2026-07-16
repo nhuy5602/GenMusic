@@ -8,7 +8,14 @@ from pathlib import Path
 # Add project root to sys.path to allow imports from src package
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from src.integrations.kaggle_auto import load_kaggle_api_tokens, resolve_kaggle_username, kaggle_cli_command, write_source_zip
+from src.integrations.kaggle_auto import (
+    kaggle_auth_available,
+    kaggle_auth_environment,
+    kaggle_cli_command,
+    load_kaggle_api_tokens,
+    resolve_kaggle_username,
+    write_source_zip,
+)
 
 def _kernel_script_content(dataset_slug: str) -> str:
     return f'''import os
@@ -71,26 +78,13 @@ def run_kaggle_teacher_test() -> None:
     project_root = Path(__file__).resolve().parents[1]
     
     # 0. Load tokens and authenticate
-    tokens = load_kaggle_api_tokens()
-    username = resolve_kaggle_username(None)
+    tokens = kaggle_auth_environment(load_kaggle_api_tokens())
+    username = resolve_kaggle_username(tokens.get("KAGGLE_USERNAME"))
     cli = kaggle_cli_command()
+    if not username or not kaggle_auth_available(tokens) or not cli:
+        raise RuntimeError("Missing KAGGLE_USERNAME or Kaggle auth (KAGGLE_API_TOKEN=KGAT_... / legacy KAGGLE_KEY)")
     
-    # Force creation of kaggle config folder under USERPROFILE/KHome
-    kaggle_home = Path.home() / ".kaggle"
-    kaggle_home.mkdir(parents=True, exist_ok=True)
-    
-    try:
-        api_token = tokens["KAGGLE_KEY"]
-        kaggle_json = kaggle_home / "kaggle.json"
-        kaggle_json.write_text(json.dumps({
-            "username": tokens["KAGGLE_USERNAME"],
-            "key": api_token
-        }, indent=2), encoding="utf-8")
-        
-        access_token_file = kaggle_home / "access_token"
-        access_token_file.write_text(api_token, encoding="utf-8")
-    except Exception as e:
-        print(f"Warning: Could not write kaggle credentials: {e}")
+    # Credentials are passed in-memory so project .env remains authoritative.
 
     run_id = f"tt-{int(time.time())}"
     job_dir = project_root / "outputs" / "kaggle_teacher_test" / run_id

@@ -242,6 +242,15 @@ def process_file(
                     "start": round(float(segment.get("start", 0.0)), 3),
                     "end": round(float(segment.get("end", 0.0)), 3),
                     "text": str(segment.get("text", "")).strip(),
+                    "words": [
+                        {
+                            "start": round(float(word.get("start", segment.get("start", 0.0))), 3),
+                            "end": round(float(word.get("end", segment.get("end", 0.0))), 3),
+                            "word": str(word.get("word", "")).strip(),
+                        }
+                        for word in segment.get("words", [])
+                        if str(word.get("word", "")).strip()
+                    ],
                 }
                 for segment in asr_res.get("segments", [])
                 if str(segment.get("text", "")).strip()

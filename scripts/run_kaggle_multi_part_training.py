@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -18,8 +17,14 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from scripts.run_kaggle_all_parts import _old_kaggle_cli, _run_cli, _wait_for_dataset
-from src.integrations.kaggle_auto import write_source_zip
-from src.integrations.kaggle_auto import load_kaggle_api_tokens, resolve_kaggle_username
+from src.integrations.kaggle_auto import (
+    kaggle_access_token,
+    kaggle_auth_available,
+    kaggle_auth_environment,
+    load_kaggle_api_tokens,
+    resolve_kaggle_username,
+    write_source_zip,
+)
 
 
 def _parse_kernel_refs(values: list[str]) -> dict[int, str]:
@@ -40,13 +45,12 @@ def _parse_kernel_refs(values: list[str]) -> dict[int, str]:
     return refs
 
 
-def _kernel_script_content(*, source_count: int, expected_records: int, epochs: int, batch_size: int) -> str:
+def _kernel_script_content(*, source_count: int, expected_records: int, epochs: int, batch_size: int, frames_per_chunk: int, dim: int, depth: int, heads: int) -> str:
     return f'''import json
 import os
 import shutil
 import subprocess
 import sys
-import torch
 import traceback
 from pathlib import Path
 
@@ -83,6 +87,59 @@ try:
     source_root = Path("/kaggle/working/GenMusic")
     shutil.copytree(source_dataset, source_root, dirs_exist_ok=True)
     os.environ["PYTHONPATH"] = str(source_root) + os.pathsep + os.environ.get("PYTHONPATH", "")
+
+    # Verify that Kaggle really attached a GPU before doing any dataset merge.
+    # A kernel can otherwise start in a CPU image even when its metadata asks
+    # for a GPU, wasting time before torch reports that CUDA is unavailable.
+    nvidia_smi = shutil.which("nvidia-smi")
+    if nvidia_smi is None:
+        message = "Kaggle did not allocate a GPU: nvidia-smi is not available"
+        Path("/kaggle/working/gpu_hardware.log").write_text(message, encoding="utf-8")
+        raise RuntimeError(message)
+    run_logged([nvidia_smi, "-L"], "gpu_hardware")
+
+    # Probe CUDA in a child interpreter so a CPU-only or incompatible torch can
+    # be replaced before this process imports torch. This is required for P100
+    # sessions when Kaggle's bundled wheel omits the GPU's sm_60 kernels.
+    gpu_probe_code = (
+        "import torch; "
+        "print('torch=' + torch.__version__); "
+        "print('cuda_available=' + repr(torch.cuda.is_available())); "
+        "assert torch.cuda.is_available(), 'torch cannot access the allocated GPU'; "
+        "print('gpu=' + torch.cuda.get_device_name(0)); "
+        "print('capability=' + repr(torch.cuda.get_device_capability())); "
+        "print('arches=' + repr(torch.cuda.get_arch_list())); "
+        "print('cuda_smoke=' + repr(torch.rand(1, device='cuda').cpu().tolist()))"
+    )
+    initial_probe = subprocess.run(
+        [sys.executable, "-c", gpu_probe_code],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    Path("/kaggle/working/initial_gpu_probe.log").write_text(
+        (initial_probe.stdout or "") + "\\n" + (initial_probe.stderr or ""),
+        encoding="utf-8",
+    )
+    if initial_probe.returncode != 0:
+        run_logged(
+            [
+                sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir",
+                "--force-reinstall", "torch==2.10.0", "torchaudio==2.10.0",
+                "--index-url", "https://download.pytorch.org/whl/cu126",
+            ],
+            "install_pytorch_cuda126",
+        )
+    else:
+        Path("/kaggle/working/install_pytorch_cuda126.log").write_text(
+            "Existing torch passed a real CUDA tensor operation.", encoding="utf-8"
+        )
+    run_logged([sys.executable, "-c", gpu_probe_code], "gpu_preflight")
+
+    # Import only after the child-process probe/repair so this interpreter does
+    # not retain a stale CPU-only torch module after the wheel is replaced.
+    import torch
 
     records_paths = sorted(
         path
@@ -204,27 +261,6 @@ try:
         json.dumps(reference_summary, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    # Kaggle can assign a P100 even when the kernel requests a T4. PyTorch's
-    # CUDA 12.8 wheel does not contain sm_60 kernels, so replace it with the
-    # official CUDA 12.6 build only when the allocated GPU is unsupported.
-    device_capability = torch.cuda.get_device_capability()
-    device_arch = "sm_%d%d" % device_capability
-    bundled_arches = set(torch.cuda.get_arch_list())
-    if device_arch not in bundled_arches:
-        run_logged(
-            [
-                sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir",
-                "--force-reinstall", "torch==2.10.0", "torchaudio==2.10.0",
-                "--index-url", "https://download.pytorch.org/whl/cu126",
-            ],
-            "install_pytorch_cuda126",
-        )
-    else:
-        Path("/kaggle/working/install_pytorch_cuda126.log").write_text(
-            "Existing torch supports " + device_arch + ": " + repr(sorted(bundled_arches)),
-            encoding="utf-8",
-        )
-
     # Kaggle's base image may provide an older Transformers release that imports
     # successfully but has incompatible Llama block APIs. Match uv.lock exactly
     # instead of treating a shallow import probe as proof of compatibility.
@@ -262,6 +298,10 @@ try:
             "--batch-size", "4",
             "--max-records", "4",
             "--device", "cuda",
+            "--frames-per-chunk", "{frames_per_chunk}",
+            "--dim", "{dim}",
+            "--depth", "{depth}",
+            "--heads", "{heads}",
         ],
         "train_preflight",
         cwd=str(source_root),
@@ -277,6 +317,10 @@ try:
             "--epochs", "{epochs}",
             "--batch-size", "{batch_size}",
             "--device", "cuda",
+            "--frames-per-chunk", "{frames_per_chunk}",
+            "--dim", "{dim}",
+            "--depth", "{depth}",
+            "--heads", "{heads}",
         ],
         "train",
         cwd=str(source_root),
@@ -291,6 +335,7 @@ try:
             "--duration", "12",
             "--checkpoint", str(checkpoint),
             "--steps", "64",
+            "--guidance-scale", "1.5",
             "--vocoder", "vocos",
             "--device", "cuda",
             "--backing-mel", str(reference_backing_path),
@@ -317,18 +362,24 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--kernel", action="append", default=[], metavar="PART=KERNEL_REF")
     parser.add_argument("--expected-records", type=int, default=1843)
-    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--frames-per-chunk", type=int, default=384)
+    parser.add_argument("--dim", type=int, default=384)
+    parser.add_argument("--depth", type=int, default=6)
+    parser.add_argument("--heads", type=int, default=6)
+    parser.add_argument("--accelerator", default="NvidiaTeslaT4")
+    parser.add_argument("--source-dataset-ref", default="")
     args = parser.parse_args()
     refs_by_part = _parse_kernel_refs(args.kernel)
 
     project_root = Path(__file__).resolve().parents[1]
-    tokens = load_kaggle_api_tokens()
+    tokens = kaggle_auth_environment(load_kaggle_api_tokens())
     username = resolve_kaggle_username(tokens.get("KAGGLE_USERNAME"))
-    if not username or not tokens.get("KAGGLE_KEY"):
-        raise RuntimeError("Missing KAGGLE_USERNAME or KAGGLE_KEY")
+    if not username or not kaggle_auth_available(tokens):
+        raise RuntimeError("Missing KAGGLE_USERNAME or Kaggle auth (KAGGLE_API_TOKEN=KGAT_... / legacy KAGGLE_KEY)")
     kaggle_env = {**os.environ, **tokens, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
-    cli = _old_kaggle_cli()
+    cli = _old_kaggle_cli(tokens)
 
     # Refuse to submit a training job against incomplete kernel outputs. Kaggle
     # kernel sources are immutable versions, not live streams from running jobs.
@@ -345,21 +396,32 @@ def main() -> None:
     source_dir.mkdir(parents=True, exist_ok=True)
     kernel_dir.mkdir(parents=True, exist_ok=True)
 
-    source_slug = f"genmusic-source-multi-train-{int(time.time())}"
-    source_ref = f"{username}/{source_slug}"
-    write_source_zip(project_root, source_dir / "genmusic_vn_source.zip")
-    (source_dir / "dataset-metadata.json").write_text(
-        json.dumps(
-            # Kaggle enforces a 50-character title limit; the unique slug/id
-            # still carries the full timestamp used to identify this run.
-            {"title": f"GenMusic multi train {int(time.time())}", "id": source_ref, "licenses": [{"name": "other"}]},
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    created = _run_cli(cli, ["datasets", "create", "-p", str(source_dir), "-r", "zip"], kaggle_env)
-    if created.returncode != 0:
-        raise RuntimeError("Could not create the training source dataset")
+    source_ref = args.source_dataset_ref.strip()
+    if source_ref:
+        # Reuse an immutable source upload when a local submit was interrupted
+        # after dataset creation but before the kernel itself was pushed.
+        if "/" not in source_ref:
+            raise ValueError("--source-dataset-ref must use OWNER/DATASET-SLUG")
+    else:
+        source_slug = f"genmusic-source-multi-train-{int(time.time())}"
+        source_ref = f"{username}/{source_slug}"
+        write_source_zip(project_root, source_dir / "genmusic_vn_source.zip")
+        (source_dir / "dataset-metadata.json").write_text(
+            json.dumps(
+                # Kaggle enforces a 50-character title limit; the unique slug/id
+                # still carries the full timestamp used to identify this run.
+                {
+                    "title": f"GenMusic multi train {int(time.time())}",
+                    "id": source_ref,
+                    "licenses": [{"name": "other"}],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        created = _run_cli(cli, ["datasets", "create", "-p", str(source_dir), "-r", "zip"], kaggle_env)
+        if created.returncode != 0:
+            raise RuntimeError("Could not create the training source dataset")
     _wait_for_dataset(cli, source_ref, kaggle_env)
 
     kernel_slug = f"genmusic-train-allparts-{int(time.time())}"
@@ -370,6 +432,10 @@ def main() -> None:
             expected_records=args.expected_records,
             epochs=args.epochs,
             batch_size=args.batch_size,
+            frames_per_chunk=args.frames_per_chunk,
+            dim=args.dim,
+            depth=args.depth,
+            heads=args.heads,
         ),
         encoding="utf-8",
     )
@@ -384,7 +450,7 @@ def main() -> None:
                 "is_private": "true",
                 "enable_gpu": "true",
                 "enable_internet": "true",
-                "machine_shape": "NvidiaTeslaT4",
+                "machine_shape": args.accelerator,
                 "dataset_sources": [source_ref],
                 "kernel_sources": [refs_by_part[part] for part in sorted(refs_by_part)],
             },
@@ -392,7 +458,12 @@ def main() -> None:
         ),
         encoding="utf-8",
     )
-    pushed = _run_cli(cli, ["kernels", "push", "-p", str(kernel_dir)], kaggle_env)
+    push_args = ["kernels", "push", "-p", str(kernel_dir)]
+    if kaggle_access_token(tokens):
+        # Kaggle CLI 1.8.4+ sends the accelerator as an explicit API override;
+        # this avoids the server silently falling back to a CPU-only session.
+        push_args.extend(["--accelerator", args.accelerator])
+    pushed = _run_cli(cli, push_args, kaggle_env)
     push_output = (pushed.stdout + pushed.stderr).lower()
     if pushed.returncode != 0 or "kernel push error" in push_output:
         raise RuntimeError("Kaggle rejected the combined training kernel")
@@ -406,6 +477,11 @@ def main() -> None:
         "expected_records": args.expected_records,
         "epochs": args.epochs,
         "batch_size": args.batch_size,
+        "frames_per_chunk": args.frames_per_chunk,
+        "dim": args.dim,
+        "depth": args.depth,
+        "heads": args.heads,
+        "accelerator": args.accelerator,
         "status": "submitted",
     }
     state_path = run_dir / "state.json"

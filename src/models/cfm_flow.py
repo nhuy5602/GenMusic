@@ -39,10 +39,18 @@ def _prepare_backing_condition(
     return cond
 
 
-def _prepare_style_condition(style_prompt: torch.Tensor | None, *, batch_size: int, device) -> torch.Tensor | None:
+def _prepare_style_condition(
+    style_prompt: torch.Tensor | None,
+    *,
+    batch_size: int,
+    style_dim: int,
+    device,
+) -> torch.Tensor:
     """Normalize a MuQ-MuLan anchor to one embedding vector per generated item."""
     if style_prompt is None:
-        return None
+        # Training applies style dropout by replacing anchors with zero vectors.
+        # Use the same representation when generation has no reference anchor.
+        return torch.zeros((batch_size, style_dim), dtype=torch.float32, device=device)
     style = torch.as_tensor(style_prompt, dtype=torch.float32, device=device)
     if style.dim() == 1:
         style = style.unsqueeze(0)
@@ -54,7 +62,16 @@ def _prepare_style_condition(style_prompt: torch.Tensor | None, *, batch_size: i
         raise ValueError(f"style_prompt batch {style.shape[0]} does not match text batch {batch_size}")
     return style
 
-def cfm_loss(model, clean_mel: torch.Tensor, backing_mel: torch.Tensor, style_anchor: torch.Tensor, texts: list[str], config: MusicDiffusionConfig) -> torch.Tensor:
+def cfm_loss(
+    model,
+    clean_mel: torch.Tensor,
+    backing_mel: torch.Tensor,
+    style_anchor: torch.Tensor,
+    texts: list[str],
+    config: MusicDiffusionConfig,
+    *,
+    condition_dropout_prob: float = 0.1,
+) -> torch.Tensor:
     """Computes the Conditional Flow Matching (CFM) velocity prediction loss."""
     device = clean_mel.device
     batch_size = clean_mel.shape[0]
@@ -73,24 +90,51 @@ def cfm_loss(model, clean_mel: torch.Tensor, backing_mel: torch.Tensor, style_an
     # 4. Target velocity field vt = x1 - x0
     target_velocity = x1 - x0
     
-    # 5. Cond is the backing track Mel spectrogram (acting as musical context)
+    # 5. Classifier-free condition dropout teaches the model all inference modes:
+    # real reference conditions, missing backing/style, and an empty lyric prompt.
     cond = backing_mel
+    normalized_style = style_anchor
+    model_texts = list(texts)
+    dropout = max(0.0, min(1.0, float(condition_dropout_prob)))
+    if dropout > 0.0:
+        backing_drop = torch.rand(batch_size, device=device) < dropout
+        style_drop = torch.rand(batch_size, device=device) < dropout
+        text_drop = torch.rand(batch_size, device=device) < dropout
+        cond = cond.masked_fill(backing_drop[:, None, None], 0.0)
+        normalized_style = normalized_style.masked_fill(style_drop[:, None], 0.0)
+        text_drop_flags = text_drop.detach().cpu().tolist()
+        model_texts = ["" if text_drop_flags[index] else text for index, text in enumerate(model_texts)]
     
     # 6. Predict velocity field using MicroDiT
     predicted_velocity = model(
         x=xt,
         cond=cond,
-        texts=texts,
+        texts=model_texts,
         timestep=t,
-        style_prompt=style_anchor
+        style_prompt=normalized_style
     )
-    
-    # Compute MSE loss
-    return F.mse_loss(predicted_velocity, target_velocity)
+
+    # Vocal-active frames carry the consonants/formants needed for intelligible
+    # words, while long silent spans otherwise dominate an unweighted mean.
+    frame_energy = clean_mel.mean(dim=-1)
+    activity_threshold = torch.quantile(frame_energy.detach(), 0.55, dim=1, keepdim=True)
+    activity = torch.sigmoid((frame_energy - activity_threshold) * 2.0)
+    frame_weights = (1.0 + 2.0 * activity).unsqueeze(-1)
+    frame_weights = frame_weights / frame_weights.mean(dim=(1, 2), keepdim=True).clamp_min(1e-6)
+    velocity_loss = ((predicted_velocity - target_velocity).square() * frame_weights).mean()
+
+    # Reconstruct x1 from the predicted velocity and explicitly preserve its
+    # time/frequency contours. These inexpensive auxiliary terms sharpen vocal
+    # onsets and formant movement without changing the CFM sampling equation.
+    predicted_clean = xt + (1.0 - t_unsqueezed) * predicted_velocity
+    reconstruction_loss = ((predicted_clean - clean_mel).abs() * frame_weights).mean()
+    time_delta_loss = F.l1_loss(torch.diff(predicted_clean, dim=1), torch.diff(clean_mel, dim=1))
+    frequency_delta_loss = F.l1_loss(torch.diff(predicted_clean, dim=2), torch.diff(clean_mel, dim=2))
+    return velocity_loss + 0.15 * reconstruction_loss + 0.05 * (time_delta_loss + frequency_delta_loss)
 
 
 @torch.no_grad()
-def sample_cfm(model, texts: list[str], frames: int, config: MusicDiffusionConfig, device, steps: int = 32, seed: int | None = None, backing_mel: torch.Tensor | None = None, style_prompt: torch.Tensor | None = None) -> torch.Tensor:
+def sample_cfm(model, texts: list[str], frames: int, config: MusicDiffusionConfig, device, steps: int = 32, seed: int | None = None, backing_mel: torch.Tensor | None = None, style_prompt: torch.Tensor | None = None, guidance_scale: float = 1.0) -> torch.Tensor:
     """Sample a vocal mel, optionally using the same backing/style inputs as training."""
     model.eval()
     
@@ -109,7 +153,12 @@ def sample_cfm(model, texts: list[str], frames: int, config: MusicDiffusionConfi
     cond = _prepare_backing_condition(
         backing_mel, batch_size=batch_size, frames=frames, config=config, device=device
     )
-    normalized_style = _prepare_style_condition(style_prompt, batch_size=batch_size, device=device)
+    normalized_style = _prepare_style_condition(
+        style_prompt,
+        batch_size=batch_size,
+        style_dim=int(getattr(model, "style_dim", 512)),
+        device=device,
+    )
     
     dt = 1.0 / steps
     
@@ -126,6 +175,15 @@ def sample_cfm(model, texts: list[str], frames: int, config: MusicDiffusionConfi
             timestep=t,
             style_prompt=normalized_style
         )
+        if guidance_scale != 1.0:
+            unconditional = model(
+                x=xt,
+                cond=cond,
+                texts=[""] * batch_size,
+                timestep=t,
+                style_prompt=normalized_style,
+            )
+            v_pred = unconditional + float(guidance_scale) * (v_pred - unconditional)
         
         # Euler update step
         xt = xt + v_pred * dt

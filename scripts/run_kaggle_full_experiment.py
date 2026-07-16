@@ -13,7 +13,14 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from src.integrations.kaggle_auto import load_kaggle_api_tokens, resolve_kaggle_username, kaggle_cli_command, write_source_zip
+from src.integrations.kaggle_auto import (
+    kaggle_auth_available,
+    kaggle_auth_environment,
+    kaggle_cli_command,
+    load_kaggle_api_tokens,
+    resolve_kaggle_username,
+    write_source_zip,
+)
 
 
 def _kernel_script_content(raw_dataset_slug: str, max_files: int, whisper_model: str, baseline_epochs: int, distill_epochs: int) -> str:
@@ -101,17 +108,13 @@ def main():
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parents[1]
-    tokens = load_kaggle_api_tokens()
+    tokens = kaggle_auth_environment(load_kaggle_api_tokens())
     username = resolve_kaggle_username(tokens.get("KAGGLE_USERNAME"))
     cli = kaggle_cli_command()
 
-    if not username or not tokens.get("KAGGLE_KEY") or not cli:
+    if not username or not kaggle_auth_available(tokens) or not cli:
         print("Error: missing Kaggle credentials.")
         return
-
-    kaggle_home = Path.home() / ".kaggle"
-    kaggle_home.mkdir(parents=True, exist_ok=True)
-    (kaggle_home / "kaggle.json").write_text(json.dumps({"username": username, "key": tokens["KAGGLE_KEY"]}, indent=2), encoding="utf-8")
 
     raw_dataset_ref = tokens.get("KAGGLE_RAW_DATASET_REF", "sonlest/vietnamese-music-dataset-version3-part6")
     raw_dataset_slug = raw_dataset_ref.split("/")[-1]

@@ -11,6 +11,7 @@ from src.data.vietnamese_text import normalize_vietnamese_lyrics
 from src.evaluation.jam_metrics import objective_metrics, write_metric_report
 from src.evaluation.jam_plots import write_jam_plots
 from src.evaluation.project_metrics import build_project_report
+from src.integrations.colab_auto import DEFAULT_COLAB_NOTEBOOK_URL, write_colab_notebook
 from src.integrations.kaggle_auto import DEFAULT_MODEL, KaggleJobConfig, refresh_kaggle_job, run_local_generation, submit_text_to_music_job, upload_dataset_to_kaggle
 from src.training.self_diffusion import create_random_dataset, train_model, validate_dataset
 
@@ -37,6 +38,14 @@ def build_parser() -> argparse.ArgumentParser:
     refresh = sub.add_parser("refresh-kaggle", help="Cập nhật trạng thái và tải output Kaggle.")
     refresh.add_argument("--state", required=True)
 
+    colab = sub.add_parser("prepare-colab", help="Create a Google Colab notebook alongside Kaggle.")
+    colab.add_argument("--out", default="colab/GenMusic_Full_Training.ipynb")
+    colab.add_argument("--colab-url", default=DEFAULT_COLAB_NOTEBOOK_URL)
+    colab.add_argument("--repo-ref", default="master")
+    colab.add_argument("--epochs", type=int, default=40)
+    colab.add_argument("--batch-size", type=int, default=4)
+    colab.add_argument("--cache-data-on-drive", action="store_true")
+
     local = sub.add_parser("generate-local", help="Sinh WAV/MP3 bằng model tự code tại local.")
     local.add_argument("--text", required=True)
     local.add_argument("--backing-mel", default=None, help="Backing mel condition saved by preprocessing.")
@@ -45,6 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     local.add_argument("--duration", type=float, default=4.0)
     local.add_argument("--checkpoint", default=None)
     local.add_argument("--steps", type=int, default=6)
+    local.add_argument("--guidance-scale", type=float, default=1.0, help="Classifier-free lyric guidance; 1.5 is recommended for new checkpoints.")
     local.add_argument("--seed", type=int, default=5602)
     local.add_argument("--device", default=None)
     local.add_argument("--out", required=True)
@@ -88,11 +98,14 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--learning-rate", type=float, default=2e-4)
     train.add_argument("--device", default=None)
     train.add_argument("--max-records", type=int, default=None)
+    train.add_argument("--resume", action="store_true")
+    train.add_argument("--save-every-epoch", action="store_true")
     train.add_argument("--roberta-model", default="xlm-roberta-base", help="Tên model RoBERTa dùng làm Text Encoder.")
     train.add_argument("--dim", type=int, default=256, help="Hidden dim của MicroDiT.")
     train.add_argument("--depth", type=int, default=4, help="Số lớp transformer block.")
     train.add_argument("--heads", type=int, default=4, help="Số attention head.")
     train.add_argument("--ff-mult", type=int, default=4, help="Hệ số feed-forward.")
+    train.add_argument("--frames-per-chunk", type=int, default=None, help="Override độ dài crop train; 384 tương đương khoảng bốn giây ở 24 kHz.")
 
     distill = sub.add_parser("train-distill", help="Huấn luyện chưng cất tri thức từ DiffRhythm gốc sang MicroDiT.")
     distill.add_argument("--dataset", required=True)
@@ -171,6 +184,15 @@ def main(argv: list[str] | None = None) -> int:
             genre=args.genre,
             config=KaggleJobConfig(model=args.model, username=args.username, machine_shape=args.machine_shape, submit=not args.no_submit, wait=args.wait, poll_seconds=args.poll_seconds, timeout_seconds=args.timeout_seconds, training_dataset_ref=args.dataset_ref),
         )
+    elif args.command == "prepare-colab":
+        report = write_colab_notebook(
+            args.out,
+            colab_url=args.colab_url,
+            repo_ref=args.repo_ref,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            cache_data_on_drive=args.cache_data_on_drive,
+        )
     elif args.command == "refresh-kaggle":
         report = refresh_kaggle_job(args.state)
     elif args.command == "generate-local":
@@ -181,6 +203,7 @@ def main(argv: list[str] | None = None) -> int:
             duration_seconds=args.duration,
             checkpoint=args.checkpoint,
             steps=args.steps,
+            guidance_scale=args.guidance_scale,
             seed=args.seed,
             device=args.device,
             vocoder=args.vocoder,
@@ -203,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
         upload_report = upload_dataset_to_kaggle(args.out, username=args.username, dataset_ref=args.dataset_ref, timeout_seconds=args.timeout_seconds)
         report = {"status": upload_report["status"], "dataset_report": dataset_report, "upload": upload_report}
     elif args.command == "train-self":
-        report = train_model(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, roberta_model=args.roberta_model, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult)
+        report = train_model(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, roberta_model=args.roberta_model, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, frames_per_chunk=args.frames_per_chunk, resume=args.resume, save_every_epoch=args.save_every_epoch)
     elif args.command == "train-distill":
         from src.training.distill_training import run_distillation_training
         report = run_distillation_training(args.dataset, args.student_checkpoint, args.teacher_checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, alpha_feature=args.alpha_feature, repo_id=args.repo_id, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult)

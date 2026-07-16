@@ -6,11 +6,11 @@ import json
 import math
 import random
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
-from ..models.text_to_music_diffusion import MusicDiffusionConfig, structured_random_mel
+from ..models.text_to_music_diffusion import MusicDiffusionConfig, normalize_mel, structured_random_mel
 
 STYLE_EMBED_DIM = 512  # matches MuQ-MuLan / DiffRhythm2 teacher's cond_dim
 
@@ -31,13 +31,74 @@ DEFAULT_TEXTS = [
     ("Cùng nhau đi tới nơi ngày mai đang gọi.", "hopeful indie pop, steady rhythm, warm synths"),
 ]
 
+
+def _is_usable_training_record(record: dict[str, Any]) -> bool:
+    """Reject known silent Demucs failures and placeholder transcripts."""
+    if record.get("has_vocal") is False or record.get("vocal_source") == "silence_fallback":
+        return False
+    text = str(record.get("text", "")).strip()
+    if not text or text.casefold().startswith("vietnamese music track "):
+        return False
+    return True
+
+
+def _filter_training_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [record for record in records if _is_usable_training_record(record)]
+
+
+def lyric_text_for_window(
+    full_text: str,
+    segments: list[dict[str, Any]],
+    start_seconds: float,
+    end_seconds: float,
+) -> str:
+    """Select timestamp-aligned words, approximating word times for old records."""
+    if not segments:
+        return str(full_text).strip()
+
+    selected: list[str] = []
+    for segment in segments:
+        segment_start = float(segment.get("start", 0.0))
+        segment_end = max(segment_start, float(segment.get("end", segment_start)))
+        timestamped_words = segment.get("words") or []
+        if timestamped_words:
+            word_spans = [
+                (
+                    float(word.get("start", segment_start)),
+                    float(word.get("end", segment_end)),
+                    str(word.get("word") or word.get("text") or "").strip(),
+                )
+                for word in timestamped_words
+            ]
+        else:
+            words = str(segment.get("text", "")).strip().split()
+            duration = max(1e-3, segment_end - segment_start)
+            word_spans = [
+                (
+                    segment_start + duration * index / max(1, len(words)),
+                    segment_start + duration * (index + 1) / max(1, len(words)),
+                    word,
+                )
+                for index, word in enumerate(words)
+            ]
+        selected.extend(
+            word
+            for word_start, word_end, word in word_spans
+            if word and word_end > start_seconds and word_start < end_seconds
+        )
+    # An empty result is intentional: this crop lies in a non-vocal interval,
+    # so conditioning it on the full-song transcript would teach false alignment.
+    return " ".join(selected).strip()
+
 class MusicDiffusionDataset:
     """PyTorch Dataset mapping structured Mel-spectrograms and text/style prompts."""
     def __init__(self, dataset_dir: str | Path, config: MusicDiffusionConfig, max_records: int | None = None, additional_records: list[dict[str, Any]] | None = None):
         _, _, Dataset, _ = _torch()
         self.root = Path(dataset_dir)
         self.config = config
-        records = _read_records(self.root)
+        all_records = _read_records(self.root)
+        records = _filter_training_records(all_records)
+        self.excluded_record_count = len(all_records) - len(records)
         self.records = records[:max_records] if max_records is not None else records
         if additional_records:
             self.records.extend(additional_records)
@@ -51,7 +112,8 @@ class MusicDiffusionDataset:
         
         # Load vocal Mel (target x1) and backing Mel (condition cond)
         # Fallback to single mel if separated paths are not present in dataset
-        if "vocal_mel_path" in record and "backing_mel_path" in record:
+        has_backing_condition = "vocal_mel_path" in record and "backing_mel_path" in record
+        if has_backing_condition:
             vocal_path = self.root / record["vocal_mel_path"]
             backing_path = self.root / record["backing_mel_path"]
             vocal_mel = _load_mel(vocal_path)
@@ -89,28 +151,54 @@ class MusicDiffusionDataset:
         # when word/segment-level timestamps are available -- otherwise every crop of a
         # long song would be conditioned on the full-song transcript, most of which the
         # cropped audio doesn't contain.
-        lyric_text = record["text"]
+        vocal_mel = normalize_mel(vocal_mel, self.config)
+        backing_mel = normalize_mel(backing_mel, self.config) if has_backing_condition else torch.zeros_like(vocal_mel)
+
+        lyric_text = str(record["text"])
         segments = record.get("segments") or []
         if segments:
             crop_start_seconds = crop_start * self.config.hop_length / self.config.sample_rate
             crop_end_seconds = crop_start_seconds + self.config.frames_per_chunk * self.config.hop_length / self.config.sample_rate
-            local_segments = [
-                segment["text"]
-                for segment in segments
-                if float(segment.get("end", 0.0)) > crop_start_seconds and float(segment.get("start", 0.0)) < crop_end_seconds
-            ]
-            if local_segments:
-                lyric_text = " ".join(local_segments)
-        text = f"{record['style']}. {lyric_text}"
-        return {"vocal_mel": vocal_mel, "backing_mel": backing_mel, "style_anchor": style_anchor, "text": text}
+            lyric_text = lyric_text_for_window(lyric_text, segments, crop_start_seconds, crop_end_seconds)
+        return {"vocal_mel": vocal_mel, "backing_mel": backing_mel, "style_anchor": style_anchor, "text": lyric_text}
 
 class DiffusionTrainer:
     """Trainer orchestrating optimization steps and gradient descent for the diffusion denoiser."""
-    def __init__(self, model, config: MusicDiffusionConfig, optimizer, device: str = "cpu"):
+    def __init__(self, model, config: MusicDiffusionConfig, optimizer, device: str = "cpu", scheduler=None, ema_decay: float = 0.999):
+        torch, _, _, _ = _torch()
         self.model = model
         self.config = config
         self.optimizer = optimizer
         self.device = device
+        self.scheduler = scheduler
+        self.ema_decay = float(ema_decay)
+        self.use_amp = str(device).startswith("cuda")
+        self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
+        self.ema_parameters = {
+            name: parameter.detach().clone()
+            for name, parameter in model.named_parameters()
+            if parameter.requires_grad
+        }
+
+    def _update_ema(self) -> None:
+        torch, _, _, _ = _torch()
+        with torch.no_grad():
+            for name, parameter in self.model.named_parameters():
+                if name in self.ema_parameters:
+                    self.ema_parameters[name].lerp_(parameter.detach(), 1.0 - self.ema_decay)
+
+    def apply_ema_weights(self) -> None:
+        torch, _, _, _ = _torch()
+        with torch.no_grad():
+            for name, parameter in self.model.named_parameters():
+                if name in self.ema_parameters:
+                    parameter.copy_(self.ema_parameters[name])
+
+    def load_ema_state(self, state: dict[str, Any]) -> None:
+        """Restore EMA tensors when a preempted training session resumes."""
+        for name, value in state.items():
+            if name in self.ema_parameters:
+                self.ema_parameters[name] = value.detach().to(self.device).clone()
 
     def train_epoch(self, dataloader) -> list[float]:
         torch, _, _, _ = _torch()
@@ -129,11 +217,17 @@ class DiffusionTrainer:
             vocal_mel_t = vocal_mel.transpose(1, 2)
             backing_mel_t = backing_mel.transpose(1, 2)
             from ..models.cfm_flow import cfm_loss
-            loss = cfm_loss(self.model, vocal_mel_t, backing_mel_t, style_anchor, texts, self.config)
+            with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=self.use_amp):
+                loss = cfm_loss(self.model, vocal_mel_t, backing_mel_t, style_anchor, texts, self.config)
 
-            loss.backward()
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(list(self.model.parameters()), 1.0)
-            self.optimizer.step()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            if self.scheduler is not None:
+                self.scheduler.step()
+            self._update_ema()
             # "loss_gt" mirrors distill_training's field name (there is no teacher
             # here, so loss == loss_gt) so baseline and distilled runs can be
             # compared on the same axis -- see docs/experiments/*.md.
@@ -263,8 +357,62 @@ def validate_dataset(dataset_dir: str | Path, *, report_path: str | Path | None 
     report_destination.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report
 
-def train_model(dataset_dir: str | Path, checkpoint_path: str | Path, *, epochs: int = 1, batch_size: int = 4, learning_rate: float = 2e-4, device: str | None = None, max_records: int | None = None, additional_records: list[dict[str, Any]] | None = None, roberta_model: str = "xlm-roberta-base", dim: int = 256, depth: int = 4, heads: int = 4, ff_mult: int = 4) -> dict[str, Any]:
-    torch, _, DatasetClass, DataLoaderClass = _torch()
+
+def estimate_vocal_mel_stats(
+    dataset_dir: str | Path,
+    records: list[dict[str, Any]],
+    *,
+    max_records: int = 256,
+    max_frames_per_record: int = 2048,
+) -> tuple[float, float]:
+    """Estimate stable scalar target statistics from an even record sample."""
+    torch, _, _, _ = _torch()
+    root = Path(dataset_dir)
+    if not records:
+        raise ValueError("Dataset has no usable vocal records.")
+    sample_count = min(len(records), max(1, int(max_records)))
+    if sample_count == 1:
+        sampled = [records[0]]
+    else:
+        sampled = [records[round(index * (len(records) - 1) / (sample_count - 1))] for index in range(sample_count)]
+    value_sum = 0.0
+    square_sum = 0.0
+    value_count = 0
+    for record in sampled:
+        path = _resolve_record_path(root, record["vocal_mel_path"]) if record.get("vocal_mel_path") else _record_path(root, record)
+        mel = _load_mel(path).float()
+        if mel.shape[1] > max_frames_per_record:
+            indices = torch.linspace(0, mel.shape[1] - 1, max_frames_per_record).long()
+            mel = mel.index_select(1, indices)
+        values = mel.double()
+        value_sum += float(values.sum())
+        square_sum += float(values.square().sum())
+        value_count += values.numel()
+    mean = value_sum / max(1, value_count)
+    variance = max(1e-4, square_sum / max(1, value_count) - mean * mean)
+    return float(mean), float(math.sqrt(variance))
+
+
+def train_model(
+    dataset_dir: str | Path,
+    checkpoint_path: str | Path,
+    *,
+    epochs: int = 1,
+    batch_size: int = 4,
+    learning_rate: float = 2e-4,
+    device: str | None = None,
+    max_records: int | None = None,
+    additional_records: list[dict[str, Any]] | None = None,
+    roberta_model: str = "xlm-roberta-base",
+    dim: int = 256,
+    depth: int = 4,
+    heads: int = 4,
+    ff_mult: int = 4,
+    frames_per_chunk: int | None = None,
+    resume: bool = False,
+    save_every_epoch: bool = False,
+) -> dict[str, Any]:
+    torch, _, _, DataLoaderClass = _torch()
 
     root = Path(dataset_dir)
     checkpoint = Path(checkpoint_path)
@@ -273,16 +421,69 @@ def train_model(dataset_dir: str | Path, checkpoint_path: str | Path, *, epochs:
         raise ValueError("Dataset không hợp lệ; xem validation_report.json.")
 
     config = MusicDiffusionConfig(**json.loads((root / "config.json").read_text(encoding="utf-8")))
+    if frames_per_chunk is not None:
+        frames = max(16, int(frames_per_chunk))
+        config = replace(
+            config,
+            frames_per_chunk=frames,
+            chunk_seconds=frames * config.hop_length / config.sample_rate,
+        )
     selected_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    arch = {"dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult}
+    resumed_payload: dict[str, Any] = {}
+    start_epoch = 0
 
-    from ..models.dit_transformer import MicroDiT
-    model = MicroDiT(config, roberta_model=roberta_model, dim=dim, depth=depth, heads=heads, ff_mult=ff_mult).to(selected_device)
-    # Train only parameters that requires_grad (i.e. exclude frozen RoBERTa weights)
-    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    if resume and checkpoint.is_file():
+        from ..models.text_to_music_diffusion import load_checkpoint
+
+        model, saved_config, resumed_payload = load_checkpoint(
+            checkpoint,
+            device=selected_device,
+            roberta_model=roberta_model,
+            use_ema=False,
+        )
+        saved_arch = resumed_payload.get("arch") or {}
+        mismatched_arch = {
+            key: (saved_arch.get(key), value)
+            for key, value in arch.items()
+            if int(saved_arch.get(key, value)) != int(value)
+        }
+        if mismatched_arch:
+            raise ValueError(f"Resume checkpoint architecture mismatch: {mismatched_arch}")
+        if frames_per_chunk is not None and saved_config.frames_per_chunk != config.frames_per_chunk:
+            raise ValueError(
+                "Resume checkpoint frames_per_chunk does not match the requested value: "
+                f"{saved_config.frames_per_chunk} != {config.frames_per_chunk}"
+            )
+        config = saved_config
+        start_epoch = max(0, int(resumed_payload.get("epoch", 0)))
+    else:
+        usable_records = _filter_training_records(_read_records(root))
+        records_for_stats = usable_records[:max_records] if max_records is not None else usable_records
+        mel_mean, mel_std = estimate_vocal_mel_stats(root, records_for_stats)
+        config = replace(config, mel_mean=mel_mean, mel_std=mel_std)
+        from ..models.dit_transformer import MicroDiT
+
+        model = MicroDiT(
+            config,
+            roberta_model=roberta_model,
+            dim=dim,
+            depth=depth,
+            heads=heads,
+            ff_mult=ff_mult,
+        ).to(selected_device)
+
+    # Train only parameters that require gradients (the frozen RoBERTa weights
+    # are re-downloaded on load and intentionally omitted from checkpoints).
+    trainable_params = [parameter for parameter in model.parameters() if parameter.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=learning_rate)
+    if resumed_payload.get("optimizer"):
+        optimizer.load_state_dict(resumed_payload["optimizer"])
 
     # Instantiate custom Dataset and DataLoader
     dataset = MusicDiffusionDataset(root, config, max_records=max_records, additional_records=additional_records)
+    if not dataset.records:
+        raise ValueError("Dataset has no usable records after vocal/transcript quality filtering.")
     
     def collate_fn(batch):
         vocal_mels = torch.stack([item["vocal_mel"] for item in batch])
@@ -297,24 +498,74 @@ def train_model(dataset_dir: str | Path, checkpoint_path: str | Path, *, epochs:
         shuffle=True, 
         collate_fn=collate_fn
     )
-    
-    trainer = DiffusionTrainer(model, config, optimizer, device=selected_device)
+
+    epoch_count = max(1, int(epochs))
+    total_steps = max(1, epoch_count * len(dataloader))
+    warmup_steps = min(max(1, int(total_steps * 0.05)), max(1, total_steps - 1))
+
+    def learning_rate_multiplier(step: int) -> float:
+        if step < warmup_steps:
+            return (step + 1) / warmup_steps
+        progress = min(1.0, (step - warmup_steps) / max(1, total_steps - warmup_steps))
+        return 0.1 + 0.9 * 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, learning_rate_multiplier)
+    trainer = DiffusionTrainer(model, config, optimizer, device=selected_device, scheduler=scheduler)
+    if resumed_payload.get("scheduler"):
+        scheduler.load_state_dict(resumed_payload["scheduler"])
+    if resumed_payload.get("ema"):
+        trainer.load_ema_state(resumed_payload["ema"])
+
+    if start_epoch >= epoch_count:
+        return {
+            "status": "complete",
+            "backend": "genmusic-vn-self-diffusion",
+            "dataset": str(root.resolve()),
+            "checkpoint": str(checkpoint.resolve()),
+            "device": selected_device,
+            "epochs": epoch_count,
+            "resumed_from_epoch": start_epoch,
+            "message": "Checkpoint already reached the requested epoch count.",
+        }
     
     started = time.perf_counter()
     losses = []
     loss_curve = []
 
-    for epoch in range(max(1, int(epochs))):
+    from ..models.text_to_music_diffusion import save_checkpoint
+
+    for epoch in range(start_epoch, epoch_count):
         epoch_losses = trainer.train_epoch(dataloader)
         losses.extend(epoch_losses)
         avg_loss = sum(d["loss"] for d in epoch_losses) / len(epoch_losses)
         loss_curve.append({"epoch": epoch + 1, "loss": avg_loss, "loss_gt": avg_loss, "loss_velocity": None})
+        if save_every_epoch:
+            # Colab sessions are preemptible. Persist raw weights, optimizer,
+            # scheduler and EMA after each epoch so the next session can resume.
+            save_checkpoint(
+                model,
+                checkpoint,
+                config,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                ema_state=trainer.ema_parameters,
+                epoch=epoch + 1,
+                loss=avg_loss,
+                arch=arch,
+            )
 
     final_loss = sum(d["loss"] for d in losses[-min(10, len(losses)):]) / max(1, min(10, len(losses)))
-    from ..models.text_to_music_diffusion import save_checkpoint
-
-    arch = {"dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult}
-    save_checkpoint(model, checkpoint, config, optimizer=optimizer, epoch=max(1, int(epochs)), loss=final_loss, arch=arch)
-    report = {"status": "complete", "backend": "genmusic-vn-self-diffusion", "dataset": str(root.resolve()), "checkpoint": str(checkpoint.resolve()), "device": selected_device, "epochs": max(1, int(epochs)), "batch_size": max(1, int(batch_size)), "additional_record_count": len(additional_records or []), "step_count": len(losses), "final_loss": round(final_loss, 6), "loss_curve": loss_curve, "elapsed_seconds": round(time.perf_counter() - started, 3), "dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult}
+    save_checkpoint(
+        model,
+        checkpoint,
+        config,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        ema_state=trainer.ema_parameters,
+        epoch=epoch_count,
+        loss=final_loss,
+        arch=arch,
+    )
+    report = {"status": "complete", "backend": "genmusic-vn-self-diffusion", "dataset": str(root.resolve()), "checkpoint": str(checkpoint.resolve()), "device": selected_device, "epochs": epoch_count, "resumed_from_epoch": start_epoch, "batch_size": max(1, int(batch_size)), "record_count": len(dataset.records), "excluded_record_count": dataset.excluded_record_count, "additional_record_count": len(additional_records or []), "step_count": len(losses), "final_loss": round(final_loss, 6), "loss_curve": loss_curve, "elapsed_seconds": round(time.perf_counter() - started, 3), "dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult, "frames_per_chunk": config.frames_per_chunk, "chunk_seconds": config.chunk_seconds, "mel_mean": round(config.mel_mean, 6), "mel_std": round(config.mel_std, 6), "warmup_steps": warmup_steps, "ema_decay": trainer.ema_decay, "mixed_precision": trainer.use_amp}
     (checkpoint.parent / "training_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report

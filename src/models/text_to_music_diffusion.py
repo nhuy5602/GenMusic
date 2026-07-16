@@ -26,8 +26,16 @@ class MusicDiffusionConfig:
     n_mels: int = 100
     n_fft: int = 1024
     hop_length: int = 256
-    frames_per_chunk: int = 128
-    chunk_seconds: float = 4.0
+    # 384 frames is 4.096 seconds at 24 kHz / hop 256. Keeping train and
+    # generation windows at the same scale avoids asking the transformer to
+    # extrapolate from the old 1.37-second crops to four-second phrases.
+    frames_per_chunk: int = 384
+    chunk_seconds: float = 4.096
+    # Training estimates these scalar statistics from vocal targets and stores
+    # them in the checkpoint. Old checkpoints default to identity normalization.
+    mel_mean: float = 0.0
+    mel_std: float = 1.0
+    mel_clip: float = 6.0
 
 
 def _config_from_dict(data: dict) -> "MusicDiffusionConfig":
@@ -51,6 +59,19 @@ def _torch():
 
 
 VOCOS_MEL_CLIP = 1e-7
+
+
+def normalize_mel(mel, config: "MusicDiffusionConfig"):
+    """Map raw Vocos log-mels into the approximately N(0, 1) flow domain."""
+    scale = max(1e-4, float(config.mel_std))
+    normalized = (mel - float(config.mel_mean)) / scale
+    return normalized.clamp(-float(config.mel_clip), float(config.mel_clip))
+
+
+def denormalize_mel(mel, config: "MusicDiffusionConfig"):
+    """Restore model-space mels to the exact log-mel scale expected by Vocos."""
+    clipped = mel.clamp(-float(config.mel_clip), float(config.mel_clip))
+    return clipped * max(1e-4, float(config.mel_std)) + float(config.mel_mean)
 
 
 def compute_mel_spectrogram(waveform, config: "MusicDiffusionConfig"):
@@ -175,7 +196,18 @@ def _write_wav(audio: np.ndarray, destination: Path, sample_rate: int) -> Path:
     return destination.resolve()
 
 
-def save_checkpoint(model, path: str | Path, config: MusicDiffusionConfig, *, optimizer=None, epoch: int = 0, loss: float | None = None, arch: dict[str, int] | None = None) -> Path:
+def save_checkpoint(
+    model,
+    path: str | Path,
+    config: MusicDiffusionConfig,
+    *,
+    optimizer=None,
+    scheduler=None,
+    ema_state: dict[str, Any] | None = None,
+    epoch: int = 0,
+    loss: float | None = None,
+    arch: dict[str, int] | None = None,
+) -> Path:
     torch, _ = _torch()
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -187,11 +219,26 @@ def save_checkpoint(model, path: str | Path, config: MusicDiffusionConfig, *, op
     payload = {"config": asdict(config), "model": model_state, "epoch": epoch, "loss": loss, "arch": arch or {}}
     if optimizer is not None:
         payload["optimizer"] = optimizer.state_dict()
+    if scheduler is not None:
+        payload["scheduler"] = scheduler.state_dict()
+    if ema_state is not None:
+        # Keep raw trainable weights in `model` for exact resume, and store EMA
+        # separately so inference can use the smoother weights by default.
+        payload["ema"] = {
+            name: value.detach().cpu()
+            for name, value in ema_state.items()
+        }
     torch.save(payload, destination)
     return destination.resolve()
 
 
-def load_checkpoint(path: str | Path, *, device="cpu", roberta_model: str = "xlm-roberta-base") -> tuple[Any, MusicDiffusionConfig, dict[str, Any]]:
+def load_checkpoint(
+    path: str | Path,
+    *,
+    device="cpu",
+    roberta_model: str = "xlm-roberta-base",
+    use_ema: bool = True,
+) -> tuple[Any, MusicDiffusionConfig, dict[str, Any]]:
     torch, _ = _torch()
     from .dit_transformer import MicroDiT
 
@@ -214,6 +261,8 @@ def load_checkpoint(path: str | Path, *, device="cpu", roberta_model: str = "xlm
     # weights (see save_checkpoint) -- those are already loaded fresh from
     # HuggingFace by the model constructor above.
     model.load_state_dict(payload["model"], strict=False)
+    if use_ema and payload.get("ema"):
+        model.load_state_dict(payload["ema"], strict=False)
     return model, config, payload
 
 
@@ -227,6 +276,7 @@ def generate_audio(
     config: MusicDiffusionConfig,
     device="cpu",
     steps: int = 6,
+    guidance_scale: float = 1.0,
     seed: int = 5602,
     mel_output: str | Path | None = None,
     vocoder_type: str = "vocos",
@@ -268,6 +318,7 @@ def generate_audio(
                 )
         else:
             raise ValueError(f"backing_mel must have 2 or 3 dimensions, got {tuple(normalized_backing.shape)}")
+        normalized_backing = normalize_mel(normalized_backing, config)
 
     if style_anchor is not None and style_prompt is not None:
         raise ValueError("Pass only one of style_anchor or style_prompt")
@@ -288,14 +339,18 @@ def generate_audio(
     lyric_timing = build_lyric_timing(text, duration_seconds)
     section_number = 0
     backing_frame_cursor = 0
+    # Derive the generation span from the exact training tensor length. This
+    # also fixes old checkpoints whose saved frames_per_chunk=128 conflicted
+    # with the separately hardcoded chunk_seconds=4.0.
+    training_chunk_seconds = config.frames_per_chunk * config.hop_length / config.sample_rate
     for section in lyric_timing:
-        section_count = max(1, math.ceil(section["duration_seconds"] / config.chunk_seconds))
+        section_count = max(1, math.ceil(section["duration_seconds"] / training_chunk_seconds))
         chunk_duration = section["duration_seconds"] / section_count
         for chunk_index in range(section_count):
-            chunk_text = (
-                f"{style}. lyric line {section['line_index'] + 1} of {len(lyric_timing)}: {section['line']}. "
-                f"sing naturally across {chunk_duration:.2f} seconds; keep space between lyric lines."
-            )
+            # Training now receives lyrics only. Style is already represented
+            # by backing audio and MuQ, so injecting English instructions here
+            # would shift the lyric tokens away from the frames they describe.
+            chunk_text = section["line"]
             chunk_frames = max(8, int(chunk_duration * config.sample_rate / config.hop_length))
             from .cfm_flow import sample_cfm
 
@@ -322,6 +377,7 @@ def generate_audio(
                 config=config,
                 device=device,
                 steps=steps,
+                guidance_scale=guidance_scale,
                 seed=seed + section_number,
                 backing_mel=chunk_backing,
                 style_prompt=normalized_style,
@@ -332,6 +388,7 @@ def generate_audio(
     mel = torch.cat(rendered, dim=1)
     target_frames = max(1, int(float(duration_seconds) * config.sample_rate / config.hop_length))
     mel = mel[:, :target_frames]
+    mel = denormalize_mel(mel, config)
     if mel_output:
         mel_path = Path(mel_output)
         mel_path.parent.mkdir(parents=True, exist_ok=True)
@@ -344,6 +401,7 @@ def generate_audio(
         "mel_path": str(Path(mel_output).resolve()) if mel_output else None,
         "duration_seconds": float(duration_seconds),
         "diffusion_steps": steps,
+        "guidance_scale": float(guidance_scale),
         "seed": seed,
         "lyric_timing": lyric_timing,
         "backing_conditioned": normalized_backing is not None,

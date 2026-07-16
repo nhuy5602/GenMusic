@@ -9,7 +9,14 @@ from pathlib import Path
 # Add project root to sys.path to allow imports from src package
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from src.integrations.kaggle_auto import load_kaggle_api_tokens, resolve_kaggle_username, kaggle_cli_command, write_source_zip
+from src.integrations.kaggle_auto import (
+    kaggle_auth_available,
+    kaggle_auth_environment,
+    kaggle_cli_command,
+    load_kaggle_api_tokens,
+    resolve_kaggle_username,
+    write_source_zip,
+)
 
 def _kernel_script_content(
     raw_dataset_slug: str,
@@ -296,6 +303,9 @@ except Exception as e:
     print("Error occurred during preprocessing:")
     print(tb)
     Path("/kaggle/working/error.txt").write_text(tb, encoding="utf-8")
+    # Propagate the failure so Kaggle reports ERROR instead of a misleading
+    # COMPLETE kernel whose output contains no processed records.
+    raise
 '''
 
 def main():
@@ -309,34 +319,15 @@ def main():
 
     # Resolved parent because it is located inside the scripts/ directory
     project_root = Path(__file__).resolve().parents[1]
-    tokens = load_kaggle_api_tokens()
-    kaggle_config = Path.home() / ".kaggle" / "kaggle.json"
-    if kaggle_config.exists():
-        try:
-            config = json.loads(kaggle_config.read_text(encoding="utf-8"))
-            tokens.setdefault("KAGGLE_USERNAME", str(config.get("username", "")))
-            tokens.setdefault("KAGGLE_KEY", str(config.get("key", "")))
-        except (OSError, json.JSONDecodeError):
-            pass
+    tokens = kaggle_auth_environment(load_kaggle_api_tokens())
     username = resolve_kaggle_username(tokens.get("KAGGLE_USERNAME"))
     cli = kaggle_cli_command()
 
-    if not username or not tokens.get("KAGGLE_KEY") or not cli:
+    if not username or not kaggle_auth_available(tokens) or not cli:
         print("❌ Error: Missing Kaggle credentials.")
         return
 
-    # Write ~/.kaggle credentials
-    try:
-        kaggle_home = Path.home() / ".kaggle"
-        kaggle_home.mkdir(exist_ok=True)
-        
-        kaggle_json = kaggle_home / "kaggle.json"
-        kaggle_json.write_text(json.dumps({"username": username, "key": tokens["KAGGLE_KEY"]}, indent=2), encoding="utf-8")
-        
-        access_token_file = kaggle_home / "access_token"
-        access_token_file.write_text(tokens["KAGGLE_KEY"], encoding="utf-8")
-    except Exception as e:
-        print(f"⚠️ Warning: {e}")
+    # Credentials are passed in-memory so project .env remains authoritative.
 
     raw_dataset_ref = os.getenv("KAGGLE_RAW_DATASET_REF") or tokens.get("KAGGLE_RAW_DATASET_REF", "sonlest/vietnamese-music-dataset-version3-part6")
     raw_dataset_slug = raw_dataset_ref.split("/")[-1]
@@ -371,7 +362,7 @@ def main():
         "licenses": [{"name": "other"}]
     }, indent=2))
 
-    print(f"📤 Uploading source code to Kaggle...")
+    print("📤 Uploading source code to Kaggle...")
     subprocess.run(cli + ["datasets", "create", "-p", str(dataset_dir), "-r", "zip"], env={**os.environ, **tokens}, check=True)
 
     # Wait until dataset is ready
@@ -405,7 +396,7 @@ def main():
     }, indent=2))
 
     # 4. Push Kernel to Kaggle
-    print(f"🚀 Pushing Preprocess Kernel to Kaggle...")
+    print("🚀 Pushing Preprocess Kernel to Kaggle...")
     push_result = subprocess.run(
         cli + ["kernels", "push", "-p", str(kernel_dir)],
         env={**os.environ, **tokens},
@@ -420,11 +411,11 @@ def main():
         raise RuntimeError("Kaggle không tạo được kernel; kiểm tra quota GPU hoặc các job đang chạy.")
 
     print("\n✅ PREPROCESS REQUEST SUBMITTED SUCCESSFULLY!")
-    print(f"Watch live logs on Kaggle Web UI:")
+    print("Watch live logs on Kaggle Web UI:")
     print(f"➔ https://www.kaggle.com/code/{kernel_ref}")
-    print(f"\nOnce it completes, the processed dataset is this kernel's own retained output")
-    print(f"(no separate Dataset upload, no credentials embedded in the shared code).")
-    print(f"Point downstream kernels (train/distill) at it with:")
+    print("\nOnce it completes, the processed dataset is this kernel's own retained output")
+    print("(no separate Dataset upload, no credentials embedded in the shared code).")
+    print("Point downstream kernels (train/distill) at it with:")
     print(f'  KAGGLE_PROCESSED_KERNEL_REF={kernel_ref}')
 
 if __name__ == "__main__":

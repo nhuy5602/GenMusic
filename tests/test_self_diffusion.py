@@ -90,6 +90,16 @@ class SelfDiffusionTests(unittest.TestCase):
             create_random_dataset(dataset, count=2, frames=32)
             report = train_model(dataset, root / "model.pt", epochs=1, batch_size=2, max_records=2)
             self.assertEqual(report["status"], "complete")
+            resumed = train_model(
+                dataset,
+                root / "model.pt",
+                epochs=1,
+                batch_size=2,
+                max_records=2,
+                resume=True,
+                save_every_epoch=True,
+            )
+            self.assertEqual(resumed["resumed_from_epoch"], 1)
             generated = run_local_generation(text="Mưa rơi nhẹ nhàng.", style="soft piano", output_dir=root / "audio", duration_seconds=1, checkpoint=root / "model.pt", steps=1)
             self.assertEqual(generated["status"], "complete")
             self.assertTrue(generated["duration_auto_adjusted"])

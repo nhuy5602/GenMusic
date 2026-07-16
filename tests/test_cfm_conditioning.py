@@ -64,12 +64,14 @@ class ConditioningParityTests(unittest.TestCase):
         model = _RecordingFlowModel()
         duration_seconds = 8.0
         total_frames = int(duration_seconds * config.sample_rate / config.hop_length) + 8
-        backing = torch.arange(total_frames, dtype=torch.float32).view(1, 1, -1).expand(1, config.n_mels, -1)
+        backing = (torch.arange(total_frames, dtype=torch.float32) / 1000.0).view(1, 1, -1).expand(1, config.n_mels, -1)
         style = torch.ones(1, 512)
         sampled_backing = []
+        sampled_texts = []
 
         def fake_sample(_model, _texts, frames, **kwargs):
             sampled_backing.append(kwargs["backing_mel"].detach().cpu().clone())
+            sampled_texts.append(_texts)
             self.assertTrue(torch.equal(kwargs["style_prompt"], style))
             return torch.zeros((1, config.n_mels, frames), dtype=torch.float32)
 
@@ -99,7 +101,12 @@ class ConditioningParityTests(unittest.TestCase):
         self.assertEqual(len(sampled_backing), 2)
         first_chunk_frames = sampled_backing[0].shape[-1]
         self.assertEqual(float(sampled_backing[0][0, 0, 0]), 0.0)
-        self.assertEqual(float(sampled_backing[1][0, 0, 0]), float(first_chunk_frames))
+        self.assertAlmostEqual(
+            float(sampled_backing[1][0, 0, 0]),
+            float(backing[0, 0, first_chunk_frames]),
+            places=6,
+        )
+        self.assertEqual(sampled_texts, [["mot cau"], ["mot cau"]])
         self.assertTrue(report["backing_conditioned"])
         self.assertTrue(report["muq_style_conditioned"])
 

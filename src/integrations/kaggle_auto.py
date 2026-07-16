@@ -26,6 +26,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MODEL = "genmusic-vn-self-diffusion-v1"
 DEFAULT_KAGGLE_DATASET_SLUG = "genmusic-vn-self-diffusion-training"
 KAGGLE_DATASET_ENV = "GENMUSIC_KAGGLE_DATASET_REF"
+KAGGLE_API_TOKEN_ENV = "KAGGLE_API_TOKEN"
+KAGGLE_ACCESS_TOKEN_ALIAS_ENV = "KAGGLE_ACCESS_TOKEN"
+KAGGLE_AUTH_ENV_KEYS = (KAGGLE_API_TOKEN_ENV, KAGGLE_ACCESS_TOKEN_ALIAS_ENV, "KAGGLE_KEY")
 
 # Shared by every scripts/run_kaggle_*.py: directories that must never end up in the
 # "source code" zip pushed to Kaggle. `ckpt` in particular is a HuggingFace download
@@ -90,6 +93,7 @@ def run_local_generation(
     duration_seconds: float,
     checkpoint: str | Path | None = None,
     steps: int = 6,
+    guidance_scale: float = 1.0,
     seed: int = 5602,
     device: str | None = None,
     mel_output: str | Path | None = None,
@@ -154,6 +158,7 @@ def run_local_generation(
         config=config,
         device=selected_device,
         steps=max(1, int(steps)),
+        guidance_scale=float(guidance_scale),
         seed=int(seed),
         mel_output=mel_output,
         vocoder_type=vocoder,
@@ -359,8 +364,13 @@ def kaggle_readiness(username: str | None = None) -> dict[str, Any]:
     tokens = load_kaggle_api_tokens()
     if username and not tokens.get("KAGGLE_USERNAME"):
         tokens["KAGGLE_USERNAME"] = username
-    ready = bool(tokens.get("KAGGLE_USERNAME") and tokens.get("KAGGLE_KEY") and kaggle_cli_command())
-    return {"ready": ready, "messages": [] if ready else ["Cần KAGGLE_USERNAME, KAGGLE_KEY và Kaggle CLI."]}
+    ready = bool(tokens.get("KAGGLE_USERNAME") and kaggle_auth_available(tokens) and kaggle_cli_command())
+    if not ready:
+        return {
+            "ready": False,
+            "messages": ["Cần KAGGLE_USERNAME, KAGGLE_API_TOKEN=KGAT_... (hoặc KAGGLE_KEY cũ) và Kaggle CLI."],
+        }
+    return {"ready": True, "messages": []}
 
 
 def kaggle_dataset_exists(dataset_ref: str) -> bool:
@@ -398,8 +408,12 @@ def upload_dataset_to_kaggle(dataset_dir: str | Path, *, username: str | None = 
         raise ValueError(f"Không tìm thấy dataset self-diffusion hợp lệ tại {root}.")
     cli = kaggle_cli_command()
     resolved_username = resolve_kaggle_username(username)
-    if cli is None or not resolved_username or not load_kaggle_api_tokens().get("KAGGLE_KEY"):
-        report = {"status": "needs_setup", "dataset": str(root), "message": "Cần Kaggle CLI, KAGGLE_USERNAME và KAGGLE_KEY."}
+    if cli is None or not resolved_username or not kaggle_auth_available():
+        report = {
+            "status": "needs_setup",
+            "dataset": str(root),
+            "message": "Cần Kaggle CLI, KAGGLE_USERNAME và KAGGLE_API_TOKEN=KGAT_... (hoặc KAGGLE_KEY cũ).",
+        }
         (root / "kaggle_upload_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         return report
     if dataset_ref:
@@ -419,18 +433,109 @@ def upload_dataset_to_kaggle(dataset_dir: str | Path, *, username: str | None = 
     return report
 
 
-def load_kaggle_api_tokens() -> dict[str, str]:
+def _read_dotenv(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
-    for path in (PROJECT_ROOT / ".env", PROJECT_ROOT / ".env.local"):
-        if path.exists():
-            for line in path.read_text(encoding="utf-8").splitlines():
-                if "=" in line and not line.lstrip().startswith("#"):
-                    key, value = line.split("=", 1)
-                    values[key.strip()] = value.strip().strip('"').strip("'")
-    for key in ("KAGGLE_USERNAME", "KAGGLE_KEY", KAGGLE_DATASET_ENV):
-        if os.getenv(key):
-            values[key] = str(os.getenv(key))
+    if not path.exists():
+        return values
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
     return values
+
+
+def _kaggle_file_credentials(config_dir: Path) -> dict[str, str]:
+    """Read Kaggle's config files only as a fallback behind project dotenv files."""
+    values: dict[str, str] = {}
+    kaggle_json = config_dir / "kaggle.json"
+    if kaggle_json.exists():
+        try:
+            payload = json.loads(kaggle_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+        if payload.get("username"):
+            values["KAGGLE_USERNAME"] = str(payload["username"]).strip()
+        if payload.get("key"):
+            values["KAGGLE_KEY"] = str(payload["key"]).strip()
+
+    access_token = config_dir / "access_token"
+    if access_token.exists():
+        try:
+            token = access_token.read_text(encoding="utf-8").strip()
+        except OSError:
+            token = ""
+        # Do not reinterpret a legacy key accidentally written here as a new token.
+        if token.startswith(("KGAT_", "KGAT-")):
+            values[KAGGLE_API_TOKEN_ENV] = token
+    return values
+
+
+def _replace_auth_credentials(values: dict[str, str], preferred: dict[str, str]) -> None:
+    """Replace lower-priority auth as a group, avoiding mixed credential types."""
+    if any(preferred.get(key) for key in KAGGLE_AUTH_ENV_KEYS):
+        for key in KAGGLE_AUTH_ENV_KEYS:
+            values.pop(key, None)
+    values.update({key: value for key, value in preferred.items() if value})
+
+
+def load_kaggle_api_tokens() -> dict[str, str]:
+    """Load Kaggle settings with OS env > project dotenv > ~/.kaggle files."""
+    config_dir = Path(os.getenv("KAGGLE_CONFIG_DIR") or Path.home() / ".kaggle").expanduser()
+    values = _kaggle_file_credentials(config_dir)
+
+    project_values: dict[str, str] = {}
+    # .env.local intentionally overrides .env while both outrank ~/.kaggle.
+    for path in (PROJECT_ROOT / ".env", PROJECT_ROOT / ".env.local"):
+        _replace_auth_credentials(project_values, _read_dotenv(path))
+    _replace_auth_credentials(values, project_values)
+
+    environment_values = {
+        key: str(os.environ[key])
+        for key in (
+            "KAGGLE_USERNAME",
+            "KAGGLE_KEY",
+            KAGGLE_API_TOKEN_ENV,
+            KAGGLE_ACCESS_TOKEN_ALIAS_ENV,
+            KAGGLE_DATASET_ENV,
+        )
+        if os.getenv(key)
+    }
+    _replace_auth_credentials(values, environment_values)
+
+    # Accept a readable alias in .env but expose Kaggle's official variable name.
+    if not values.get(KAGGLE_API_TOKEN_ENV) and values.get(KAGGLE_ACCESS_TOKEN_ALIAS_ENV):
+        values[KAGGLE_API_TOKEN_ENV] = values[KAGGLE_ACCESS_TOKEN_ALIAS_ENV]
+    # Existing .env files used KAGGLE_KEY. Detect a newly pasted KGAT token there
+    # and pass it to Kaggle under the modern variable instead of legacy-key auth.
+    key_value = str(values.get("KAGGLE_KEY", "")).strip()
+    if not values.get(KAGGLE_API_TOKEN_ENV) and key_value.startswith(("KGAT_", "KGAT-")):
+        values[KAGGLE_API_TOKEN_ENV] = key_value
+        values.pop("KAGGLE_KEY", None)
+    return values
+
+
+def kaggle_access_token(values: dict[str, str] | None = None) -> str | None:
+    credentials = values if values is not None else load_kaggle_api_tokens()
+    token = str(credentials.get(KAGGLE_API_TOKEN_ENV, "")).strip()
+    return token if token.startswith(("KGAT_", "KGAT-")) else None
+
+
+def kaggle_auth_available(values: dict[str, str] | None = None) -> bool:
+    credentials = values if values is not None else load_kaggle_api_tokens()
+    return bool(
+        kaggle_access_token(credentials)
+        or (credentials.get("KAGGLE_USERNAME") and credentials.get("KAGGLE_KEY"))
+    )
+
+
+def kaggle_auth_environment(values: dict[str, str] | None = None) -> dict[str, str]:
+    credentials = dict(values if values is not None else load_kaggle_api_tokens())
+    token = kaggle_access_token(credentials)
+    if token:
+        credentials[KAGGLE_API_TOKEN_ENV] = token
+    return credentials
 
 
 def kaggle_cli_command() -> list[str] | None:
@@ -540,7 +645,7 @@ def _write_source_zip(destination: Path) -> None:
 def _commands(dataset_dir: Path, kernel_dir: Path, download_dir: Path, kernel_ref: str) -> list[str]:
     return [
         "pip install -U kaggle",
-        "# Đặt KAGGLE_USERNAME và KAGGLE_KEY trong .env hoặc environment.",
+        "# Đặt KAGGLE_USERNAME và KAGGLE_API_TOKEN=KGAT_... trong .env hoặc environment.",
         f'kaggle datasets create -p "{dataset_dir}" -r zip',
         f'kaggle kernels push -p "{kernel_dir}"',
         f'kaggle kernels status "{kernel_ref}"',

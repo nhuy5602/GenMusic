@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from torch.nn import functional as F
 from transformers import AutoTokenizer, AutoModel
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer, LlamaRotaryEmbedding
 from transformers.models.llama import LlamaConfig
@@ -24,6 +25,14 @@ class PretrainedRobertaEncoder(nn.Module):
             nn.Linear(out_dim, out_dim)
         )
 
+    def train(self, mode: bool = True):
+        # The projection remains trainable, but the frozen backbone must stay in
+        # eval mode or RoBERTa dropout makes the same lyric embedding fluctuate
+        # between optimization steps.
+        super().train(mode)
+        self.roberta.eval()
+        return self
+
     def forward(self, texts: list[str], device) -> tuple[torch.Tensor, torch.Tensor]:
         # Tokenize inputs
         inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=128).to(device)
@@ -38,6 +47,30 @@ class PretrainedRobertaEncoder(nn.Module):
         projected = self.projection(seq_embeddings)
         attention_mask = inputs["attention_mask"].bool() # (batch_size, seq_len)
         return projected, attention_mask
+
+
+def align_text_embeddings_to_frames(
+    text_embeddings: torch.Tensor,
+    attention_mask: torch.Tensor,
+    frames: int,
+) -> torch.Tensor:
+    """Uniformly align only real lyric tokens to audio frames, excluding padding."""
+    aligned = []
+    for embeddings, mask in zip(text_embeddings, attention_mask):
+        valid = embeddings[mask]
+        # XLM-R surrounds content with special tokens. They are useful when
+        # pooling, but should not consume the beginning/end of the sung phrase.
+        content = valid[1:-1] if valid.shape[0] > 2 else valid
+        if content.shape[0] == 0:
+            content = valid[:1]
+        resized = F.interpolate(
+            content.transpose(0, 1).unsqueeze(0),
+            size=frames,
+            mode="linear",
+            align_corners=False,
+        ).squeeze(0).transpose(0, 1)
+        aligned.append(resized)
+    return torch.stack(aligned)
 
 
 class TimestepEmbedding(nn.Module):
@@ -192,8 +225,9 @@ class MicroDiT(nn.Module):
         batch_size, seq_len = x.shape[0], x.shape[1]
         
         # 1. Encode text via RoBERTa (frozen)
-        text_embeds, _ = self.text_encoder(texts, device) # (batch_size, text_seq_len, dim)
-        pooled_text = text_embeds.mean(dim=1)
+        text_embeds, text_mask = self.text_encoder(texts, device) # (batch_size, text_seq_len, dim)
+        mask = text_mask.unsqueeze(-1).to(text_embeds.dtype)
+        pooled_text = (text_embeds * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
         
         # 2. Compute conditional vectors
         t_emb = self.time_embed(timestep) # (batch_size, cond_dim)
@@ -207,9 +241,7 @@ class MicroDiT(nn.Module):
         c = t_emb + s_emb
         
         # Align text embedding length to seq_len for feature merging
-        text_embeds_padded = nn.functional.interpolate(
-            text_embeds.transpose(1, 2), size=seq_len, mode="linear", align_corners=False
-        ).transpose(1, 2)
+        text_embeds_padded = align_text_embeddings_to_frames(text_embeds, text_mask, seq_len)
         
         # 3. Project and embed features
         x = self.input_embed(x, cond, text_embeds_padded, t_emb, s_emb)

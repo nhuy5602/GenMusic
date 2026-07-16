@@ -10,7 +10,14 @@ from pathlib import Path
 # Add project root to sys.path to allow imports from src package
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from src.integrations.kaggle_auto import load_kaggle_api_tokens, resolve_kaggle_username, kaggle_cli_command, write_source_zip
+from src.integrations.kaggle_auto import (
+    kaggle_auth_available,
+    kaggle_auth_environment,
+    kaggle_cli_command,
+    load_kaggle_api_tokens,
+    resolve_kaggle_username,
+    write_source_zip,
+)
 
 def _kernel_script_content(dataset_slug: str, epochs: str = "5", batch_size: str = "4") -> str:
     # This script will run on the Kaggle GPU instance and log errors to output files instead of crashing
@@ -146,17 +153,14 @@ def main():
 
     # Resolved parent because it is located inside the scripts/ directory
     project_root = Path(__file__).resolve().parents[1]
-    tokens = load_kaggle_api_tokens()
+    tokens = kaggle_auth_environment(load_kaggle_api_tokens())
     username = resolve_kaggle_username(tokens.get("KAGGLE_USERNAME"))
     cli = kaggle_cli_command()
 
-    if not username or not tokens.get("KAGGLE_KEY") or not cli:
-        print("❌ Error: Missing Kaggle credentials. Please configure KAGGLE_USERNAME and KAGGLE_KEY in your .env file.")
+    if not username or not kaggle_auth_available(tokens) or not cli:
+        print("❌ Error: Set KAGGLE_USERNAME and KAGGLE_API_TOKEN=KGAT_... (or legacy KAGGLE_KEY) in .env.")
         return
 
-    # Set up Kaggle API Token for the new Kaggle CLI format (OAuth/access_token/KAGGLE_API_TOKEN)
-    api_token = tokens.get("KAGGLE_KEY")
-    tokens["KAGGLE_API_TOKEN"] = api_token
     kaggle_env = {
         **os.environ,
         **tokens,
@@ -164,27 +168,7 @@ def main():
         "PYTHONUTF8": "1",
     }
     
-    try:
-        kaggle_home = Path.home() / ".kaggle"
-        kaggle_home.mkdir(exist_ok=True)
-        # Write classic kaggle.json just in case
-        kaggle_json = kaggle_home / "kaggle.json"
-        kaggle_json.write_text(json.dumps({
-            "username": tokens["KAGGLE_USERNAME"],
-            "key": api_token
-        }, indent=2), encoding="utf-8")
-        
-        # Write new access_token file
-        access_token_file = kaggle_home / "access_token"
-        access_token_file.write_text(api_token, encoding="utf-8")
-        
-        try:
-            os.chmod(kaggle_json, 0o600)
-            os.chmod(access_token_file, 0o600)
-        except AttributeError:
-            pass
-    except Exception as e:
-        print(f"⚠️ Warning: Could not write kaggle.json/access_token: {e}")
+    # Credentials are passed in-memory so project .env remains authoritative.
 
     # KAGGLE_PROCESSED_KERNEL_REF: output of a preprocess kernel run with the fixed
     # run_kaggle_preprocess_all.py (attached via kernel_sources, no credentials needed).

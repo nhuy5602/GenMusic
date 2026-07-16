@@ -23,8 +23,14 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from kaggle.api.kaggle_api_extended import KaggleApi
 
 from scripts.run_kaggle_preprocess_all import _kernel_script_content
-from src.integrations.kaggle_auto import write_source_zip
-from src.integrations.kaggle_auto import load_kaggle_api_tokens, resolve_kaggle_username
+from src.integrations.kaggle_auto import (
+    kaggle_access_token,
+    kaggle_auth_available,
+    kaggle_auth_environment,
+    load_kaggle_api_tokens,
+    resolve_kaggle_username,
+    write_source_zip,
+)
 
 
 DATASET_SLUG_RE = re.compile(r"vietnamese-music-dataset-version3-part(\d+)$", re.IGNORECASE)
@@ -78,8 +84,10 @@ def _parse_reused(values: list[str]) -> dict[int, str]:
     return reused
 
 
-def _old_kaggle_cli() -> list[str]:
-    """Use Kaggle 1.7 because the configured legacy API key predates Kaggle 2.x auth."""
+def _old_kaggle_cli(tokens: dict[str, str] | None = None) -> list[str]:
+    """Select a CLI compatible with either modern access-token or legacy auth."""
+    if kaggle_access_token(tokens):
+        return [sys.executable, "-m", "kaggle"]
     uvx = shutil.which("uvx")
     if not uvx:
         raise RuntimeError("uvx was not found; install uv before submitting Kaggle jobs")
@@ -141,12 +149,11 @@ def main() -> None:
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parents[1]
-    tokens = load_kaggle_api_tokens()
+    tokens = kaggle_auth_environment(load_kaggle_api_tokens())
     username = resolve_kaggle_username(tokens.get("KAGGLE_USERNAME"))
-    if not username or not tokens.get("KAGGLE_KEY"):
-        raise RuntimeError("Missing KAGGLE_USERNAME or KAGGLE_KEY")
-    for key in ("KAGGLE_USERNAME", "KAGGLE_KEY"):
-        os.environ.setdefault(key, tokens[key])
+    if not username or not kaggle_auth_available(tokens):
+        raise RuntimeError("Missing KAGGLE_USERNAME or Kaggle auth (KAGGLE_API_TOKEN=KGAT_... / legacy KAGGLE_KEY)")
+    os.environ.update({key: value for key, value in tokens.items() if key.startswith("KAGGLE_")})
     kaggle_env = {**os.environ, **tokens, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
 
     api = KaggleApi()
@@ -192,7 +199,7 @@ def main() -> None:
         print("No new preprocessing kernels need to be submitted.")
         return
 
-    cli = _old_kaggle_cli()
+    cli = _old_kaggle_cli(tokens)
     # Keep the genmusic-source- prefix because the Kaggle-side bootstrapper uses
     # it to distinguish this code dataset from all attached raw audio datasets.
     source_slug = f"genmusic-source-allparts-{int(time.time())}"
