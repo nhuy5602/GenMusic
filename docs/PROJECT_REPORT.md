@@ -459,13 +459,52 @@ passage from an undertrained quiet-and-wrong one.
 requester's machine, not Kaggle). Total Kaggle GPU time ≈4h of this project's weekly
 budget.
 
-**Conclusion for this run**: no model-size increase was warranted — the "is distillation
-broken" and "is the model too small" hypotheses this section was set up to test were both
-falsified before reaching model size: the bugs were infrastructure (timeout, OOM), not
-distillation logic or capacity, and once fixed, distillation converged as expected on
-`loss_gt` and produced clearly non-noise, real-audio-comparable output at the current
-small size (`dim=256, depth=4, heads=4`). A model-size ablation remains a reasonable
-follow-up if a *later* run shows the gains plateauing, but there is no evidence for that yet.
+**Conclusion for this run**: the "is distillation broken" and "is the model too small"
+hypotheses this section was set up to test were both falsified before reaching model
+size: the bugs were infrastructure (timeout, OOM), not distillation logic or capacity, and
+once fixed, distillation converged as expected on `loss_gt` and produced clearly
+non-noise, real-audio-comparable output at the small size (`dim=256, depth=4, heads=4`).
+Whether model size itself was *also* limiting quality is answered directly in §3.10.
+
+### 3.10 Model-size ablation: bigger student did not help at the same step budget
+
+A listener (not this session's objective metrics) reported the §3.9 output still didn't
+sound like intelligible singing. Direct inspection of the generated mel's statistics
+against the real vocal mel's (`-6s_eRHYqVM`, same conditioning) found why: the generated
+mel's standard deviation was 1.09 vs. the real vocal's 2.95 — about a third of the
+dynamic range, a textbook regression-to-the-mean symptom of too little training signal
+relative to what's being asked of the model (250 highly diverse songs, 1575 steps,
+producing a "smoothed average" rather than sharp per-song detail). Two candidate
+explanations: the student (`dim=256, depth=4, heads=4`, a few million parameters) is too
+small to represent that detail, or it needs more gradient steps regardless of size. Since
+`--dim/--depth/--heads/--ff-mult` were already exposed on `cli.py train-distill` but not
+on `run_kaggle_distill.py`'s launcher, that gap was closed first, then a same-data/
+same-epochs/same-batch run was submitted with `dim=384, depth=6, heads=6` (≈3x the
+student parameters) against `dim=256, depth=4, heads=4` (§3.9):
+
+| | loss_gt @ epoch 25 | mel std (generated) | wall-clock |
+|---|---|---|---|
+| `dim=256, depth=4, heads=4` (§3.9) | 3.28 | 1.09 | 6527s |
+| `dim=384, depth=6, heads=6` | 3.65 | 1.06 | 6522s |
+| real vocal (target) | — | 2.95 | — |
+
+The bigger student did not improve either metric — `loss_gt` at the final epoch was
+slightly *worse*, and the mel-variance collapse was essentially unchanged (1.06 vs 1.09,
+both still ~a third of real). Wall-clock was identical between the two runs, which makes
+sense once you notice *why*: the ~1.14B-parameter teacher's forward pass dominates
+per-step cost, so a 3x bigger student is nearly free to run but doesn't fit better in the
+same number of gradient steps — more parameters need more updates to converge, all else
+equal, and 1575 steps clearly wasn't enough headroom for that trade to pay off.
+
+**This rejects the "model is too small" hypothesis at this step budget.** The more
+likely bottleneck is simply steps/data: 1575 gradient updates over 250 songs is little
+for a generative audio model of *any* size in this range. The natural next experiment is
+more epochs on the cheaper-to-experiment-with `dim=256` config (bigger models cost nothing
+extra per step here, but smaller ones are faster to iterate on locally for evaluation) to
+see whether `loss_gt` keeps trending down with more steps or has already plateaued —
+if it plateaus too, data quantity/diversity (not steps or size) would be the next suspect,
+pointing at the coworker's multi-part scripts (`run_kaggle_all_parts.py`,
+`run_kaggle_multi_part_training.py`, §1.5) to scale past this project's own 250-song part.
 
 ---
 
