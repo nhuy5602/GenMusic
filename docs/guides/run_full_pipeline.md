@@ -128,11 +128,13 @@ resubmitting blindly (which would burn more quota on the same problem).
 
 ## 3. The comparison experiment: does distillation actually help?
 
-This is the experiment that answers "is distillation worth it for this small model,"
-which was scoped but **not completed** in this session (Kaggle quota ran out first —
-see `docs/PROJECT_REPORT.md` §3.5/§4). It trains 6 configs (baseline; distillation at
-`alpha_feature` = 0.2/0.5/0.8; a smaller architecture variant × baseline/distillation)
-against one shared preprocessed dataset, so preprocessing only happens once.
+The core question here — "is distillation worth it for this small model" — already has
+a real, measured answer from a direct 250-song `train-distill` vs. `train-self` run, not
+from this matrix script (see `docs/PROJECT_REPORT.md` §4.8/§4.9). This script would still
+give a finer-grained `alpha_feature`/architecture-size ablation if useful later; it trains
+6 configs (baseline; distillation at `alpha_feature` = 0.2/0.5/0.8; a smaller architecture
+variant × baseline/distillation) against one shared preprocessed dataset, so preprocessing
+only happens once.
 
 ```powershell
 uv run python scripts/run_kaggle_experiment_matrix.py --max-files 40 --whisper-model tiny --epochs 60 --batch-size 4
@@ -141,7 +143,7 @@ uv run python scripts/run_kaggle_experiment_matrix.py --max-files 40 --whisper-m
 **How to read the results** (`summary.json` → `configs.<name>.training.loss_curve`):
 compare `loss_gt` (not the blended `loss`) across configs at the same epoch — this is
 the ground-truth CFM loss, directly comparable whether or not a teacher was used (see
-`docs/PROJECT_REPORT.md` §2.2 for why). If a `distill_*` config's `loss_gt` trends lower
+`docs/PROJECT_REPORT.md` §3.4 for why). If a `distill_*` config's `loss_gt` trends lower
 than `baseline_no_distill` at the same epoch for the same architecture size, that's
 evidence distillation is helping this student converge faster/better. Also check
 `configs.<name>.training.distillation_active` — if it's `false` for a `distill_*`

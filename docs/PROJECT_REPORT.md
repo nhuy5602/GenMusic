@@ -1,550 +1,478 @@
 # GenMusic VN — Project Report
 
-Vietnamese text- and audio-conditioned music generation via knowledge distillation from
-DiffRhythm2. This report documents the architecture, the related work it builds on, the
-experiments run to validate and improve it, and what was concluded. It is kept in sync
-with the codebase — see the note at the end of each section for where to look if the
-code has moved on since this was written.
+Sinh nhạc có lời tiếng Việt, điều kiện theo văn bản (lyric) và âm thanh (backing
+track/style), thông qua distillation từ DiffRhythm2. Report này theo cấu trúc một bài
+báo khoa học (Giới thiệu → Nghiên cứu liên quan → Phương pháp → Thực nghiệm → Kết luận),
+được cập nhật đồng bộ với codebase và với các job Kaggle thật đã chạy — mọi số liệu ở đây
+đều lấy từ log/report thật, không suy đoán.
 
-**Status as of 2026-07-14**: session complete. Every pipeline stage (preprocess → train
-→ distill-attempt → generate) is verified working end-to-end, on Kaggle at moderate scale
-and locally at small scale. The one experiment *not* completed is a proper at-scale
-comparison of distillation vs. no-distillation — Kaggle GPU quota ran out mid-session
-before it could run; §3.6 and §4 explain exactly what's needed to finish it.
-
----
-
-## 1. Related Work
-
-### 1.1 DiffRhythm2 (teacher)
-
-[ASLP-lab/DiffRhythm2](https://github.com/ASLP-lab/DiffRhythm2) is the teacher model this
-project distills from. It is a latent conditional-flow-matching (CFM) model for
-full-song music generation, conditioned on:
-- **Lyrics**, tokenized by a custom `CNENTokenizer` (a Chinese/English G2P frontend —
-  no Vietnamese linguistic model), fed into the transformer as ordinary sequence
-  positions (not cross-attention).
-- **Style**, a single embedding from **MuQ-MuLan** (`OpenMuQ/MuQ-MuLan-large`), a
-  contrastive audio-text/audio-audio embedding model in the CLAP/MuLan family — the
-  same 512-dim space is added to every position via the input embedding and to the
-  final adaLN modulation.
-
-Its backbone (`diffrhythm2/backbones/dit.py`) is a stack of Llama-style decoder blocks
-("`LlamaNARDecoderLayer`" — non-autoregressive, full bidirectional attention within a
-generation block) with rotary position embeddings, generating in causally-cached
-*blocks* (`sample_block_cache` in `diffrhythm2/cfm.py`) rather than the whole song at
-once — a streaming/chunked generation strategy. Its own real shipped checkpoint
-(`config.json` on HuggingFace) uses `dim=2048, depth=16, heads=16, mel_dim=64` — i.e. a
-genuinely large model (on the order of hundreds of millions of parameters in the
-backbone alone) operating on a 64-bin mel latent, decoded to audio by a dedicated
-BigVGAN-family vocoder trained specifically for that latent.
-
-### 1.2 Conditional Flow Matching / rectified flow
-
-CFM (Lipman et al., 2022; used by DiffRhythm2, and by this project's student) trains a
-velocity field `v_θ(x_t, t, cond)` to match `x_1 - x_0` along a straight-line
-interpolation `x_t = (1-t)x_0 + t x_1` between Gaussian noise `x_0` and data `x_1`, then
-generates by integrating an ODE from `t=0` to `t=1`. Compared to classical DDPM, this
-gives a well-posed regression target at every `t` and typically needs far fewer sampling
-steps for comparable quality, at the cost of losing the explicit noise-schedule/SNR
-framing DDPM offers. This project uses plain fixed-step Euler integration
-(`src/models/cfm_flow.py`) — no adaptive step-size control, no higher-order solver — the
-simplest correct option, sufficient for now given the model is far from converged; an
-adaptive/higher-order solver is listed as a legitimate future optimization once model
-quality is no longer the binding constraint.
-
-### 1.3 Knowledge distillation for generative audio models
-
-The classical KD setup (Hinton et al., 2015) matches a small student's *output
-distribution* to a large teacher's, generally for classification. For a continuous
-generative field like CFM's velocity, the analogous move is **velocity/feature
-matching**: at a shared `(x_t, t)`, penalize `‖v_student - v_teacher‖²` in addition to
-(or blended with) the ground-truth CFM loss `‖v_student - (x_1 - x_0)‖²`. This project's
-`alpha_feature` blend follows that pattern (see `src/training/distill_training.py`).
-The interesting engineering problem specific to this project — not really covered by the
-KD literature, which usually assumes matching output spaces — is that the teacher's own
-mel latent (64-dim) and the format the student needs to be *decodable* in (100-dim, to
-match the only available high-quality open vocoder for held-out use, Vocos) are
-different. Section 3 covers the adapter used to bridge this.
-
-### 1.4 Neural vocoders
-
-Two vocoder families appear in this project's history: the teacher's own BigVGAN-family
-decoder (trained specifically for DiffRhythm2's 64-mel latent, not reusable for a
-different mel convention without retraining it) and **Vocos**
-(`charactr/vocos-mel-24khz`, [Siuzdak, 2023](https://arxiv.org/abs/2306.00814)), a
-GAN-based vocoder that predicts STFT coefficients directly rather than upsampling in the
-time domain, chosen here because it is a generic, pretrained, drop-in decoder for a
-*standard* 100-mel/24kHz representation this project can align its student to exactly,
-with no extra training required. Section 3/4 covers why this specific choice mattered a
-great deal in practice.
-
-### 1.5 Collaborative development note
-
-Partway through this session, `origin/master` was found to have advanced 13 commits via
-independent, unrelated work on the same files (see
-[docs/experiments/kaggle_runs.md](experiments/kaggle_runs.md) for the merge log). That
-work is itself informative as a point of comparison: it reached for very similar fixes
-(a Vocos-format flag, a distillation attempt) via less complete means (an opt-in flag
-instead of a corrected default; a placeholder teacher with the wrong call signature),
-which is one data point suggesting these particular pitfalls (silent format mismatches,
-guessing a black-box teacher's interface instead of reading its source) are natural ones
-to fall into on this kind of integration, not one-off mistakes.
-
-*(To extend: add citations for Whisper (ASR), Demucs (source separation),
-xlm-roberta-base (text encoder) if the report needs a full bibliography — currently just
-named where used.)*
+**Trạng thái tại 2026-07-16**: đã chạy thành công distillation thật trên toàn bộ 250 bài
+(`sonlest/vietnamese-music-dataset-version3-part6`), so sánh với self-diffusion (không
+distill), đánh giá chất lượng khách quan, và ablation kích thước model. Đang chạy thực
+nghiệm tiếp theo (tăng số epoch) để kiểm tra giả thuyết "cần nhiều step huấn luyện hơn".
 
 ---
 
-## 2. Architecture
+## 1. Giới thiệu
 
-*(Filled in from the current codebase — see `src/models/`, `src/training/`,
-`src/data/`.)*
+Mục tiêu của project là sinh audio (nhạc + lời hát tiếng Việt) từ một đoạn lyric văn bản,
+có thể điều kiện thêm theo một bài hát tham chiếu (backing track/phong cách). Ràng buộc
+thực tế quan trọng nhất là **hạ tầng tính toán**: toàn bộ huấn luyện chạy trên quota GPU
+miễn phí của Kaggle (T4, giới hạn giờ/tuần), nên một model lớn kiểu DiffRhythm2
+(hàng trăm triệu đến hàng tỉ tham số) là không khả thi để tự huấn luyện từ đầu. Hướng đi
+được chọn là **distillation**: huấn luyện một model nhỏ (student, MicroDiT — vài triệu
+tham số) để bắt chước tín hiệu của DiffRhythm2 (teacher, ~1.14 tỉ tham số) đã huấn luyện
+sẵn, với hy vọng đạt chất lượng tốt hơn so với huấn luyện model nhỏ từ đầu (không teacher)
+trên cùng lượng dữ liệu/thời gian.
 
-### 2.1 Student model — MicroDiT (`src/models/dit_transformer.py`)
+Report này trình bày: (2) các nền tảng kỹ thuật project dựa vào — biểu diễn
+mel-spectrogram, vocoder Vocos, Conditional Flow Matching, distillation tri thức cho model
+sinh audio, và chính DiffRhythm2; (3) phương pháp cụ thể — pipeline chuẩn bị dữ liệu,
+kiến trúc student, cách huấn luyện CFM thuần và huấn luyện có distillation; (4) toàn bộ
+thực nghiệm thật đã chạy, bao gồm các lỗi hạ tầng phát hiện được và cách fix, kết quả so
+sánh distillation vs. không distillation, và ablation kích thước model; (5) kết luận và
+hướng phát triển tiếp theo.
 
-A small Diffusion-Transformer-style CFM velocity predictor:
+---
 
-- **Text conditioning**: frozen `xlm-roberta-base` (`PretrainedRobertaEncoder`, ~278M
-  params, `requires_grad=False`) projected to the model's hidden dim by a small trainable
-  2-layer MLP. Chosen specifically because it is genuinely multilingual (unlike the
-  teacher's Chinese/English-only lyric tokenizer) — this is the component that actually
-  carries Vietnamese lyric semantics into the model.
-- **Style conditioning ("Audio Style Anchor")**: a single 512-dim MuQ-MuLan embedding,
-  computed once per song at preprocessing time (`compute_style_embedding` in
-  `src/data/preprocess_raw_vietnamese.py`), projected into the model's conditioning
-  space by `AudioStyleEncoder` (a 2-layer MLP). This is the **same embedding space** the
-  real DiffRhythm2 teacher conditions on, so distillation and the student's own
-  generation share one consistent notion of "style."
-- **Backbone**: `depth` HuggingFace `LlamaDecoderLayer` blocks (rotary embeddings, SDPA
-  attention, no causal mask — full bidirectional attention over the mel sequence),
-  `dim`/`heads`/`ff_mult` configurable (CLI: `--dim`/`--depth`/`--heads`/`--ff-mult` on
-  `train-self`/`train-distill`). Default `dim=256, depth=4, heads=4, ff_mult=4` — on the
-  order of a few million trainable parameters, tiny relative to the teacher's
-  `dim=2048, depth=16, heads=16`.
-- **Mel I/O**: predicts a velocity field over `(seq_len, n_mels=100)` frames, at
-  24kHz/n_fft=1024/hop=256 — chosen to exactly match Vocos's native mel format (see
-  §2.3) rather than any dimension DiffRhythm2 itself uses.
+## 2. Các nghiên cứu liên quan
 
-### 2.2 Teacher integration (`src/training/distill_training.py`)
+### 2.1 DiffRhythm2 (teacher)
 
-The teacher (`diffrhythm2.backbones.dit.DiT`, instantiated with its *own* downloaded
-`config.json` dimensions, not guessed ones) and student are trained with a shared
-CFM/rectified-flow recipe: same `x_t`, same `t`, same style embedding. The teacher's
-lyric tokens and the noisy mel latent are concatenated into one sequence
-(`text_embed(tokens)` at `time=-1` sentinel positions, `latent_embed(x_t)` at
-`time=t` positions) and run through one non-cached forward pass — mathematically
-equivalent to the teacher's own streaming block-cache inference path, just without the
-caching optimization (see `docs/experiments/distillation_fix.md` for the
-reverse-engineering this is based on).
+[ASLP-lab/DiffRhythm2](https://github.com/ASLP-lab/DiffRhythm2) là model teacher mà
+project này distill từ. Đây là một model Conditional Flow Matching (CFM) dạng latent cho
+sinh nhạc full-song, điều kiện theo:
+- **Lời hát**, tokenize bằng `CNENTokenizer` (frontend G2P Trung/Anh — không có model
+  ngôn ngữ tiếng Việt), đưa vào transformer như các vị trí tuần tự thông thường (không
+  qua cross-attention).
+- **Style**, một embedding duy nhất từ **MuQ-MuLan** (`OpenMuQ/MuQ-MuLan-large`), một
+  model embedding audio-text/audio-audio kiểu contrastive (họ CLAP/MuLan) — cùng không
+  gian 512-chiều được cộng vào mọi vị trí input và vào adaLN modulation cuối.
 
-**Mel-dim adapter**: because the teacher's real checkpoint uses `mel_dim=64` and the
-student's mel space is 100-dim (a hard requirement from the vocoder choice, §2.3), a
-pair bridges the two spaces solely for the distillation loss computation — the
-student's own generative path never touches these. `to_teacher_mel` (student→teacher)
-is a **fixed deterministic mel-bin interpolation**, not a trainable layer: its output
-feeds directly into the frozen teacher's `torch.no_grad()`-scoped forward pass, so a
-trainable layer there would (and, until this was found and fixed, did) never receive
-a gradient — see `docs/experiments/distillation_fix.md`'s "Mel-dim adapter gradient
-bug" section. `from_teacher_mel` (teacher→student) has no such constraint and is a
-real trainable `Linear(64→100)`, verified with a real backward pass
+Backbone (`diffrhythm2/backbones/dit.py`) là chuỗi block decoder kiểu Llama
+(`LlamaNARDecoderLayer` — non-autoregressive, attention hai chiều đầy đủ trong một block
+sinh) với rotary position embedding, sinh theo *block* có cache nhân quả
+(`sample_block_cache` trong `diffrhythm2/cfm.py`) thay vì cả bài cùng lúc — một chiến lược
+sinh dạng streaming/chunk. Checkpoint thật (`config.json` trên HuggingFace) dùng
+`dim=2048, depth=16, heads=16, mel_dim=64` — một model thực sự lớn (hàng trăm triệu tham
+số ở backbone), hoạt động trên latent mel 64-chiều, giải mã ra audio bằng vocoder họ
+BigVGAN huấn luyện riêng cho latent đó.
+
+### 2.2 Biểu diễn audio với mel-spectrogram
+
+Mel-spectrogram là biểu diễn tần số-thời gian phổ biến cho các model sinh audio hiện đại:
+biến đổi STFT của waveform, gộp theo thang mel (xấp xỉ cảm nhận tần số của tai người), rồi
+lấy log. Ưu điểm so với sinh trực tiếp trên waveform là chiều dữ liệu thấp hơn nhiều
+(mỗi frame ~vài chục ms) và mượt hơn về phân phối, nên các model diffusion/flow-matching
+dễ học hơn; đánh đổi là cần một **vocoder** riêng để biến mel ngược lại thành waveform
+nghe được (§2.3), và bất kỳ sai khác về công thức mel (tần số lấy mẫu, `n_fft`, `hop`, số
+mel-bin, hệ số log/power) giữa lúc train và lúc vocode sẽ làm audio bị méo dù model sinh
+ra "đúng" theo loss huấn luyện — đây là đúng vấn đề mục §4.1 mô tả.
+
+### 2.3 Vocoder thần kinh: Vocos
+
+Có hai họ vocoder xuất hiện trong lịch sử project: vocoder BigVGAN của riêng teacher (huấn
+luyện chuyên cho latent mel 64-chiều của DiffRhythm2, không dùng lại được cho một công
+thức mel khác nếu không huấn luyện lại), và **Vocos**
+(`charactr/vocos-mel-24khz`, [Siuzdak, 2023](https://arxiv.org/abs/2306.00814)) — một
+vocoder dạng GAN dự đoán trực tiếp hệ số STFT thay vì upsample theo thời gian. Vocos được
+chọn cho project này vì là vocoder **pretrained, tổng quát, dùng ngay** cho một công thức
+mel 100-bin/24kHz *chuẩn* mà student có thể khớp chính xác, không cần huấn luyện lại.
+
+### 2.4 Conditional Flow Matching / Rectified Flow
+
+CFM (Lipman et al., 2022; dùng bởi cả DiffRhythm2 và student của project) huấn luyện một
+trường vận tốc `v_θ(x_t, t, cond)` khớp với `x_1 - x_0` theo nội suy đường thẳng
+`x_t = (1-t)x_0 + t x_1` giữa nhiễu Gauss `x_0` và dữ liệu thật `x_1`, sau đó sinh bằng
+tích phân ODE từ `t=0` đến `t=1`. So với DDPM cổ điển, cách này cho target hồi quy rõ ràng
+(well-posed) ở mọi `t` và thường cần ít bước sample hơn cho chất lượng tương đương, đổi lại
+mất đi khung nhìn tường minh về noise-schedule/SNR mà DDPM có. Project dùng tích phân Euler
+bước cố định đơn giản (`src/models/cfm_flow.py`) — không có bước thích ứng, không dùng
+solver bậc cao — là lựa chọn đúng và đơn giản nhất, đủ dùng khi model còn cách xa điểm hội
+tụ; solver thích ứng/bậc cao là một tối ưu hợp lý cho tương lai khi chất lượng model không
+còn là nút thắt chính.
+
+### 2.5 Distillation tri thức cho model sinh audio
+
+Setup KD cổ điển (Hinton et al., 2015) khớp *phân phối đầu ra* của student nhỏ với teacher
+lớn, thường cho phân loại. Với một trường sinh liên tục như vận tốc CFM, cách tương tự là
+**khớp vận tốc/đặc trưng**: tại cùng một `(x_t, t)`, phạt `‖v_student - v_teacher‖²` cùng
+với (hoặc trộn cùng) loss CFM ground-truth `‖v_student - (x_1 - x_0)‖²`. Hệ số trộn
+`alpha_feature` của project theo đúng khuôn mẫu này (`src/training/distill_training.py`).
+Vấn đề kỹ thuật riêng của project — không thực sự có sẵn trong tài liệu KD (thường giả
+định hai model cùng không gian đầu ra) — là latent mel của teacher (64-chiều) và không
+gian mà student cần *giải mã được* (100-chiều, để khớp vocoder pretrained duy nhất có sẵn,
+Vocos) là khác nhau. Mục 3.4 trình bày adapter dùng để bắc cầu hai không gian này.
+
+---
+
+## 3. Phương pháp
+
+### 3.1 Chuẩn bị dữ liệu (`src/data/preprocess_raw_vietnamese.py`)
+
+Với mỗi bài hát: Demucs (`htdemucs`, 2 stem) tách vocal/backing, xử lý theo batch (load
+model Demucs một lần cho mỗi batch tới 8 file, không load lại từng file), có thể resume
+(bỏ qua file đã có stem sẵn trên đĩa), tự retry cuda→cpu khi lỗi — nếu tách stem thất bại
+hoàn toàn thì dùng cả bài làm backing, đánh dấu rõ qua field `demucs_separated`/
+`vocal_source` thay vì suy giảm âm thầm. Whisper (`tiny`/`base`/..., cấu hình được, có
+retry cuda→cpu) transcribe stem vocal với `language="vi"`, giữ timestamp theo
+từng câu/segment (field `segments`) để lúc train có thể khớp đúng đoạn lyric với đúng
+đoạn audio, không dùng toàn bộ transcript cho mọi đoạn crop. MuQ-MuLan tính một style
+embedding duy nhất cho mỗi bài, từ 10 giây đầu của bản mix gốc (xem hạn chế ở §5).
+Cả hai kênh mel (vocal, backing) tính bằng cùng `compute_mel_spectrogram`. Đầu ra:
+`records.jsonl` (mỗi bài một record: text lyric + segment có timestamp, style tag, BPM,
+đường dẫn tới mel backing/vocal + style embedding) cùng `config.json` (công thức mel, để
+lúc train dựng lại đúng `MusicDiffusionConfig`).
+
+**Augmentation lúc train** (`MusicDiffusionDataset.__getitem__`,
+`src/training/self_diffusion.py`): với bài dài hơn một chunk huấn luyện, mỗi epoch chọn
+một offset ngẫu nhiên, áp dụng giống nhau cho cả mel vocal và backing (giữ chúng khớp thời
+gian với nhau) — các epoch khác nhau thấy các đoạn khác nhau của bài dài — và lyric text
+dùng cho item đó được cắt lại chỉ còn các segment có timestamp rơi vào đúng khung crop đó,
+dựa trên timestamp ASR ở trên. Style embedding thì **không** cắt theo crop — dùng cố định
+1 vector/bài suốt các epoch (xem thảo luận về hạn chế này ở §5).
+
+### 3.2 Kiến trúc student — MicroDiT (`src/models/dit_transformer.py`)
+
+Một model dự đoán vận tốc CFM dạng Diffusion-Transformer nhỏ:
+
+- **Điều kiện text**: `xlm-roberta-base` đóng băng (`PretrainedRobertaEncoder`, ~278M
+  tham số, `requires_grad=False`) chiếu qua một MLP 2 lớp có thể train. Chọn model này vì
+  thực sự đa ngôn ngữ (khác tokenizer lyric Trung/Anh-only của teacher) — đây là thành
+  phần mang ngữ nghĩa lyric tiếng Việt thật vào model.
+- **Điều kiện style ("Audio Style Anchor")**: một embedding MuQ-MuLan 512-chiều duy nhất,
+  tính một lần/bài lúc preprocess, chiếu vào không gian điều kiện của model qua
+  `AudioStyleEncoder` (MLP 2 lớp). Đây là **cùng không gian embedding** mà teacher
+  DiffRhythm2 thật sự điều kiện theo, nên distillation và tự-sinh của student dùng chung
+  một khái niệm "style".
+- **Backbone**: `depth` block `LlamaDecoderLayer` của HuggingFace (rotary embedding, SDPA
+  attention, không causal mask — attention hai chiều đầy đủ trên chuỗi mel),
+  `dim`/`heads`/`ff_mult` cấu hình được (CLI: `--dim`/`--depth`/`--heads`/`--ff-mult` trên
+  `train-self`/`train-distill`). Mặc định `dim=256, depth=4, heads=4, ff_mult=4` — khoảng
+  vài triệu tham số có thể train, rất nhỏ so với `dim=2048, depth=16, heads=16` của teacher.
+- **I/O mel**: dự đoán trường vận tốc trên `(seq_len, n_mels=100)`, ở 24kHz/n_fft=1024/
+  hop=256 — chọn để khớp *chính xác* công thức mel gốc của Vocos (§2.3), không phải công
+  thức mel của DiffRhythm2.
+
+### 3.3 Huấn luyện với Conditional Flow Matching (`train-self`, `src/training/self_diffusion.py`)
+
+Huấn luyện thuần CFM, không có teacher: với mỗi batch, lấy `vocal_mel` làm `x1`,
+`backing_mel` làm điều kiện, nhiễu Gauss làm `x0`, nội suy `x_t`, và tối ưu
+`‖v_student(x_t, t, cond, text, style) - (x_1 - x_0)‖²` (`cfm_loss`,
+`src/models/cfm_flow.py`). Đây là baseline "không distillation" dùng để so sánh (§4.6),
+và cũng là backend cho lệnh `train-self`/CLI `generate-local` khi không có checkpoint
+distill.
+
+### 3.4 Chắt lọc tri thức từ DiffRhythm2 (`train-distill`, `src/training/distill_training.py`)
+
+Teacher (`diffrhythm2.backbones.dit.DiT`, khởi tạo với đúng kích thước từ `config.json`
+tải thật, không đoán) và student huấn luyện theo cùng công thức CFM: cùng `x_t`, cùng `t`,
+cùng style embedding. Token lyric và latent mel nhiễu của teacher được nối vào một chuỗi
+(`text_embed(tokens)` ở vị trí `time=-1` sentinel, `latent_embed(x_t)` ở vị trí `time=t`)
+và forward một lần không cache — tương đương về toán học với đường suy luận streaming
+block-cache của chính teacher, chỉ bỏ phần tối ưu cache (xem
+`docs/experiments/distillation_fix.md`).
+
+**Adapter mel-dim**: vì checkpoint thật của teacher dùng `mel_dim=64` còn không gian mel
+của student là 100-chiều (bắt buộc bởi lựa chọn vocoder, §2.3), một cặp adapter bắc cầu
+hai không gian này chỉ cho việc tính loss distillation — đường sinh thật của student
+không bao giờ chạm vào các adapter này. `to_teacher_mel` (student→teacher) là một **phép
+nội suy mel-bin cố định, không train**: đầu ra của nó đưa trực tiếp vào forward
+`torch.no_grad()` của teacher đóng băng, nên một lớp có thể-train ở đó sẽ (và, trước khi
+phát hiện+fix, đã) không bao giờ nhận gradient — xem "Mel-dim adapter gradient bug" trong
+`docs/experiments/distillation_fix.md`. `from_teacher_mel` (teacher→student) không bị
+ràng buộc này và là một `Linear(64→100)` có train thật, đã verify bằng backward pass thật
 (`tests/test_self_diffusion.py::test_mel_adapter_gradient_flow`).
 
 **Loss**: `loss = (1 - alpha_feature) * MSE(v_student, v_teacher) + alpha_feature * MSE(v_student, x_1 - x_0)`,
-i.e. a blend of teacher-matching and ground-truth CFM loss, with `alpha_feature`
-exposed via `--alpha-feature`. `run_distillation_training()` (called by `train-distill`)
-requires a real teacher and a real lyric tokenizer to actually be loaded — if either
-fails (no internet, package not vendored), it raises immediately rather than either
-(a) silently substituting a fake teacher, or (b) silently downgrading to ground-truth-only
-training under the `train-distill` name. Ground-truth-only training is what `train-self`
-is for; `train-distill` completing successfully always means a real teacher was used.
-(`_load_teacher()`/`_load_lyric_tokenizer()` themselves stay non-raising — they return
-a status string so diagnostics/status checks can inspect availability without a training
-run — the raise happens one level up, in `run_distillation_training()`.)
+`alpha_feature` cấu hình qua `--alpha-feature`. `run_distillation_training()` (gọi bởi
+`train-distill`) yêu cầu teacher thật và tokenizer lyric thật phải load được — nếu một
+trong hai lỗi (không có internet, package chưa vendor), nó raise ngay thay vì (a) âm thầm
+dùng teacher giả, hoặc (b) âm thầm hạ cấp về huấn luyện chỉ-ground-truth dưới tên
+`train-distill`. Huấn luyện chỉ-ground-truth là việc của `train-self`; một lần
+`train-distill` chạy xong luôn có nghĩa là đã dùng teacher thật.
 
-### 2.3 Mel representation & vocoder (`src/models/text_to_music_diffusion.py`)
+### 3.5 Hạ tầng thực nghiệm trên Kaggle
 
-Both training targets and generated output use `compute_mel_spectrogram()`: 100 mels,
-24kHz, n_fft=1024, hop=256, magnitude mel (`power=1`), natural log with a `1e-7` floor —
-verified bit-identical to `vocos.feature_extractors.MelSpectrogramFeatures`. This choice
-means the pretrained Vocos vocoder (`charactr/vocos-mel-24khz`) decodes the model's mel
-output with **no resampling step** — see §4 for why this specific decision was the
-single highest-impact fix in this project's history. A Griffin-Lim fallback
-(`vocoder_type="griffinlim"`, real iterative phase estimation via
-`librosa.feature.inverse.mel_to_audio`) exists for when Vocos is unavailable.
+Toàn bộ compute nặng (preprocess, train) chạy trên Kaggle T4 GPU qua các script tự động
+hóa Kaggle API (`scripts/run_kaggle_*.py`): tự đóng gói source code, upload dataset,
+push kernel, và theo dõi tiến độ. Hai công cụ giám sát được xây trong quá trình này:
+`kaggle kernels output` chỉ trả về file khi kernel đã xong (không dùng được để kiểm tra
+job đang chạy), nên `scripts/check_kernel_progress.py` gọi trực tiếp endpoint SSE
+log-stream của Kaggle (với timeout đọc rõ ràng, tránh treo vô hạn khi job không in gì mới
+trong vài phút) để xác nhận job **đang thực sự tiến triển** (epoch/step tăng), không chỉ
+dựa vào status `RUNNING` — tránh tốn quota cho một job bị treo mà không biết.
 
-### 2.4 Data pipeline (`src/data/preprocess_raw_vietnamese.py`)
+### 3.6 Những gì chưa tích hợp (giới hạn phạm vi có chủ đích)
 
-Per song: Demucs (`htdemucs`, two-stem) separates vocals/backing, batched (loads the
-Demucs model once per batch of up to 8 files rather than once per file), resumable
-(skips files whose stems already exist on disk), and retries cuda→cpu on failure —
-falling back to treating the whole mix as backing if separation fails entirely, flagged
-via `demucs_separated`/`vocal_source` fields rather than silently degrading. Whisper
-(`tiny`/`small`, configurable, with cuda→cpu retry) transcribes the vocal stem with
-`language="vi"`, keeping word/segment-level timestamps (`segments` field) so training
-crops can align lyric text to the actual audio window rather than the whole-song
-transcript. MuQ-MuLan computes one style embedding per song on the first 10s of the
-original mix. Both mel channels are computed with the same `compute_mel_spectrogram`.
-Output: `records.jsonl` (one record per song: lyric text + timestamped segments, style
-tag, BPM, paths to backing/vocal mel + style embedding tensors) plus `config.json` (the
-mel format, consumed by training to reconstruct `MusicDiffusionConfig` exactly).
-
-**Training-time augmentation** (`MusicDiffusionDataset.__getitem__` in
-`src/training/self_diffusion.py`): for songs longer than one training chunk, a random
-offset is chosen each epoch and applied identically to both the vocal and backing mel
-(keeping them temporally aligned) — different epochs see different windows of longer
-songs — and the lyric text used for that item is trimmed to just the segments whose
-timestamps fall inside the cropped window, using the ASR segment timestamps above.
-
-### 2.5 What's *not* wired in (by design, for now)
-
-- **Tone-aware Vietnamese G2P** (`src/data/vietnamese_g2p.py`) and **ASR-lyric alignment**
-  (`src/data/lyric_alignment.py`) exist as standalone, tested utilities but are not
-  consumed by the training pipeline — the model conditions on raw lyric text through
-  frozen `xlm-roberta-base`, not phonemes. Flagged as a real quality lever, not yet
-  pulled (see Conclusion).
-- **Pitch/F0 conditioning** was present in an earlier version (`librosa.pyin`) and was
-  removed when the Audio Style Anchor was introduced; not restored, since a proper
-  reintroduction would need to fit into the current mel/style pipeline coherently rather
-  than being bolted back on as a separate signal.
+- **Vietnamese G2P có dấu thanh** (`src/data/vietnamese_g2p.py`) và **khớp ASR-lyric**
+  (`src/data/lyric_alignment.py`) tồn tại như tiện ích độc lập, có test, nhưng chưa được
+  pipeline huấn luyện dùng — model điều kiện theo lyric text thô qua `xlm-roberta-base`
+  đóng băng, không qua phoneme. Đây là một lever chất lượng thật, chưa kéo (xem §5).
+- **Điều kiện pitch/F0** từng có ở phiên bản trước (`librosa.pyin`), bị bỏ khi thêm Audio
+  Style Anchor; chưa khôi phục, vì cần tích hợp lại đúng cách vào pipeline mel/style hiện
+  tại thay vì gắn thêm như một tín hiệu riêng biệt.
+- **Style anchor cố định 10 giây đầu bài** (§3.1) là một giản lược có chủ đích (MuQ-MuLan
+  vốn thiết kế cho embedding style/genre toàn cục, không phải đặc trưng theo khung), nhưng
+  chưa kiểm chứng xem lấy đoạn đại diện hơn (ví dụ đoạn giữa bài) có cải thiện gì không.
 
 ---
 
-## 3. Experiments
+## 4. Thực nghiệm
 
-All heavy compute (preprocessing, training) runs on Kaggle T4 GPUs via the project's
-Kaggle-API automation (`scripts/run_kaggle_*.py`) — see
-[docs/experiments/kaggle_runs.md](experiments/kaggle_runs.md) for the full run-by-run
-log, this section summarizes.
+### 4.1 Méo vocoder (nguyên nhân + fix)
 
-### 3.1 Vocoder distortion (root cause + fix)
+**Hiện tượng**: nhạc sinh ra méo nặng so với audio tham chiếu thật. **Nguyên nhân**:
+renderer mặc định tạo phase tuyến tính cố định giả thay vì tái tạo phase thật (đo được
+**0.149 tương quan log-mel** với ground truth trên một bài tham chiếu thật — gần như
+nhiễu), và đường thay thế đưa vào vocoder thần kinh thật (Vocos) một mel đã resample từ
+công thức không tương thích. **Fix**: làm công thức mel của model khớp bit-identical với
+Vocos. **Kết quả**: tương quan 0.997 (local), 0.993 (Kaggle thật). Chi tiết:
+`docs/experiments/vocoder_fix.md`.
 
-**Symptom**: generated songs were badly distorted compared to real reference audio.
-**Root cause**: the default renderer fabricated a fixed linear phase spectrum instead of
-real phase reconstruction (measured **0.149 log-mel correlation** with ground truth on a
-real reference song — near-noise), and the alternate path fed a real neural vocoder
-(Vocos) a resampled mel from an incompatible format. **Fix**: made the model's native
-mel format bit-identical to Vocos's own. **Result**: 0.997 correlation locally, 0.993 on
-Kaggle's real environment. Full write-up: `docs/experiments/vocoder_fix.md`.
+### 4.2 Hợp đồng gọi distillation (nguyên nhân + fix)
 
-### 3.2 Distillation contract (root cause + fix)
-
-**Symptom (found by code audit, not yet reported by the user)**: the distillation code
-had a fake teacher fallback with no error surfaced, guessed architecture dimensions, the
-wrong attention-mask convention for the teacher's custom layer, lyric tokens never
-actually reaching the teacher, and a fabricated style embedding. **Fix**: reverse
-engineered the real call contract from the DiffRhythm2 GitHub source and replicated it
-exactly, with an honest fallback (reports `teacher_status`/`distillation_active`
-explicitly) instead of a silent fake teacher. Full write-up:
+**Hiện tượng** (phát hiện qua audit code, chưa ai báo cáo): code distillation có fallback
+dùng teacher giả không báo lỗi, đoán sai kích thước kiến trúc, sai convention attention-mask
+cho layer riêng của teacher, token lyric không thực sự tới được teacher, và style embedding
+giả. **Fix**: reverse-engineer đúng hợp đồng gọi thật từ source code GitHub của
+DiffRhythm2 và tái tạo chính xác, với honest fallback (báo rõ `teacher_status`/
+`distillation_active`) thay cho teacher giả âm thầm. Chi tiết:
 `docs/experiments/distillation_fix.md`.
 
-### 3.3 Mel-dim mismatch (found *by* the honest-fallback mechanism working correctly)
+### 4.3 Lệch mel-dim (phát hiện *nhờ* cơ chế honest-fallback hoạt động đúng)
 
-The teacher's real checkpoint uses `mel_dim=64`; the student's Vocos-aligned mel space
-is 100-dim. The honest fallback (§3.2) correctly detected this and disabled the teacher
-rather than compute shape-mismatched garbage. **Fix**: a small trainable linear adapter
-pair bridging the two mel spaces for the distillation loss only. Verified locally with a
-fake-teacher unit test (mismatched dims, forward+backward+optimizer step all succeed).
+Checkpoint thật của teacher dùng `mel_dim=64`; không gian mel của student (khớp Vocos) là
+100-chiều. Honest fallback (§4.2) phát hiện đúng điều này và tắt teacher thay vì tính ra
+rác do lệch shape. **Fix**: một cặp adapter linear nhỏ có thể train bắc cầu hai không gian
+mel, chỉ dùng cho loss distillation. Verify local bằng unit test teacher giả (mel-dim lệch,
+forward+backward+optimizer step đều thành công).
 
-### 3.4 Checkpoint bloat
+### 4.4 Checkpoint quá nặng
 
-Checkpoints were 1.1GB each because `save_checkpoint` was saving the frozen (never
-trained) RoBERTa text encoder every time. Fixed to exclude it (loaded fresh from
-HuggingFace on load instead); `load_checkpoint` now uses `strict=False` to accommodate
-this. Verified: checkpoint size ~67MB for the default architecture (down from ~1.1GB),
-generation from a loaded checkpoint still works correctly.
+Checkpoint nặng 1.1GB mỗi lần vì `save_checkpoint` lưu cả RoBERTa text encoder đóng băng
+(không bao giờ train). Fix: loại trừ nó (load lại từ HuggingFace lúc load checkpoint);
+`load_checkpoint` dùng `strict=False` để tương thích. Verify: checkpoint ~67MB với kiến
+trúc mặc định (giảm từ ~1.1GB), sinh audio từ checkpoint đã load vẫn đúng.
 
-### 3.5 Does distillation actually help? (comparison experiment — completed at real scale, §3.9)
+### 4.5 Xác thực pipeline end-to-end (quy mô nhỏ)
 
-The originally planned comparison (`scripts/run_experiment_matrix.py`, a 40-song
-multi-variant matrix) never got GPU time and was superseded by a simpler direct
-comparison at a larger, real scale (250 songs, matched epochs/batch/steps) — see §3.9 for
-the actual result. The matrix script itself is still unrun and would give a finer-grained
-`alpha_feature`/architecture-size ablation if useful later, but the core question this
-section used to leave open — "does the teacher signal actually help vs. training from
-scratch on the same data budget" — now has a real, measured answer.
+**Trên Kaggle** (`genmusic-fullexp-1783972294`, 12 bài thật, GPU T4): preprocess 12/12
+thành công, vocoder round-trip đạt 0.993 tương quan log-mel, train baseline DiT hoàn tất
+(120 step), cả baseline và honest-fallback generation đều ra audio hợp lệ, không suy biến
+(peak ~0.8, RMS 0.08–0.15, silence ratio <0.13%, không NaN/Inf).
 
-### 3.6 End-to-end pipeline validation
+**Lần thử Kaggle thứ hai** (`genmusic-fullexp-1783991479`) với adapter mel-dim bị treo
+~11 giờ trước khi bị kill — xem `docs/experiments/kaggle_runs.md` để biết nguyên nhân (một
+import không liên quan trigger JIT-compile CUDA extension) và cách fix. Việc này tốn một
+phần đáng kể quota GPU của session đó.
 
-**On Kaggle** (`genmusic-fullexp-1783972294`, 12 real songs, T4 GPU): preprocessing
-12/12 succeeded, vocoder round-trip scored 0.993 log-mel correlation, baseline DiT
-training completed (120 steps), and both baseline and (honest-fallback) generation
-produced valid non-degenerate audio (peak ~0.8, RMS 0.08–0.15, silence ratio <0.13%, no
-NaN/Inf).
+**Local** (Windows, CPU-only, 2 bài thật): mọi giai đoạn chạy end-to-end với dữ liệu thật —
+preprocess (2/2 record), vocoder round-trip (0.986 tương quan), train baseline, honest
+fallback của distillation (`distillation_active: false`, báo đúng teacher không khả dụng
+thay vì giả), và sinh audio từ cả hai checkpoint (hợp lệ, không suy biến). Test suite đầy
+đủ: 10/10 pass lúc đó.
 
-**A second Kaggle attempt** (`genmusic-fullexp-1783991479`) with the mel-dim adapter
-applied hung for ~11 hours before being killed — see
-[docs/experiments/kaggle_runs.md](experiments/kaggle_runs.md) for the root cause (an
-unrelated top-level import triggering a CUDA extension JIT compile) and fix. This
-consumed a meaningful fraction of the session's Kaggle GPU budget and, combined with
-further usage, exhausted it before a re-run could confirm `distillation_active: true`
-at Kaggle scale.
+### 4.6 Distillation thật lần đầu end-to-end (local, `distillation_active: true`)
 
-**Locally** (Windows, CPU-only, no GPU, 2 real songs from `dataset/vietnamese_songs/`,
-after the fix + a large merge with parallel work — see
-[docs/experiments/kaggle_runs.md](experiments/kaggle_runs.md)): every stage ran
-end-to-end with real data — preprocessing (2/2 records), vocoder round-trip (0.986
-correlation), baseline training, distillation's honest fallback (`distillation_active:
-false`, teacher correctly reported as unavailable rather than faked), and generation
-from both checkpoints (valid non-degenerate audio, peak ~0.8, RMS 0.07–0.10, silence
-ratio <0.2%, no NaN/Inf). Full test suite: 10/10 passing. This run also surfaced and
-fixed a Windows-only `UnicodeEncodeError` (cp1252 console/file encoding vs. Vietnamese
-diacritics) invisible on Kaggle's Linux/UTF-8 environment.
+Verify trên CPU sau khi hết quota Kaggle: clone `github.com/ASLP-lab/DiffRhythm2`, patch
+lệch phiên bản `transformers` và ~20 package thiếu cùng 3 bug encoding cp1252-vs-UTF-8
+trong chính code vendor của DiffRhythm2 (không phải code project này). Với `espeak-ng` cài
+làm system package và clone đã patch trên `PYTHONPATH`, cả `_load_teacher()`
+(`teacher_status: "ok"`) và `_load_lyric_tokenizer()` (`tokenizer_status: "ok"`) load được
+teacher thật và tokenizer lyric thật trên máy Windows/CPU thường — không cần Kaggle cho
+phần này.
 
-**Net result**: the pipeline is verified correct end-to-end, twice, in two different
-environments. What's *not* verified is whether real distillation (`distillation_active:
-true`, i.e. the real DiffRhythm2 teacher successfully loaded and contributed signal)
-completes a full training run without error at Kaggle scale — the adapter path was
-verified in isolation (a unit test with a fake teacher of mismatched mel_dim, forward +
-backward + optimizer step all succeed) but never end-to-end against the real teacher
-before quota ran out.
+Một lần train distillation thật 30 epoch (2 bài, `batch_size=2`, `dim=128, depth=2`) hoàn
+tất với `distillation_active: true` lần đầu tiên, đối đầu teacher DiffRhythm2 thật
+(1,136,249,664 tham số, so với 745,188 tham số có thể train của student — teacher lớn hơn
+~1,525 lần). So với baseline không-teacher cùng 2 bài/30 epoch: `loss_gt` cuối ≈17.9
+(distilled) vs. ≈15.7 (baseline) — không khác biệt có ý nghĩa thống kê, do quy mô quá nhỏ
+(2 bài, `batch_size=2` → đúng 1 gradient step/epoch, và CFM sample timestep ngẫu nhiên làm
+loss dao động 3.5–229 *trong cùng một run*). Đóng góp thật của run này là chứng minh cơ
+chế đúng end-to-end (adapter mel-dim, hợp đồng gọi teacher, tokenize lyric đều chạy thật),
+không phải trả lời câu hỏi chất lượng.
 
-### 3.7 Real-teacher distillation confirmed locally (`distillation_active: true`, first time end-to-end)
+### 4.7 Hai bug độc lập sau báo cáo "gần như toàn nhiễu" của đồng nghiệp
 
-After §3.6, Kaggle quota ran out entirely, so this was verified on CPU instead: a fresh
-shallow clone of `github.com/ASLP-lab/DiffRhythm2` was patched locally to work around
-transformers version skew (`StaticCache`/`FlashAttentionKwargs` import paths moved,
-`LlamaConfig.rope_theta` routing changed) and a chain of ~20 missing Python packages plus
-three Windows cp1252-vs-UTF-8 file-encoding bugs in the *vendored DiffRhythm2 code itself*
-(not this project's code). With `espeak-ng` installed as a system package and the patched
-clone on `PYTHONPATH`, both `_load_teacher()` (`teacher_status: "ok"`) and
-`_load_lyric_tokenizer()` (`tokenizer_status: "ok"`) now load the real teacher and real
-lyric tokenizer on a plain Windows/CPU machine — no Kaggle required for this part.
+Một đồng nghiệp báo cáo generation từ một run thật (~250 bài, 60 epoch, `train-distill`)
+ra gần như toàn nhiễu. Điều tra tìm ra 2 bug riêng biệt, không liên quan, cả hai đã fix:
 
-A real 30-epoch distillation run (2 real songs, batch_size=2, `dim=128, depth=2`) then
-completed with `distillation_active: true` for the first time against the actual
-1,136,249,664-param DiffRhythm2 teacher (vs. the student's 745,188 trainable params —
-teacher is ~1,525× larger, which is the whole point of distillation). Isolated timing:
-one teacher forward pass at batch_size=1 costs ≈3s on CPU (inference-only, no backward);
-the dominant cost in every distillation step.
+**Bug 1 — generation luôn zero-conditioned.** `generate_audio()` gọi `sample_cfm` không
+truyền `backing_mel`/`style_prompt`, nên mọi lần chạy `generate-local` điều kiện theo
+backing-track bằng 0 và một vector text-pooled thay thế, không phải style anchor
+MuQ-MuLan thật — lệch train/inference thật, nặng hơn ở quy mô thật (250 bài, đa số có
+backing_mel không-zero từ Demucs tách thành công) so với test 2-bài trước đó của session
+này. **Fix**: `load_reference_conditioning()` trích `backing_mel`/`style_anchor` thật từ
+một record dataset đã preprocess; `generate-local --reference-dataset --reference-id` nối
+vào CLI.
 
-**Comparing against a baseline (no-teacher) run on the same 2 songs/30 epochs**:
-final `loss_gt` ≈17.9 (distilled) vs. ≈15.7 (baseline) — statistically indistinguishable.
-This is *not* evidence against distillation; it's an artifact of scale: with only 2 songs
-and `batch_size=2` there is exactly 1 gradient step per epoch, and CFM's random per-step
-timestep sampling makes loss swing from ~3.5 to ~229 within the *same run* independent of
-learning progress. 30 such steps isn't enough to average that variance out. Answering
-"does distillation help" still requires either more songs, more steps per epoch, or both
-— this local run's contribution is proving the *mechanism* is real and correct end-to-end
-(mel-dim adapter, teacher call contract, lyric tokenization all genuinely exercised), not
-answering the quality question, which remains exactly as open as §3.5/§4 already said.
+**Bug 2 — gradient của adapter mel-dim bị cắt cho mọi run distillation thật.** Xem §3.4 —
+`to_teacher_mel`/`from_teacher_mel` cả hai được tính trong `torch.no_grad()`, nên không
+bao giờ nhận gradient dù được đăng ký train và đưa vào optimizer, cho mọi run
+`train-distill` có `mel_adapter_used: true` (tức mọi run thật, vì `mel_dim` teacher
+không bao giờ khớp `100` của student). **Fix**: `from_teacher_mel` giờ nhận gradient thật;
+`to_teacher_mel` đổi thành nội suy mel-bin cố định thay vì một lớp "về danh nghĩa có thể
+train nhưng về cấu trúc không thể", vì fix đúng nó cần backward qua toàn bộ teacher
+~1.14 tỉ tham số mỗi step.
 
-**Full-corpus feasibility** (`sonlest/vietnamese-music-dataset-version3-part6` = 201
-songs, 2.52GB, confirmed via the Kaggle API): preprocessing extrapolates to ≈3.9 GPU-hours
-(measured 12-song Kaggle rate ≈70s/song), comfortably within a weekly quota. Baseline
-training is trivial at any scale (≈5 min extrapolated, tiny student). Real-teacher
-distillation's GPU cost is *not* measured, only extrapolated from the CPU numbers above
-with a generic CPU→T4 speedup assumption (≈15–50×, unverified) — landing around 30
-minutes to a few hours for a full run. No Kaggle GPU distillation run has ever completed
-even once (every attempt hit a bug or ran out of quota first), so this number carries
-real uncertainty; a small (~12-song) real-teacher GPU smoke test is the next step to
-replace the estimate with a measurement, before committing quota to the full corpus.
+**Bug nào giải thích báo cáo của đồng nghiệp?** Không rõ — cả hai đều áp dụng cùng lúc
+cho checkpoint đó; cần một run lại có kiểm soát (§4.8) để biết.
 
-**Behavior change**: `run_distillation_training()` (i.e. `train-distill`) now raises
-immediately if the real teacher or its lyric tokenizer fails to load, rather than
-silently downgrading to ground-truth-only training under the `train-distill` name (which
-is what it did through all of §3.1–§3.6 above, reported honestly via
-`distillation_active: false` but still a "successful" run that didn't do what was asked).
-`_load_teacher()`/`_load_lyric_tokenizer()` themselves are unchanged and still
-non-raising, for callers that just want a status check. Ground-truth-only training is
-what `train-self` is for; a `train-distill` run that completes now always means a real
-teacher was used, full stop.
+### 4.8 Lần chạy thật đầu tiên ở quy mô đầy đủ: 250 bài, distillation vs. self-diffusion
 
-### 3.8 Two independent bugs behind a coworker's "almost entirely noise" report
+Run lại có kiểm soát theo yêu cầu §4.7: full 250 bài, preprocess với `--whisper-model base`
+(sau khi phát hiện `tiny` hallucinate/lặp câu trên lyric thật), rồi `train-distill` và
+`train-self` trên cùng dữ liệu với `epochs=25, batch_size=4` khớp nhau để so `loss_gt` trực
+tiếp.
 
-A teammate reported that generation from a real run (~250 songs, 60 epochs,
-`train-distill`) came out nearly all noise. Investigating found two separate, unrelated
-bugs, both now fixed:
+**Hai bug hạ tầng thật phát hiện và fix trước khi run này ra được kết quả dùng được**:
+- Timeout subprocess của Kaggle preprocessing là `1800s` bất kỳ khi nào `--max-files` được
+  set, nhầm lẫn "test nhanh nhỏ" với "giới hạn đúng bằng cả dataset" — nó âm thầm kill một
+  run 250 file thật ở mốc 30 phút khi vẫn đang chạy khỏe (bài 46/250), mất luôn thời gian
+  GPU đó vì không có gì salvage được (`records.jsonl` chỉ ghi 1 lần ở cuối). **Fix**: scale
+  timeout theo số file.
+- `train-distill` OOM ở epoch 3/25 (`batch_size=8`) — CUDA hết bộ nhớ, ~11.6GiB đã cấp,
+  3.57GiB "reserved nhưng chưa cấp". Epoch 1–2 chạy tốt với cùng batch size, nên đây là
+  fragmentation của allocator tích lũy qua các step (mỗi batch có độ dài token lyric khác
+  nhau, khiến CUDA caching allocator tạo nhiều block kích thước khác nhau), không phải bug
+  logic hay GPU quá nhỏ. **Fix**: `batch_size=4`,
+  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, và `torch.cuda.empty_cache()` giữa
+  các epoch; run lại hoàn tất cả 25 epoch không OOM.
 
-**Bug 1 — generation was always zero-conditioned.** `generate_audio()`'s call to
-`sample_cfm` never passed `backing_mel`/`style_prompt`, so every `generate-local` run
-(and every automated generation stage in `run_full_experiment.py`/
-`run_experiment_matrix.py`) conditioned on a zero backing-track and a pooled-text
-stand-in instead of a real MuQ-MuLan style anchor — a real train/inference mismatch,
-worse at real scale (250 songs, mostly real non-zero backing_mel from successful Demucs
-separation) than in this session's earlier 2-song tests (where zero-fallback was common
-anyway). Fixed by `load_reference_conditioning()` (`src/training/self_diffusion.py`),
-which extracts a real `backing_mel`/`style_anchor` pair from an existing preprocessed
-dataset record; `generate-local --reference-dataset --reference-id` wires it into the
-CLI, and both experiment scripts now pass it automatically to their own generation
-stage. Verified end-to-end: `generation.baseline.reference_conditioning` now reports
-`{"has_backing_mel": true, "has_style_anchor": true}` instead of not existing at all.
+**Kết quả huấn luyện** (`ddvnam05/genmusic-distill-1784166040` vs.
+`ddvnam05/genmusic-train-1784173776`, cùng dataset, cùng `epochs=25`/`batch_size=4`/1575
+step):
 
-**Bug 2 — the mel-dim adapter's gradient was cut for real distillation runs.** See §2.2
-and `docs/experiments/distillation_fix.md`'s "Mel-dim adapter gradient bug" section —
-`to_teacher_mel`/`from_teacher_mel` were both computed inside `torch.no_grad()`, so
-neither ever received a gradient despite being registered as trainable and handed to
-the optimizer, for every `train-distill` run where `mel_adapter_used: true` (i.e. every
-real run against the actual teacher, whose `mel_dim=64` never matches the student's
-`100`). Fixed: `from_teacher_mel` now receives a real gradient (verified with an actual
-`.backward()` call); `to_teacher_mel` was replaced with a fixed deterministic mel-bin
-interpolation instead of a nominally-trainable-but-structurally-untrainable layer,
-since fully fixing it would require backward through the ~1.14B-param teacher every
-step.
-
-**Which one explains the coworker's report?** Unknown — the report was from a
-`train-distill` checkpoint, so both bugs applied simultaneously; this hasn't been
-isolated to one cause via a controlled re-run (train the same 250-song dataset again
-post-fix, listen to the result) which is the natural next step. Bug 1 alone applies to
-`train-self` (baseline) too; Bug 2 is `train-distill`-specific.
-
-### 3.9 First completed real-scale run: 250 songs, distillation vs. self-diffusion, with objective quality metrics
-
-The controlled re-run §3.8 called for: full 250-song dataset (`sonlest/vietnamese-music-dataset-version3-part6`,
-preprocessed with `--whisper-model base` after tiny was found to hallucinate/loop on real
-lyrics), then `train-distill` and `train-self` on identical data with matched
-`epochs=25, batch_size=4` so their `loss_gt` curves are directly comparable.
-
-**Two real bugs found and fixed before this run produced anything usable** (both now
-committed):
-- Kaggle preprocessing's subprocess timeout was `1800s` whenever `--max-files` was set at
-  all, conflating "small smoke test" with "capped at the full dataset size" — it silently
-  killed a real 250-file run at the 30-minute mark while still healthy (song 46/250), losing
-  that GPU time with nothing salvageable (`records.jsonl` is written once at the end, not
-  incrementally). Fixed by scaling the timeout with file count.
-- `train-distill` OOM'd on epoch 3 of 25 (batch_size=8) — `CUDA out of memory`, ~11.6GiB
-  allocated, 3.57GiB reserved-but-unallocated. Epochs 1–2 completed fine with the same batch
-  size, so this was allocator fragmentation building up across steps (each batch has a
-  different lyric-token length, so the CUDA caching allocator accumulates many
-  differently-sized blocks), not a logic bug or an undersized GPU. Fixed with
-  `batch_size=4`, `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, and
-  `torch.cuda.empty_cache()` between epochs; the re-run completed all 25 epochs without OOM.
-
-**Training result** (`ddvnam05/genmusic-distill-1784166040` vs. `ddvnam05/genmusic-train-1784173776`,
-same dataset, same `epochs=25`/`batch_size=4`/1575 steps):
-
-| | loss_gt @ epoch 1 | loss_gt @ epoch 25 | final_loss_gt (last 10 steps) | wall-clock |
+| | loss_gt @ epoch 1 | loss_gt @ epoch 25 | final_loss_gt (10 step cuối) | wall-clock |
 |---|---|---|---|---|
-| `train-distill` (real teacher) | 8.86 | 3.28 | 2.57 | 6527s |
-| `train-self` (no teacher) | 11.24 | 8.06 | 7.15 | 134s |
+| `train-distill` (teacher thật) | 8.86 | 3.28 | 2.57 | 6527s |
+| `train-self` (không teacher) | 11.24 | 8.06 | 7.15 | 134s |
 
-Both runs saw the identical 250 songs in the identical order for the identical number of
-steps. Distillation's ground-truth loss dropped to roughly a third of the no-teacher
-baseline's, and did so far more consistently (the no-teacher curve oscillates between ~7
-and ~13 with no clear downward trend after epoch ~10, e.g. epoch 20 jumps back to 11.02).
-This is the first real evidence (not just "the mechanism works in isolation", §3.7) that
-the teacher signal measurably helps on this project's own data at this scale. It costs
-~49x the wall-clock GPU time for that improvement, which is the real trade-off, not a
-free win — see the quota note below.
+Cả hai run thấy đúng 250 bài cùng thứ tự, cùng số step. Loss ground-truth của distillation
+giảm xuống còn khoảng 1/3 so với baseline không-teacher, và ổn định hơn nhiều (đường
+không-teacher dao động ~7–13 không có xu hướng giảm rõ sau epoch ~10). Đây là bằng chứng
+thật đầu tiên (không chỉ "cơ chế đúng khi cô lập", §4.6) rằng tín hiệu teacher giúp đo được
+trên dữ liệu thật của project ở quy mô này. Đổi lại tốn ~49 lần thời gian GPU — đây là
+trade-off thật, không phải miễn phí.
 
-**Objective audio quality check** (`scripts/evaluate_generation_quality.py`, new this
-session): since no one was available to listen, this scores generated audio without a
-human — spectral flatness (0 = tonal/harmonic, 1 = white noise; this is the direct proxy
-for "toàn nhiễu" / all-noise complaints), clip ratio, silence ratio, and RMS, computed on
-7 samples spread across the dataset, each compared against that same song's *real* vocal
-track rendered through the identical Vocos vocoder (isolating model quality from vocoder
-artifacts) and against a synthesized white-noise clip as a fixed sanity anchor:
+**Đánh giá chất lượng audio khách quan** (`scripts/evaluate_generation_quality.py`): vì
+không có ai nghe trực tiếp, script này chấm audio sinh ra mà không cần người nghe —
+spectral flatness (0 = có cấu trúc tonal/hài âm, 1 = nhiễu trắng; đây là proxy trực tiếp
+cho khiếu nại "toàn nhiễu"), clip ratio, silence ratio, RMS, tính trên 7 mẫu rải trong
+dataset, mỗi mẫu so với vocal thật *của chính bài đó* render qua cùng vocoder Vocos (để
+cô lập chất lượng model khỏi lỗi vocoder), và so với một đoạn nhiễu trắng tổng hợp làm mốc
+sanity:
 
-| | mean spectral flatness | mean RMS | clip ratio |
+| | spectral flatness (mean) | RMS (mean) | clip ratio |
 |---|---|---|---|
-| white noise (sanity anchor) | 0.562 | 0.577 | 2.0% |
-| `train-distill` output | 0.086 | 0.078–0.131 | 0.0% |
-| `train-self` output | 0.075 | 0.037–0.055 | 0.0% |
-| real vocal (same vocoder) | 0.053 | 0.080–0.109 | 0.0% |
+| nhiễu trắng (mốc sanity) | 0.562 | 0.577 | 2.0% |
+| `train-distill` | 0.086 | 0.078–0.131 | 0.0% |
+| `train-self` | 0.075 | 0.037–0.055 | 0.0% |
+| vocal thật (cùng vocoder) | 0.053 | 0.080–0.109 | 0.0% |
 
-Neither checkpoint's output is remotely close to the white-noise anchor on flatness — both
-are clearly tonal/structured, not noise, and neither clips. Flatness alone reads as
-close between the two models (distill's is even slightly *higher*/less-tonal than
-self-diffusion's on this narrow metric), which on its own would be a misleading way to
-compare them: `train-self`'s RMS (0.037–0.055) sits well below the real-vocal range
-(0.080–0.109), while `train-distill`'s (0.078–0.131) tracks it closely. Combined with the
-loss_gt gap above, the more complete picture is that distillation output is closer to the
-real target on the axes that actually distinguish the two models, and flatness alone is a
-good "is this noise" filter but not a full quality signal — it can't tell a correct quiet
-passage from an undertrained quiet-and-wrong one.
+Không checkpoint nào gần mốc nhiễu trắng về flatness — cả hai có cấu trúc tonal rõ, không
+phải nhiễu, và không clip. Riêng flatness thì hai model gần nhau (distill còn hơi cao/kém
+tonal hơn self-diffusion một chút) — nếu chỉ nhìn số này sẽ **hiểu sai**: RMS của
+`train-self` (0.037–0.055) thấp hẳn dưới range vocal thật (0.080–0.109), còn của
+`train-distill` (0.078–0.131) bám sát range đó. Kết hợp với khoảng cách loss_gt ở trên,
+distillation cho output gần target thật hơn ở đúng những trục phân biệt hai model —
+flatness một mình là bộ lọc "có phải nhiễu không" tốt, nhưng không phải tín hiệu chất
+lượng đầy đủ.
 
-**Quota spent this run**: preprocessing ≈2h (one wasted 30min run + one successful
-~2h run), `train-distill` ≈1.8h, `train-self` ≈2min, local evaluation ≈free (runs on the
-requester's machine, not Kaggle). Total Kaggle GPU time ≈4h of this project's weekly
-budget.
+**Quota tiêu tốn cho run này**: preprocess ≈2h (1 run hỏng 30 phút + 1 run thành công
+~2h), `train-distill` ≈1.8h, `train-self` ≈2 phút, đánh giá local ≈miễn phí (chạy trên
+máy người yêu cầu, không dùng Kaggle). Tổng thời gian GPU Kaggle ≈4h.
 
-**Conclusion for this run**: the "is distillation broken" and "is the model too small"
-hypotheses this section was set up to test were both falsified before reaching model
-size: the bugs were infrastructure (timeout, OOM), not distillation logic or capacity, and
-once fixed, distillation converged as expected on `loss_gt` and produced clearly
-non-noise, real-audio-comparable output at the small size (`dim=256, depth=4, heads=4`).
-Whether model size itself was *also* limiting quality is answered directly in §3.10.
+### 4.9 Ablation kích thước model: student lớn hơn không giúp gì ở cùng ngân sách step
 
-### 3.10 Model-size ablation: bigger student did not help at the same step budget
+Người nghe thật (không phải metric ở §4.8) báo cáo output vẫn chưa nghe ra lời. Kiểm tra
+trực tiếp thống kê mel sinh ra so với mel vocal thật (cùng điều kiện, bài `-6s_eRHYqVM`)
+tìm ra lý do: độ lệch chuẩn (std) của mel sinh ra là 1.09 so với 2.95 của vocal thật —
+khoảng 1/3 biên độ dao động, dấu hiệu kinh điển của "regression-to-mean" do thiếu tín hiệu
+huấn luyện so với độ đa dạng được yêu cầu (250 bài rất khác nhau, 1575 step, ra một
+"trung bình mượt" thay vì chi tiết sắc nét từng bài). Hai giả thuyết: student
+(`dim=256, depth=4, heads=4`, vài triệu tham số) quá nhỏ để biểu diễn chi tiết đó, hoặc cần
+nhiều gradient step hơn bất kể kích thước. Sau khi bổ sung `--dim/--depth/--heads/--ff-mult`
+cho launcher `run_kaggle_distill.py` (đã có sẵn trên `cli.py` nhưng chưa expose ra
+launcher), một run cùng dữ liệu/epoch/batch được chạy với `dim=384, depth=6, heads=6`
+(≈3 lần tham số student) để so với `dim=256, depth=4, heads=4` (§4.8):
 
-A listener (not this session's objective metrics) reported the §3.9 output still didn't
-sound like intelligible singing. Direct inspection of the generated mel's statistics
-against the real vocal mel's (`-6s_eRHYqVM`, same conditioning) found why: the generated
-mel's standard deviation was 1.09 vs. the real vocal's 2.95 — about a third of the
-dynamic range, a textbook regression-to-the-mean symptom of too little training signal
-relative to what's being asked of the model (250 highly diverse songs, 1575 steps,
-producing a "smoothed average" rather than sharp per-song detail). Two candidate
-explanations: the student (`dim=256, depth=4, heads=4`, a few million parameters) is too
-small to represent that detail, or it needs more gradient steps regardless of size. Since
-`--dim/--depth/--heads/--ff-mult` were already exposed on `cli.py train-distill` but not
-on `run_kaggle_distill.py`'s launcher, that gap was closed first, then a same-data/
-same-epochs/same-batch run was submitted with `dim=384, depth=6, heads=6` (≈3x the
-student parameters) against `dim=256, depth=4, heads=4` (§3.9):
-
-| | loss_gt @ epoch 25 | mel std (generated) | wall-clock |
+| | loss_gt @ epoch 25 | mel std (sinh ra) | wall-clock |
 |---|---|---|---|
-| `dim=256, depth=4, heads=4` (§3.9) | 3.28 | 1.09 | 6527s |
+| `dim=256, depth=4, heads=4` (§4.8) | 3.28 | 1.09 | 6527s |
 | `dim=384, depth=6, heads=6` | 3.65 | 1.06 | 6522s |
-| real vocal (target) | — | 2.95 | — |
+| vocal thật (target) | — | 2.95 | — |
 
-The bigger student did not improve either metric — `loss_gt` at the final epoch was
-slightly *worse*, and the mel-variance collapse was essentially unchanged (1.06 vs 1.09,
-both still ~a third of real). Wall-clock was identical between the two runs, which makes
-sense once you notice *why*: the ~1.14B-parameter teacher's forward pass dominates
-per-step cost, so a 3x bigger student is nearly free to run but doesn't fit better in the
-same number of gradient steps — more parameters need more updates to converge, all else
-equal, and 1575 steps clearly wasn't enough headroom for that trade to pay off.
+Student lớn hơn không cải thiện metric nào — `loss_gt` ở epoch cuối còn *kém hơn* một
+chút, và độ sụp std hầu như không đổi (1.06 vs 1.09, cả hai vẫn ~1/3 so với thật).
+Wall-clock giống nhau giữa hai run — hợp lý vì forward pass của teacher ~1.14 tỉ tham số
+chiếm phần lớn chi phí mỗi step, nên student to hơn 3 lần gần như miễn phí để chạy nhưng
+không khớp tốt hơn trong cùng số gradient step — nhiều tham số hơn cần nhiều update hơn để
+hội tụ, mọi thứ khác giữ nguyên, và 1575 step rõ ràng chưa đủ dư địa cho đổi chác đó có lời.
 
-**This rejects the "model is too small" hypothesis at this step budget.** The more
-likely bottleneck is simply steps/data: 1575 gradient updates over 250 songs is little
-for a generative audio model of *any* size in this range. The natural next experiment is
-more epochs on the cheaper-to-experiment-with `dim=256` config (bigger models cost nothing
-extra per step here, but smaller ones are faster to iterate on locally for evaluation) to
-see whether `loss_gt` keeps trending down with more steps or has already plateaued —
-if it plateaus too, data quantity/diversity (not steps or size) would be the next suspect,
-pointing at the coworker's multi-part scripts (`run_kaggle_all_parts.py`,
-`run_kaggle_multi_part_training.py`, §1.5) to scale past this project's own 250-song part.
+**Điều này bác bỏ giả thuyết "model quá nhỏ" ở ngân sách step này.** Nút thắt khả năng cao
+hơn đơn giản là số step/dữ liệu: 1575 gradient update trên 250 bài là ít cho một model sinh
+audio ở khoảng kích thước này, bất kể lớn nhỏ. Thực nghiệm tiếp theo hợp lý là tăng số
+epoch trên config `dim=256` rẻ hơn để thử nghiệm (§4.10).
+
+### 4.10 Thực nghiệm đang chạy: tăng số epoch (75 epoch, `dim=256`)
+
+Để kiểm tra trực tiếp giả thuyết "cần nhiều step hơn" từ §4.9: cùng dataset 250 bài, cùng
+`dim=256, depth=4, heads=4, batch_size=4`, nhưng `epochs=75` (gấp 3 lần §4.8) —
+`ddvnam05/genmusic-distill-1784188506`. *(Kết quả sẽ được cập nhật vào mục này khi job
+hoàn tất; job đang được theo dõi bằng `scripts/check_kernel_progress.py` §3.5 để phát hiện
+sớm nếu treo.)*
 
 ---
 
-## 4. Conclusion
+## 5. Kết luận và hướng phát triển
 
-- The single highest-leverage fix in this project's history was **not** a model or
-  training change at all — it was the audio rendering path. A model can only be judged
-  once its output can be faithfully turned into sound; before this session, it could
-  not be (0.15 log-mel correlation with ground truth, i.e. the default output path was
-  producing structured noise regardless of model quality).
-- Getting distillation to do anything real required treating the teacher as a black box
-  whose interface had to be *read from its actual source code*, not inferred from
-  variable names or class defaults — the `mel_dim=100` default vs. the real checkpoint's
-  `mel_dim=64` is the clearest example of this trap, and it recurred independently in
-  the parallel `origin/master` work this session merged with (§1.5), which is some
-  evidence it's a natural mistake for this kind of integration, not a one-off.
-- **The distillation-helps-or-not question now has a real answer: yes, measurably, at
-  250-song/25-epoch/matched-steps scale (§3.9).** `train-distill`'s `loss_gt` (2.57 final)
-  came in at roughly a third of `train-self`'s (7.15 final) on identical data, and an
-  objective (non-listening) audio-quality check found both checkpoints clearly non-noise
-  and non-clipping, with `train-distill`'s output amplitude tracking real vocal audio more
-  closely. The cost side of that trade-off is real too: distillation took ~49x the
-  wall-clock GPU time of the no-teacher baseline for that improvement. Two infrastructure
-  bugs (a preprocessing timeout that killed a healthy run, and a CUDA OOM from allocator
-  fragmentation across epochs) were found and fixed in the process of getting this result
-  — neither was a distillation-logic or model-capacity problem, so no model-size increase
-  was warranted this round (§3.9).
-- `train-distill` now raises immediately if the real teacher/tokenizer can't be loaded,
-  instead of silently completing as ground-truth-only training under the distillation
-  name (§3.7). This closes a real gap: every §3.1–§3.6 "successful" distillation run
-  before §3.7 was, by construction, either a real distillation or a same-named
-  ground-truth-only run depending on environment — correctly *reported* via
-  `distillation_active`, but easy to miss if you didn't check that field.
-- Small-model architecture choice (`dim=256, depth=4, heads=4`, a few million trainable
-  parameters vs. the teacher's few-hundred-million) was carried through as the working
-  default throughout, with `--dim`/`--depth`/`--heads`/`--ff-mult` exposed for the size
-  ablation the comparison experiment was designed to include — this part of "small model,
-  good quality" is set up correctly even though the "good quality" half is unverified.
-- Honest scope limits: everything reported here is either a wiring/correctness result
-  (pipeline runs, produces valid non-degenerate audio, honest fallbacks work as designed)
-  or a data point from a tiny (2–12 song) dataset run for a handful of epochs — none of it
-  is a claim about musical quality. See `docs/guides/run_full_pipeline.md` for exactly
-  what to run next once Kaggle GPU quota is available again.
+### 5.1 Kết luận
+
+- Fix có ảnh hưởng lớn nhất trong lịch sử project **không phải** là thay đổi model hay
+  huấn luyện — mà là đường render audio. Một model chỉ có thể được đánh giá đúng khi output
+  của nó được chuyển thành âm thanh trung thực; trước khi fix, điều này không đúng (0.15
+  tương quan log-mel với ground truth — đường output mặc định ra nhiễu có cấu trúc bất kể
+  chất lượng model thật ra sao) (§4.1).
+- Muốn distillation hoạt động thật cần đọc *đúng source code* của teacher để biết hợp đồng
+  gọi, không đoán qua tên biến hay giá trị mặc định của class — `mel_dim=100` mặc định vs.
+  `mel_dim=64` thật của checkpoint là ví dụ rõ nhất, và lỗi này lặp lại độc lập ở nhánh
+  song song `origin/master` cùng session — một tín hiệu cho thấy đây là cái bẫy tự nhiên
+  của loại tích hợp này, không phải lỗi ngẫu nhiên một lần (§4.2).
+- **Câu hỏi "distillation có giúp gì không" giờ có câu trả lời thật: có, đo được, ở quy mô
+  250 bài/25 epoch/số step khớp nhau (§4.8).** `loss_gt` của `train-distill` (2.57 cuối)
+  chỉ bằng khoảng 1/3 của `train-self` (7.15 cuối) trên cùng dữ liệu, và kiểm tra chất
+  lượng audio khách quan xác nhận cả hai checkpoint rõ ràng không phải nhiễu, không clip,
+  với biên độ output của `train-distill` bám sát audio vocal thật hơn. Đổi lại,
+  distillation tốn ~49 lần thời gian GPU của baseline không-teacher — đây là trade-off
+  thật, không phải chiến thắng miễn phí.
+- Tăng kích thước model (§4.9) **không** giúp ở cùng ngân sách 1575 step — bác bỏ giả
+  thuyết "model quá nhỏ" ở khoảng kích thước đã thử; nút thắt khả năng cao hơn là số
+  step huấn luyện và/hoặc độ đa dạng dữ liệu, không phải công suất model.
+- Hai bug hạ tầng thật (timeout preprocess giết một run lành mạnh, CUDA OOM do
+  fragmentation allocator) được phát hiện và fix trong lúc chạy thực nghiệm ở quy mô đầy
+  đủ — không phải bug logic distillation hay hạn chế công suất model (§4.8).
+- `train-distill` giờ raise ngay nếu không load được teacher/tokenizer thật, thay vì âm
+  thầm hạ cấp về huấn luyện chỉ-ground-truth dưới tên `train-distill` (§4.6) — một
+  `train-distill` chạy xong luôn có nghĩa là đã dùng teacher thật.
+
+### 5.2 Hướng phát triển
+
+- **Tăng số step/epoch tiếp, hoặc mở rộng dữ liệu**: §4.10 đang kiểm tra hướng tăng epoch;
+  nếu `loss_gt` vẫn chững lại dù nhiều step hơn, hướng tiếp theo là mở rộng dữ liệu qua
+  các script của đồng nghiệp (`run_kaggle_all_parts.py`, `run_kaggle_multi_part_training.py`)
+  để vượt quy mô 250-bài/1-part hiện tại (toàn bộ dataset có ~1843 bài theo
+  `--expected-records` của script đó).
+- **Style anchor đại diện hơn**: hiện lấy cố định 10 giây đầu bài cho mọi crop huấn luyện
+  của bài đó (§3.1, §3.6) — thử lấy đoạn đại diện hơn (ví dụ đoạn giữa bài) hoặc trung bình
+  nhiều đoạn, xem có cải thiện chất lượng không; cần preprocess lại nên cân nhắc quota
+  trước khi làm.
+- **Vietnamese G2P có dấu thanh + khớp ASR-lyric**: đã có sẵn, có test, nhưng chưa nối vào
+  pipeline huấn luyện (§3.6) — một lever chất lượng thật chưa kéo.
+- **Điều kiện pitch/F0**: từng có, đã bỏ, chưa khôi phục đúng cách (§3.6).
+- **Đánh giá bằng người nghe thật**: mọi số liệu trong report này là khách quan (loss,
+  spectral flatness, mel std) — chưa có đánh giá nghe chủ quan có hệ thống (MOS/CMOS,
+  `src/evaluation/jam_metrics.py` đã có hạ tầng cho việc này nhưng chưa dùng thật).
+- **Solver ODE bậc cao/thích ứng** cho CFM sampling (§2.4) — hợp lý khi chất lượng model
+  không còn là nút thắt chính.

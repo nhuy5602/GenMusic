@@ -56,7 +56,7 @@ under the distillation name (use `train-self` for that) — never a silent fake
 teacher, never a silent downgrade either. `--alpha-feature` blends
 teacher-matching loss vs. ground-truth loss (`1.0` = ground-truth only).
 See `docs/experiments/distillation_fix.md` for the real teacher call contract
-this replicates, and `docs/PROJECT_REPORT.md` §3.5 for the comparison
+this replicates, and `docs/PROJECT_REPORT.md` §4.8 for the comparison
 experiment (`scripts/run_experiment_matrix.py`) meant to answer whether this
 actually helps a small model — not yet completed at Kaggle scale as of this
 writing.

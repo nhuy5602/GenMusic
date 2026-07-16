@@ -160,7 +160,7 @@ uv run python scripts/run_kaggle_full_experiment.py --max-files 40 --whisper-mod
 ```
 
 ### 5. Run the Distillation-vs-Baseline Comparison Experiment
-Trains several configs (baseline; distillation at a few `alpha_feature` values; a smaller architecture variant) against one shared preprocessed dataset, to answer whether distillation actually helps this small model — see [docs/PROJECT_REPORT.md](docs/PROJECT_REPORT.md) §3.5:
+Trains several configs (baseline; distillation at a few `alpha_feature` values; a smaller architecture variant) against one shared preprocessed dataset, for a finer-grained ablation than the direct 250-song comparison already run — see [docs/PROJECT_REPORT.md](docs/PROJECT_REPORT.md) §4.8/§4.9 for the answer to "does distillation actually help":
 ```powershell
 uv run python scripts/run_kaggle_experiment_matrix.py --max-files 40 --whisper-model tiny --epochs 60
 ```
@@ -204,7 +204,7 @@ You can train the diffusion denoiser from scratch or perform knowledge distillat
   ```powershell
   uv run python cli.py train-distill --dataset dataset/diff_rhythm_dataset --student-checkpoint outputs/distilled_student.pt --epochs 5 --batch-size 4 --alpha-feature 0.5
   ```
-  Whether this actually improves quality over training from scratch has **not yet been verified at Kaggle scale** — see [docs/PROJECT_REPORT.md](docs/PROJECT_REPORT.md) §3.5/§4 and [docs/guides/run_full_pipeline.md](docs/guides/run_full_pipeline.md) for the comparison experiment designed to answer this.
+  Verified at Kaggle scale (250 real songs, matched epochs/steps against `train-self`): distillation's `loss_gt` came in at roughly a third of the no-teacher baseline's, at ~49x the wall-clock GPU cost — see [docs/PROJECT_REPORT.md](docs/PROJECT_REPORT.md) §4.8/§4.9 and [docs/guides/run_full_pipeline.md](docs/guides/run_full_pipeline.md) for a finer-grained ablation if you want one.
 
 ### 4. Audio Quality Evaluation
 ```powershell

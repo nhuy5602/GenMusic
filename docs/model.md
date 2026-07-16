@@ -18,7 +18,7 @@ a frozen `xlm-roberta-base` encoder (genuinely multilingual, unlike the
 DiffRhythm2 teacher's Chinese/English-only tokenizer); (2) a single 512-dim
 **MuQ-MuLan style embedding**, precomputed once per song at preprocessing time
 (`AudioStyleEncoder`, a small 2-layer MLP adapter — *not* an audio encoder
-itself, see `docs/PROJECT_REPORT.md` §2.1) — this replaced an earlier version
+itself, see `docs/PROJECT_REPORT.md` §3.2) — this replaced an earlier version
 that average-pooled a raw mel crop through an untrained Conv1D, which had no
 learned notion of musical style at all. Training target is Conditional Flow
 Matching (`src/models/cfm_flow.py`): a noisy mel state is interpolated between
