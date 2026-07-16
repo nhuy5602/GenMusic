@@ -556,10 +556,45 @@ công bằng giữa 2 đường train. Thêm `--learning-rate` vào launcher, ch
 (`ddvnam05/genmusic-distill-1784208706`, LR=2e-4 khớp `train-self`) để kiểm tra.
 *(Kết quả cập nhật tiếp.)*
 
-**Lần thử thứ 4** (`ddvnam05/genmusic-distill-1784191327`, §4.10, 75 epoch, code CŨ) vẫn
-đang chạy độc lập song song — sẽ cho biết liệu code cũ (không có các fix chống collapse)
-có tự cải thiện nếu chỉ tăng epoch, để so sánh "nhiều step hơn" vs "loss tốt hơn" như hai
-hướng riêng biệt.
+**Learning rate cũng bị bác bỏ**: lần thử thứ 8 (LR=2e-4 khớp `train-self`) cho std=**1.25**
+— vẫn trong đúng khoảng 1.25-1.40 như 3 lần thử trước, không cải thiện.
+
+**Lần thử thứ 4** (`ddvnam05/genmusic-distill-1784191327`, §4.10, 75 epoch, code CŨ) hoàn
+tất gần hết (epoch 74/75 lúc viết): `loss_gt` từ epoch 25 đến epoch 74 vẫn dao động trong
+đúng khoảng 2.3-3.6 đã thấy ở epoch 25 — **không cải thiện thêm dù gấp 3 lần epoch**, xác
+nhận trực tiếp giả thuyết chững lại từ §4.9: với code cũ, tăng epoch đơn thuần không giúp.
+
+**Tổng hợp toàn bộ nhánh điều tra §4.11-4.12** (bảng đầy đủ, tất cả cùng dataset 250 bài,
+`dim=256,depth=4,heads=4`, batch=4, 25 epoch trừ khi ghi khác):
+
+| Cấu hình | mel std | Ghi chú |
+|---|---|---|
+| Distill code cũ, 25 epoch (§4.8) | 1.09 | mốc xuất phát |
+| Distill code cũ, 75 epoch (§4.10) | — (loss_gt chững ở mức tương đương epoch 25) | tăng epoch đơn thuần không giúp |
+| Distill code mới + loss port, alpha=0.5 | **1.40** | +28%, cải thiện thật duy nhất |
+| + alpha=0.8 | 1.27 | không cải thiện thêm |
+| + condition dropout | 1.35 | không cải thiện thêm |
+| + learning_rate=2e-4 | 1.25 | không cải thiện thêm |
+| `train-self` code mới, 25 epoch | **3.13** | không dùng teacher |
+| Vocal thật (target) | 2.95 | — |
+
+**Kết luận cho nhánh điều tra này**: đúng 1 thay đổi tạo ra cải thiện đo được (port loss
+formula chống collapse từ `train-self`, §4.11: 1.09→1.40). Ba giả thuyết tiếp theo
+(alpha_feature, condition dropout, learning rate) đều **không** đóng thêm khoảng cách còn
+lại tới `train-self`/vocal thật — mọi biến thể distillation đều tụ lại quanh **1.25-1.40**,
+bất kể chỉnh gì ở phía student. Điều này gợi ý khoảng cách còn lại **không** nằm ở một
+siêu tham số cụ thể của student, mà khả năng cao nằm ở chính **tín hiệu teacher** — dù chỉ
+chiếm 20-50% trọng số loss, teacher (qua adapter mel-dim 64→100, và bản chất "nhìn" dữ liệu
+tiếng Việt/pop nhỏ như ngoài phân phối huấn luyện của nó) có thể tự nhiên đưa ra dự đoán
+mượt hơn theo góc nhìn riêng, và việc khớp theo nó (dù ít) vẫn kéo student về phía đó nhiều
+hơn tỷ trọng danh nghĩa của loss gợi ý. Đây là giả thuyết chưa kiểm chứng đầy đủ, không phải
+kết luận chắc chắn — xem hướng phát triển ở §5.2.
+
+**Hệ quả thực tiễn quan trọng**: với ràng buộc quota hiện tại, `train-self` (không distill)
+đang cho kết quả gần target thật hơn *và* rẻ hơn nhiều (~20 phút vs ~1-2 giờ mỗi lần) so với
+mọi biến thể distillation đã thử. Lợi ích đã đo được của distillation (loss_gt thấp hơn
+hẳn, §4.8) và hạn chế mới đo được (mel-variance thấp hơn hẳn) cần được cân nhắc cùng nhau,
+không chỉ nhìn riêng loss_gt — xem §5.
 
 ---
 
@@ -593,14 +628,34 @@ hướng riêng biệt.
 - `train-distill` giờ raise ngay nếu không load được teacher/tokenizer thật, thay vì âm
   thầm hạ cấp về huấn luyện chỉ-ground-truth dưới tên `train-distill` (§4.6) — một
   `train-distill` chạy xong luôn có nghĩa là đã dùng teacher thật.
+- **Regression-to-the-mean có nguyên nhân trong literature, và fix được — nhưng chỉ fix
+  hoàn toàn cho `train-self`, không phải `train-distill`** (§4.9-§4.12). Mel-variance sụp
+  (std sinh ra chỉ ~37% so với thật) khớp đúng hiện tượng "distributional averaging" mà
+  Dieleman (2024) và các paper DMD/ADM mô tả cho MSE-based distillation. Kết hợp mel
+  normalization + loss trọng số theo năng lượng + reconstruction/delta loss + condition
+  dropout (từ một merge lớn của đồng nghiệp, ban đầu không nhằm fix vấn đề này) đưa
+  `train-self` từ std=1.09 lên **3.13** (vượt nhẹ target thật 2.95) — fix rõ ràng, đo được.
+  Port đúng công thức đó sang `train-distill` chỉ đưa std lên **1.25-1.40** dù thử cả 4 biến
+  thể (alpha_feature, condition dropout, learning rate) — khoảng cách còn lại nhiều khả năng
+  nằm ở chính tín hiệu teacher (qua adapter mel-dim), chưa kiểm chứng đầy đủ. **Với ràng buộc
+  quota hiện tại, `train-self` (rẻ hơn ~5-6 lần, và gần target thật hơn) là lựa chọn thực tế
+  hơn `train-distill` cho tới khi khoảng cách này được hiểu/fix rõ hơn** — dù `train-distill`
+  vẫn thắng rõ trên trục `loss_gt` thuần (§4.8).
 
 ### 5.2 Hướng phát triển
 
-- **Tăng số step/epoch tiếp, hoặc mở rộng dữ liệu**: §4.10 đang kiểm tra hướng tăng epoch;
-  nếu `loss_gt` vẫn chững lại dù nhiều step hơn, hướng tiếp theo là mở rộng dữ liệu qua
-  các script của đồng nghiệp (`run_kaggle_all_parts.py`, `run_kaggle_multi_part_training.py`)
-  để vượt quy mô 250-bài/1-part hiện tại (toàn bộ dataset có ~1843 bài theo
-  `--expected-records` của script đó).
+- **Mở rộng dữ liệu thay vì tăng epoch**: §4.10 xác nhận tăng epoch đơn thuần (25→75, code
+  cũ) không giúp `loss_gt` cải thiện thêm — chững lại thật, không phải chưa đủ thời gian.
+  Hướng tiếp theo hợp lý hơn là mở rộng dữ liệu qua các script của đồng nghiệp
+  (`run_kaggle_all_parts.py`, `run_kaggle_multi_part_training.py`) để vượt quy mô
+  250-bài/1-part hiện tại (toàn bộ dataset có ~1843 bài theo `--expected-records` của
+  script đó) — nên làm với code loss mới (§4.11), chưa thử.
+- **Vì sao tín hiệu teacher giữ mel-variance thấp dù trọng số nhỏ?** (§4.12) — giả thuyết
+  đáng kiểm chứng: đo trực tiếp variance của `v_teacher` (sau adapter `from_teacher_mel`)
+  so với `target_velocity`, xem teacher có tự nhiên "mượt" hơn ground-truth không, độc lập
+  với mọi cấu hình phía student. Nếu đúng, hướng fix hợp lý là áp `loss_velocity` chỉ ở early
+  training rồi giảm dần (warmup ngược), hoặc bỏ chuẩn hóa gradient riêng cho 2 loss term
+  thay vì chỉ trộn theo `alpha_feature`.
 - **Style anchor đại diện hơn**: hiện lấy cố định 10 giây đầu bài cho mọi crop huấn luyện
   của bài đó (§3.1, §3.6) — thử lấy đoạn đại diện hơn (ví dụ đoạn giữa bài) hoặc trung bình
   nhiều đoạn, xem có cải thiện chất lượng không; cần preprocess lại nên cân nhắc quota
