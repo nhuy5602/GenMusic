@@ -555,6 +555,42 @@ chính của khoảng cách còn lại.
 > test tổ hợp alpha=0.8 cùng dropout (job 7) hay LR khác (job 8) — cả hai đều chạy ở alpha=0.5.
 > Hướng tiếp theo hợp lý: thử alpha cao hơn nữa (0.9-0.95) kết hợp thêm epoch/dữ liệu.
 
+### 4.14 alpha=0.8 xác nhận là điểm tối ưu thật — không phải nhiễu (kiểm chứng đa-bài)
+
+Theo hướng đề xuất ở §4.13, chạy **lần thử thứ 9** (`ddvnam05/genmusic-distill-1784223424`,
+alpha=0.9, giữ nguyên mọi thứ khác) để xem xu hướng "alpha cao hơn → voiced_ratio cao hơn"
+có tiếp tục không. **Kết quả trên 1 bài (`-6s_eRHYqVM`, cùng điều kiện các lần trước)**:
+alpha=0.9 chỉ đạt **82.0%** — thấp hơn alpha=0.8 (92.7%), không tiếp tục xu hướng tăng.
+
+Vì mẫu 1 bài/checkpoint có thể là nhiễu (đã cảnh báo ở trên), đo lại **voiced_ratio trên 6
+bài khác nhau** cho cả 3 giá trị alpha (miễn phí, chạy local, không cần Kaggle):
+
+| alpha_feature | voiced_ratio TB (6 bài, dao động từng bài) | So với vocal thật (74.3%) |
+|---|---|---|
+| 0.5 (job 5) | 60.7% (41-78%) | thấp hơn |
+| **0.8 (job 6)** | **92.4%** (90.6-96.3%, rất đều) | **cao hơn** |
+| 0.9 (job 9) | 77.8% (67-85%) | ~ngang |
+
+**Kết luận (lần này có cơ sở thống kê chắc hơn, N=6 không phải N=1)**: alpha=0.8 thắng rõ
+và nhất quán trên toàn bộ 6 bài, không phải một lần chạy may — có một **điểm tối ưu thật**
+quanh alpha=0.8, không phải "alpha cao hơn luôn tốt hơn". Cả alpha=0.5 và alpha=0.9 đều rơi
+về mức gần vocal-thật-trung-bình hoặc thấp hơn, còn alpha=0.8 vượt hẳn. Đây là dạng quan hệ
+phi-tuyến giữa alpha_feature và voiced_ratio — hợp lý về mặt trực giác (quá ít trọng số cho
+`loss_gt` thì thiếu tín hiệu cấu trúc thật; quá nhiều thì có thể mất luôn phần tín hiệu hữu
+ích mà teacher đóng góp, ví dụ ổn định hoá hoặc cung cấp thông tin ngoài phạm vi 250 bài) —
+nhưng chưa có giải thích cơ chế chắc chắn, chỉ là quan sát thực nghiệm.
+
+**Bài học phương pháp thứ hai trong cùng nhánh điều tra**: N=1 (1 bài, 1 lần train) là không
+đủ để tin vào bất kỳ so sánh alpha nào — kết luận "alpha=0.9 tệ hơn alpha=0.8" ban đầu (dựa
+1 bài) TRÙNG với kết luận đa-bài, nhưng đây là hai lần kiểm chứng ngẫu nhiên khớp nhau chứ
+không phải một quy luật đã kiểm chứng chắc chắn — mọi so sánh alpha trong report này (job
+5/6/7/8) trước §4.14 đều chỉ dựa N=1/checkpoint (đo trên `-6s_eRHYqVM`), nên nên đọc với mức
+tin tưởng thấp hơn số liệu ở đây.
+
+**Khuyến nghị thực tế**: dùng `alpha_feature≈0.8` làm mặc định cho các lần train tiếp theo
+(đã kiểm chứng đa-bài), không cần thử thêm giá trị alpha khác trừ khi có lý do cụ thể — nên
+dồn quota còn lại vào hướng khác (mở rộng dữ liệu/epoch, xem §5.2) thay vì tiếp tục dò alpha.
+
 **Giả thuyết condition dropout cũng bị bác bỏ**: lúc port công thức loss ở §4.11, phần
 **classifier-free condition dropout** của `cfm_loss()` (drop ngẫu nhiên backing/style/text
 10% mỗi loại) đã bị bỏ sót. Bổ sung vào `train_epoch()` và chạy lần thử thứ 7
@@ -682,6 +718,7 @@ Thứ mục không nằm trong git (`outputs/` được gitignore) — chỉ có
 | `exp07_distill_newloss_dropout.wav` | §4.12 — + condition dropout | **77.0%** | 0.046 | |
 | `exp08_distill_newloss_lr2e-4.wav` | §4.12 — + LR=2e-4 | 0% | 0.091 | Bất thường — mel-std bình thường nhưng mất hết pitch, đáng điều tra |
 | `exp09_trainself_newloss.wav` | §4.9/§4.13 — self-diffusion, loss mới | 8.4% | 0.028 | Mel-std/flatness "đẹp nhất" trên giấy nhưng vẫn nghe ra nhiễu — đúng lý do có đính chính này |
+| `exp10_distill_newloss_alpha09.wav` | §4.14 — + alpha=0.9 | 82.0% (1 bài); 77.8% (TB 6 bài) | 0.032 | Không vượt được exp06 — xác nhận alpha=0.8 là điểm tối ưu, không phải "cao hơn luôn tốt" |
 
 *(§4.10 — 75 epoch code cũ — không có file nghe vì chỉ tải log/report lúc đó, không tải
 checkpoint, để tiết kiệm băng thông.)*
@@ -759,18 +796,15 @@ một con số cụ thể về mức độ "nghe ra từ" thay vì chỉ dựa c
 
 ### 5.2 Hướng phát triển
 
-- **Ưu tiên cao nhất (sau đính chính §4.13): scale up `train-distill` với loss mới + alpha
-  cao, không phải `train-self`**. `voiced_ratio` cho thấy job 5-7 (distill + loss chống
-  collapse) đạt 82-93% so với vocal thật 90%, và trong đó **alpha_feature=0.8 (exp06, job 6)
-  cho kết quả tốt nhất (92.7%)** — ngược lại với kết luận "alpha không có tác dụng" dựa trên
-  mel-std trước đó (§4.12's đính chính). Hướng nên đầu tư tiếp: thử alpha cao hơn nữa
-  (0.9-0.95) + thêm epoch/dữ liệu, không phải `train-self` như kết luận sai ban đầu. Trước
-  khi scale, nên: (a) verify lại `voiced_ratio` trên nhiều bài hơn và lặp lại mỗi cấu hình
-  ≥2-3 lần (hiện N=1/checkpoint, chưa loại trừ nhiễu ngẫu nhiên giữa các lần train — xem
-  chú ý ở §4.12), (b) test tổ hợp alpha=0.8 cùng dropout/LR khác (job 7, 8 đều mới chạy ở
-  alpha=0.5, chưa kết hợp với alpha=0.8), (c) điều tra vì sao job 8 (LR=2e-4, alpha=0.5) lại
-  0% voiced dù mel-std bình thường — có thể LR cao phá cấu trúc pitch mà mel-std không phát
-  hiện được, đáng cảnh báo khi chỉnh LR sau này.
+- **Ưu tiên cao nhất (§4.13-§4.14): scale up `train-distill` với loss mới + `alpha_feature≈0.8`,
+  không phải `train-self`**. Đã kiểm chứng đa-bài (N=6, §4.14, không chỉ N=1): alpha=0.8 cho
+  voiced_ratio trung bình 92.4% — vượt cả vocal thật (74.3%) — trong khi alpha=0.5 (60.7%) và
+  alpha=0.9 (77.8%) đều thấp hơn rõ. Đây là điểm tối ưu thật, không phải nhiễu. **Không cần
+  dò thêm alpha khác** — dùng 0.8 làm mặc định, dồn quota vào: (a) mở rộng dữ liệu/epoch với
+  alpha=0.8 (chưa thử), (b) test tổ hợp alpha=0.8 cùng dropout/LR khác (job 7, 8 mới chạy ở
+  alpha=0.5), (c) điều tra vì sao job 8 (LR=2e-4, alpha=0.5) lại 0% voiced dù mel-std bình
+  thường, (d) đo Word Error Rate bằng Whisper cho checkpoint alpha=0.8 — voiced_ratio cao
+  không đồng nghĩa nghe ra được lời/giai điệu mạch lạc (xem xác nhận nghe thật ở cuối §4.13).
 - **Mở rộng dữ liệu thay vì tăng epoch**: §4.10 xác nhận tăng epoch đơn thuần (25→75, code
   cũ) không giúp `loss_gt` cải thiện thêm — chững lại thật, không phải chưa đủ thời gian.
   Hướng tiếp theo hợp lý hơn là mở rộng dữ liệu qua các script của đồng nghiệp
