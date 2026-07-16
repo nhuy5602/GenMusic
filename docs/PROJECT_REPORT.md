@@ -255,19 +255,15 @@ HuggingFace on load instead); `load_checkpoint` now uses `strict=False` to accom
 this. Verified: checkpoint size ~67MB for the default architecture (down from ~1.1GB),
 generation from a loaded checkpoint still works correctly.
 
-### 3.5 Does distillation actually help? (comparison experiment — not completed)
+### 3.5 Does distillation actually help? (comparison experiment — completed at real scale, §3.9)
 
-A proper comparison (`scripts/run_experiment_matrix.py`: baseline-no-teacher vs.
-distillation-with-adapter at several `alpha_feature` values, plus a smaller architecture
-variant, all against one 40-song dataset for equal epoch budget, tracking ground-truth
-CFM loss `loss_gt` as the common comparison axis since the baseline's loss *is* `loss_gt`
-and a distilled run's blended loss isn't directly comparable without decomposing it) was
-built and submitted (`genmusic-expmatrix-1783993977`), but never produced results — see
-§3.6. **This experiment was not completed this session.** The script and its local
-launcher (`scripts/run_kaggle_experiment_matrix.py`) are ready to run as-is once Kaggle
-GPU quota is available again; no further engineering work is needed to attempt it, only
-GPU time. This is the most important open item — see §4 and
-`docs/guides/run_full_pipeline.md`.
+The originally planned comparison (`scripts/run_experiment_matrix.py`, a 40-song
+multi-variant matrix) never got GPU time and was superseded by a simpler direct
+comparison at a larger, real scale (250 songs, matched epochs/batch/steps) — see §3.9 for
+the actual result. The matrix script itself is still unrun and would give a finer-grained
+`alpha_feature`/architecture-size ablation if useful later, but the core question this
+section used to leave open — "does the teacher signal actually help vs. training from
+scratch on the same data budget" — now has a real, measured answer.
 
 ### 3.6 End-to-end pipeline validation
 
@@ -393,6 +389,84 @@ isolated to one cause via a controlled re-run (train the same 250-song dataset a
 post-fix, listen to the result) which is the natural next step. Bug 1 alone applies to
 `train-self` (baseline) too; Bug 2 is `train-distill`-specific.
 
+### 3.9 First completed real-scale run: 250 songs, distillation vs. self-diffusion, with objective quality metrics
+
+The controlled re-run §3.8 called for: full 250-song dataset (`sonlest/vietnamese-music-dataset-version3-part6`,
+preprocessed with `--whisper-model base` after tiny was found to hallucinate/loop on real
+lyrics), then `train-distill` and `train-self` on identical data with matched
+`epochs=25, batch_size=4` so their `loss_gt` curves are directly comparable.
+
+**Two real bugs found and fixed before this run produced anything usable** (both now
+committed):
+- Kaggle preprocessing's subprocess timeout was `1800s` whenever `--max-files` was set at
+  all, conflating "small smoke test" with "capped at the full dataset size" — it silently
+  killed a real 250-file run at the 30-minute mark while still healthy (song 46/250), losing
+  that GPU time with nothing salvageable (`records.jsonl` is written once at the end, not
+  incrementally). Fixed by scaling the timeout with file count.
+- `train-distill` OOM'd on epoch 3 of 25 (batch_size=8) — `CUDA out of memory`, ~11.6GiB
+  allocated, 3.57GiB reserved-but-unallocated. Epochs 1–2 completed fine with the same batch
+  size, so this was allocator fragmentation building up across steps (each batch has a
+  different lyric-token length, so the CUDA caching allocator accumulates many
+  differently-sized blocks), not a logic bug or an undersized GPU. Fixed with
+  `batch_size=4`, `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, and
+  `torch.cuda.empty_cache()` between epochs; the re-run completed all 25 epochs without OOM.
+
+**Training result** (`ddvnam05/genmusic-distill-1784166040` vs. `ddvnam05/genmusic-train-1784173776`,
+same dataset, same `epochs=25`/`batch_size=4`/1575 steps):
+
+| | loss_gt @ epoch 1 | loss_gt @ epoch 25 | final_loss_gt (last 10 steps) | wall-clock |
+|---|---|---|---|---|
+| `train-distill` (real teacher) | 8.86 | 3.28 | 2.57 | 6527s |
+| `train-self` (no teacher) | 11.24 | 8.06 | 7.15 | 134s |
+
+Both runs saw the identical 250 songs in the identical order for the identical number of
+steps. Distillation's ground-truth loss dropped to roughly a third of the no-teacher
+baseline's, and did so far more consistently (the no-teacher curve oscillates between ~7
+and ~13 with no clear downward trend after epoch ~10, e.g. epoch 20 jumps back to 11.02).
+This is the first real evidence (not just "the mechanism works in isolation", §3.7) that
+the teacher signal measurably helps on this project's own data at this scale. It costs
+~49x the wall-clock GPU time for that improvement, which is the real trade-off, not a
+free win — see the quota note below.
+
+**Objective audio quality check** (`scripts/evaluate_generation_quality.py`, new this
+session): since no one was available to listen, this scores generated audio without a
+human — spectral flatness (0 = tonal/harmonic, 1 = white noise; this is the direct proxy
+for "toàn nhiễu" / all-noise complaints), clip ratio, silence ratio, and RMS, computed on
+7 samples spread across the dataset, each compared against that same song's *real* vocal
+track rendered through the identical Vocos vocoder (isolating model quality from vocoder
+artifacts) and against a synthesized white-noise clip as a fixed sanity anchor:
+
+| | mean spectral flatness | mean RMS | clip ratio |
+|---|---|---|---|
+| white noise (sanity anchor) | 0.562 | 0.577 | 2.0% |
+| `train-distill` output | 0.086 | 0.078–0.131 | 0.0% |
+| `train-self` output | 0.075 | 0.037–0.055 | 0.0% |
+| real vocal (same vocoder) | 0.053 | 0.080–0.109 | 0.0% |
+
+Neither checkpoint's output is remotely close to the white-noise anchor on flatness — both
+are clearly tonal/structured, not noise, and neither clips. Flatness alone reads as
+close between the two models (distill's is even slightly *higher*/less-tonal than
+self-diffusion's on this narrow metric), which on its own would be a misleading way to
+compare them: `train-self`'s RMS (0.037–0.055) sits well below the real-vocal range
+(0.080–0.109), while `train-distill`'s (0.078–0.131) tracks it closely. Combined with the
+loss_gt gap above, the more complete picture is that distillation output is closer to the
+real target on the axes that actually distinguish the two models, and flatness alone is a
+good "is this noise" filter but not a full quality signal — it can't tell a correct quiet
+passage from an undertrained quiet-and-wrong one.
+
+**Quota spent this run**: preprocessing ≈2h (one wasted 30min run + one successful
+~2h run), `train-distill` ≈1.8h, `train-self` ≈2min, local evaluation ≈free (runs on the
+requester's machine, not Kaggle). Total Kaggle GPU time ≈4h of this project's weekly
+budget.
+
+**Conclusion for this run**: no model-size increase was warranted — the "is distillation
+broken" and "is the model too small" hypotheses this section was set up to test were both
+falsified before reaching model size: the bugs were infrastructure (timeout, OOM), not
+distillation logic or capacity, and once fixed, distillation converged as expected on
+`loss_gt` and produced clearly non-noise, real-audio-comparable output at the current
+small size (`dim=256, depth=4, heads=4`). A model-size ablation remains a reasonable
+follow-up if a *later* run shows the gains plateauing, but there is no evidence for that yet.
+
 ---
 
 ## 4. Conclusion
@@ -408,17 +482,17 @@ post-fix, listen to the result) which is the natural next step. Bug 1 alone appl
   `mel_dim=64` is the clearest example of this trap, and it recurred independently in
   the parallel `origin/master` work this session merged with (§1.5), which is some
   evidence it's a natural mistake for this kind of integration, not a one-off.
-- **The distillation-helps-or-not question is still open, but the mechanism itself is no
-  longer just "verified in isolation."** §3.7 got `distillation_active: true` end-to-end
-  against the real ~1.14B-param teacher, locally, for the first time — the mel-dim
-  adapter, teacher call contract, and lyric tokenization are all genuinely exercised, not
-  simulated. What that local run *can't* answer is quality: at 2 songs/30 epochs/1
-  step-per-epoch, CFM's random-timestep loss variance (3.5–229 within one run) swamps any
-  real learning signal. The at-scale comparison (`scripts/run_experiment_matrix.py`) still
-  never got GPU time before Kaggle quota ran out, and no Kaggle distillation run has
-  completed even once — so this remains the most important open item, now with a clearer
-  next step (a small real-teacher GPU smoke test to replace an extrapolated cost estimate
-  with a measurement, §3.7) rather than a purely engineering blocker.
+- **The distillation-helps-or-not question now has a real answer: yes, measurably, at
+  250-song/25-epoch/matched-steps scale (§3.9).** `train-distill`'s `loss_gt` (2.57 final)
+  came in at roughly a third of `train-self`'s (7.15 final) on identical data, and an
+  objective (non-listening) audio-quality check found both checkpoints clearly non-noise
+  and non-clipping, with `train-distill`'s output amplitude tracking real vocal audio more
+  closely. The cost side of that trade-off is real too: distillation took ~49x the
+  wall-clock GPU time of the no-teacher baseline for that improvement. Two infrastructure
+  bugs (a preprocessing timeout that killed a healthy run, and a CUDA OOM from allocator
+  fragmentation across epochs) were found and fixed in the process of getting this result
+  — neither was a distillation-logic or model-capacity problem, so no model-size increase
+  was warranted this round (§3.9).
 - `train-distill` now raises immediately if the real teacher/tokenizer can't be loaded,
   instead of silently completing as ground-truth-only training under the distillation
   name (§3.7). This closes a real gap: every §3.1–§3.6 "successful" distillation run
