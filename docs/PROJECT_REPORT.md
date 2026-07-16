@@ -419,10 +419,23 @@ epoch trên config `dim=256` rẻ hơn để thử nghiệm (§4.10).
 ### 4.10 Thực nghiệm đang chạy: tăng số epoch (75 epoch, `dim=256`)
 
 Để kiểm tra trực tiếp giả thuyết "cần nhiều step hơn" từ §4.9: cùng dataset 250 bài, cùng
-`dim=256, depth=4, heads=4, batch_size=4`, nhưng `epochs=75` (gấp 3 lần §4.8) —
-`ddvnam05/genmusic-distill-1784188506`. *(Kết quả sẽ được cập nhật vào mục này khi job
-hoàn tất; job đang được theo dõi bằng `scripts/check_kernel_progress.py` §3.5 để phát hiện
-sớm nếu treo.)*
+`dim=256, depth=4, heads=4, batch_size=4`, nhưng `epochs=75` (gấp 3 lần §4.8).
+
+**2 lần thử đầu tiên fail giống hệt nhau** (`ddvnam05/genmusic-distill-1784188506`, rồi
+`...1784189042`), cả hai đều lỗi ngay ở bước tải teacher: *"An error happened while trying
+to locate the file on the Hub and we cannot find the requested files in the local cache"*
+— phát hiện sớm (trong vài phút, không phải sau nhiều giờ) nhờ
+`scripts/check_kernel_progress.py` (§3.5) đọc log sống thay vì chỉ chờ status cuối. Cùng
+lỗi lặp lại 2 lần liên tiếp đủ đáng ngờ để không retry mù: kiểm tra code phát hiện
+`_load_teacher()` gọi `hf_hub_download` cho `config.json` và `model.safetensors`
+(file ~4.3GB) mà **không có retry nào** — một lần mạng chập chờn (DNS/TLS/Hub) là chết cả
+job nhiều giờ trước khi kịp train bước nào. **Fix**: `_hf_hub_download_with_retry()` (3
+lần thử, backoff 5s) bọc quanh cả hai lệnh gọi. Test suite local cùng lúc đó cũng thấy tải
+`xlm-roberta-base` từ HF chậm bất thường — cùng khung giờ, cùng nguyên nhân khả năng cao
+(HF Hub chập chờn tạm thời), không phải bug riêng của project.
+
+Đang chạy lần thử thứ 3 (`ddvnam05/genmusic-distill-1784190525`) với fix trên.
+*(Kết quả sẽ cập nhật vào mục này khi job hoàn tất.)*
 
 ---
 
