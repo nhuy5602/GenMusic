@@ -445,8 +445,79 @@ project. **Fix**: mở rộng `_hf_hub_download_with_retry()` lên 8 lần thử
 5s→60s (tổng ngân sách ~4 phút) — đủ dư địa so với ~130s phục hồi quan sát được, và không
 đáng kể so với job nhiều giờ nó bảo vệ.
 
-Đang chạy **lần thử thứ 4** (`ddvnam05/genmusic-distill-1784191327`) với retry budget mới.
-*(Kết quả sẽ cập nhật vào mục này khi job hoàn tất.)*
+**Lần thử thứ 4** (`ddvnam05/genmusic-distill-1784191327`) chạy thành công, đang tiến triển
+đúng (epoch 31/75 lúc kiểm tra, `loss_gt` dao động 2.8-5.4 quanh cùng mức đã thấy ở epoch 25
+trước đó) — dấu hiệu **chững lại sớm** dù còn 44 epoch nữa, gợi ý "chỉ tăng epoch" có thể
+không phải hướng đi đúng. Job này vẫn được để chạy hết (dùng code cũ tại thời điểm launch,
+là một điểm dữ liệu độc lập có giá trị riêng), xem kết quả cuối ở §4.12.
+
+### 4.11 Nghiên cứu literature + một merge lớn từ đồng nghiệp cùng lúc giải quyết vấn đề
+
+Trong lúc job §4.10 chạy, thay vì tiếp tục thử-sai bằng cách tăng epoch, đã tra literature
+thật về nguyên nhân "regression to the mean" trong distillation cho model sinh:
+
+- **Sander Dieleman (2024), "The paradox of diffusion distillation"**: distillation dùng
+  loss MSE/SFT thuần có xu hướng ưu tiên khớp *trung bình* của phân phối thay vì giữ độ sắc
+  nét, vì model student (giới hạn công suất) không thể khớp chính xác teacher ở mọi mode nên
+  "an toàn" bằng cách khớp trung bình.
+- **DMD/ADM (Distribution/Adversarial Distribution Matching, 2024-2025)**: xác nhận cùng cơ
+  chế — reverse-KL/MSE-based distillation gây "distributional averaging"; fix chuẩn trong
+  literature là loss đối kháng (adversarial) hoặc perceptual (LPIPS) thay MSE thuần.
+- Tổng hợp: hướng khả thi cho project (không đủ compute cho adversarial/LPIPS đầy đủ) là đổi
+  loss thành phần liên quan tới teacher-matching sang **L1** (rẻ, có cơ sở), và/hoặc tăng bước
+  sampling lúc sinh.
+
+**Test loại trừ (miễn phí, local)**: tăng bước Euler ODE lúc sinh từ 6→64 trên checkpoint đã
+có — mel std hầu như không đổi (1.09→1.11). Loại bỏ giả thuyết "do ít bước sampling"; xác
+nhận vấn đề nằm ở chính velocity field đã học, không phải cách tích phân lúc sinh.
+
+**Fix đầu tiên**: đổi `loss_velocity` (term khớp teacher trong distillation) từ MSE sang L1
+— khớp đúng khuyến nghị literature, rủi ro thấp (không đụng `loss_gt`, vốn cần giữ MSE vì lý
+do lý thuyết CFM — xem comment trong code).
+
+**Cùng lúc, `git pull` phát hiện một commit lớn từ đồng nghiệp** ("feat: add resumable
+Google Colab training backend", +2188 dòng, 27 file) — thêm backend train qua Google Colab
+(nguồn compute thứ hai, giảm áp lực quota Kaggle), và — quan trọng hơn với vấn đề đang điều
+tra — **một loạt cải tiến cho `train-self`/`cfm_flow.py` giải quyết đúng cơ chế trên, dù
+không đặt tên rõ là "fix mode collapse"**:
+- **Mel normalization** (`normalize_mel`/`denormalize_mel`, `mel_mean`/`mel_std` tự tính qua
+  `estimate_vocal_mel_stats()` trên mẫu dữ liệu thật mỗi lần train mới).
+- **Loss velocity trọng số theo năng lượng khung** (`frame_weights` từ ngưỡng quantile năng
+  lượng) — tránh im lặng lấn át trung bình khi phần lớn audio là khung yên tĩnh.
+- **Loss reconstruction + delta thời gian/tần số** (L1, hệ số nhỏ 0.15/0.05) — phạt trực
+  tiếp việc làm mượt quá mức mà không đổi phương trình sampling CFM.
+- **Classifier-free guidance** (`guidance_scale`) lúc sinh, dropout điều kiện lúc train.
+- Tăng `frames_per_chunk` từ 128 lên 384 (ngữ cảnh dài hơn mỗi mẫu train), EMA, mixed
+  precision.
+
+**Verify trên `train-self`** (rẻ, ~2 phút, `ddvnam05/genmusic-train-1784200611`, cùng 250
+bài/25 epoch/batch=4 để so trực tiếp với §4.8):
+
+| | mel std (sinh ra) | spectral flatness (mean) |
+|---|---|---|
+| `train-self` code cũ (§4.8, không đo std) | — | 0.075 |
+| `train-self` code mới (mel norm + energy/reconstruction/delta loss) | **3.13** | **0.028** |
+| vocal thật (target) | 2.95 | 0.053-0.056 |
+
+Mel std giờ **vượt nhẹ** target thật (trước đó chỉ 1.09, tức ~37% biên độ thật); spectral
+flatness còn **thấp hơn** vocal thật (tonal hơn), cách xa nhiễu trắng (0.562) hơn bao giờ
+hết. Đây là cải thiện rõ rệt, không mơ hồ.
+
+**Port sang distillation**: các cải tiến trên chỉ nằm trong `cfm_flow.py`/`self_diffusion.py`
+(dùng bởi `train-self`), không tự động áp dụng cho `train-distill` (tính loss riêng, inline,
+trong `distill_training.py`). Vì `cfm_loss()` tự forward model bên trong nên không dùng lại
+trực tiếp được (distillation cần `v_student` tại đúng `(x_t, t)` đã dùng để so với teacher) —
+đã chép lại đúng công thức (frame-weighted velocity MSE + reconstruction + delta) vào
+`train_epoch()` của `distill_training.py`, giữ `loss_velocity` là L1 (fix trước đó), và thêm
+`estimate_vocal_mel_stats()` cho distillation (trước đây distillation không tự tính
+mel_mean/std, luôn ở normalization mặc định 0/1 dù `train-self` đã có từ merge này).
+
+Đã launch **lần thử thứ 5** (`ddvnam05/genmusic-distill-1784201393`, 25 epoch, cùng scale
+§4.8, code mới đầy đủ) để đo trực tiếp tác động lên distillation. *(Kết quả ở §4.12.)*
+
+### 4.12 Kết quả các thực nghiệm đang chạy
+
+*(Cập nhật khi cả 2 job (§4.10 — 75 epoch code cũ, §4.11 — 25 epoch code mới) hoàn tất.)*
 
 ---
 
