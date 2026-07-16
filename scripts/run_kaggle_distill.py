@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import sys
@@ -10,7 +11,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from src.integrations.kaggle_auto import load_kaggle_api_tokens, resolve_kaggle_username, kaggle_cli_command, write_source_zip
 
-def _kernel_script_content() -> str:
+def _kernel_script_content(epochs: str = "25", batch_size: str = "8") -> str:
     return f'''import os
 import shutil
 import subprocess
@@ -22,18 +23,14 @@ from pathlib import Path
 try:
     print("--- STEP 1: Locating preprocessed dataset ---")
     input_dir = Path("/kaggle/input")
-    
-    # Find the processed dataset
-    processed_dataset = next(
-        (d for d in input_dir.rglob("*") if d.is_dir() and "vietnamese-music-processed-dataset" in d.name.lower()), 
-        None
-    )
-    if not processed_dataset:
-        # Check standard Kaggle path structure
-        processed_dataset = input_dir / "vietnamese-music-processed-dataset"
 
-    if not processed_dataset.exists():
+    # Find the processed dataset by its actual contents (records.jsonl), not by a
+    # guessed folder name -- kernel_sources mounts under the source kernel's slug,
+    # not any fixed "vietnamese-music-processed-dataset" name.
+    records_file = next(input_dir.rglob("records.jsonl"), None)
+    if not records_file:
         raise RuntimeError(f"Could not find the processed dataset in /kaggle/input (looked in {{input_dir}}).")
+    processed_dataset = records_file.parent
 
     print(f"Using processed dataset: {{processed_dataset.resolve()}}")
 
@@ -74,8 +71,8 @@ try:
         sys.executable, str(source_root / "cli.py"), "train-distill",
         "--dataset", str(processed_dataset),
         "--student-checkpoint", "/kaggle/working/distilled_student.pt",
-        "--epochs", "25",
-        "--batch-size", "8",
+        "--epochs", "{epochs}",
+        "--batch-size", "{batch_size}",
         "--learning-rate", "1e-4",
         "--alpha-feature", "0.5"
     ], env=os.environ, check=True)
@@ -89,9 +86,9 @@ except Exception as e:
     sys.exit(1)
 '''
 
-def run_kaggle_distillation() -> None:
+def run_kaggle_distillation(epochs: int = 25, batch_size: int = 8, processed_kernel_ref_override: str | None = None) -> None:
     project_root = Path(__file__).resolve().parents[1]
-    
+
     # 0. Load tokens and authenticate
     tokens = load_kaggle_api_tokens()
     username = resolve_kaggle_username(None)
@@ -162,12 +159,12 @@ def run_kaggle_distillation() -> None:
     kernel_slug = f"genmusic-distill-{int(time.time())}"
     kernel_ref = f"{username}/{kernel_slug}"
     
-    (kernel_dir / "run_distill.py").write_text(_kernel_script_content(), encoding="utf-8")
-    
+    (kernel_dir / "run_distill.py").write_text(_kernel_script_content(str(epochs), str(batch_size)), encoding="utf-8")
+
     # Processed data source: a preprocess-kernel output (kernel_sources, no credentials
     # needed) takes priority; falls back to a pre-existing published Dataset for
     # compatibility with datasets published before this fix.
-    processed_kernel_ref = tokens.get("KAGGLE_PROCESSED_KERNEL_REF")
+    processed_kernel_ref = processed_kernel_ref_override or tokens.get("KAGGLE_PROCESSED_KERNEL_REF")
     processed_dataset_ref = None if processed_kernel_ref else tokens.get(
         "KAGGLE_PROCESSED_DATASET_REF", f"{username}/vietnamese-music-processed-dataset"
     )
@@ -205,5 +202,13 @@ def run_kaggle_distillation() -> None:
             print(f"Kaggle kernel push failed on attempt {attempt+1}. Retrying in 15 seconds...", flush=True)
             time.sleep(15)
 
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--epochs", type=int, default=25)
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--processed-kernel-ref", type=str, default=None, help="Override KAGGLE_PROCESSED_KERNEL_REF for this run.")
+    args = parser.parse_args()
+    run_kaggle_distillation(args.epochs, args.batch_size, args.processed_kernel_ref)
+
 if __name__ == "__main__":
-    run_kaggle_distillation()
+    main()

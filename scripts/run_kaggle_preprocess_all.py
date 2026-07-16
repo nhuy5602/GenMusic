@@ -14,6 +14,7 @@ from src.integrations.kaggle_auto import load_kaggle_api_tokens, resolve_kaggle_
 def _kernel_script_content(
     raw_dataset_slug: str,
     max_files: str | None = None,
+    whisper_model: str = "tiny",
 ) -> str:
     # Script runs on Kaggle GPU instance and processes the requested file set.
     # Deliberately never embeds any Kaggle credentials -- this source is pushed to
@@ -262,7 +263,7 @@ try:
         sys.executable, str(source_root / "cli.py"), "preprocess-raw",
         "--input", str(raw_dataset),
         "--output", str(preprocessed_dir),
-        "--whisper-model", "tiny",
+        "--whisper-model", "{whisper_model}",
         "--keep-separated-count", "0",
         "--demucs-device", "cuda",
         "--whisper-device", "cuda"
@@ -271,7 +272,12 @@ try:
     if max_files_value:
         print("Preprocessing limit: " + max_files_value + " file(s)", flush=True)
         preprocess_command.extend(["--max-files", max_files_value])
-    preprocess_timeout = 1800 if max_files_value else 43200
+    # Scale the timeout with the actual file count -- a flat 1800s here was fine
+    # for a 1-2 file smoke test but silently killed a real 250-file run at the
+    # 30-minute mark while it was still healthily processing song 46/250.
+    # Budget: fixed one-time model warm-up overhead + a generous per-file margin
+    # (measured steady-state was ~32-39s/file; 90s/file leaves ample headroom).
+    preprocess_timeout = max(1800, 300 + 90 * int(max_files_value)) if max_files_value else 43200
     preprocess_result = run_logged(preprocess_command, "preprocess", preprocess_timeout)
     records_path = preprocessed_dir / "records.jsonl"
     record_count = sum(1 for line in records_path.read_text(encoding="utf-8").splitlines() if line.strip()) if records_path.exists() else 0
@@ -298,6 +304,7 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--max-files", type=int, default=None, help="Limit how many raw files to preprocess.")
+    parser.add_argument("--whisper-model", type=str, default="tiny", help="Whisper model size for lyric transcription (tiny/base/small/...).")
     args = parser.parse_args()
 
     # Resolved parent because it is located inside the scripts/ directory
@@ -379,7 +386,7 @@ def main():
     kernel_slug = f"genmusic-prep-{int(time.time())}"
     kernel_ref = f"{username}/{kernel_slug}"
     
-    kernel_script = _kernel_script_content(raw_dataset_slug, max_files)
+    kernel_script = _kernel_script_content(raw_dataset_slug, max_files, args.whisper_model)
     (kernel_dir / "run_preprocess.py").write_text(kernel_script, encoding="utf-8")
     (kernel_dir / "kernel-metadata.json").write_text(json.dumps({
         "id": kernel_ref,

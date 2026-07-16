@@ -131,6 +131,13 @@ def main() -> None:
         default=2,
         help="Maximum newly submitted preprocess kernels; the current account permits two batch GPU sessions.",
     )
+    parser.add_argument(
+        "--whisper-model",
+        type=str,
+        default="tiny",
+        help="Whisper model size for lyric transcription (tiny/base/small/...). "
+        "tiny has been observed to hallucinate/loop on real songs -- base is recommended.",
+    )
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parents[1]
@@ -214,7 +221,7 @@ def main() -> None:
         kernel_dir.mkdir(parents=True, exist_ok=True)
 
         # None means the preprocessing command receives no --max-files argument.
-        kernel_script = _kernel_script_content(str(item["slug"]), max_files=None)
+        kernel_script = _kernel_script_content(str(item["slug"]), max_files=None, whisper_model=args.whisper_model)
         (kernel_dir / "run_preprocess.py").write_text(kernel_script, encoding="utf-8")
         (kernel_dir / "kernel-metadata.json").write_text(
             json.dumps(
