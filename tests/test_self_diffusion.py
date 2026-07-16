@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from src.data.vietnamese_g2p import vietnamese_g2p
 from src.data.vietnamese_text import normalize_vietnamese_lyrics
@@ -88,8 +89,21 @@ class SelfDiffusionTests(unittest.TestCase):
             root = Path(temp)
             dataset = root / "dataset"
             create_random_dataset(dataset, count=2, frames=32)
-            report = train_model(dataset, root / "model.pt", epochs=1, batch_size=2, max_records=2)
+            progress_path = root / "progress.json"
+            report = train_model(
+                dataset,
+                root / "model.pt",
+                epochs=1,
+                batch_size=2,
+                max_records=2,
+                checkpoint_every_steps=1,
+                progress_path=progress_path,
+            )
             self.assertEqual(report["status"], "complete")
+            self.assertEqual(json.loads(progress_path.read_text())["status"], "complete")
+            import torch
+            payload = torch.load(root / "model.pt", weights_only=False)
+            self.assertEqual(payload["training_state"]["global_step"], 1)
             resumed = train_model(
                 dataset,
                 root / "model.pt",
@@ -104,6 +118,70 @@ class SelfDiffusionTests(unittest.TestCase):
             self.assertEqual(generated["status"], "complete")
             self.assertTrue(generated["duration_auto_adjusted"])
             self.assertTrue(Path(generated["audio_path"]).exists())
+
+    def test_training_resumes_from_mid_epoch_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            dataset = root / "dataset"
+            checkpoint = root / "model.pt"
+            create_random_dataset(dataset, count=4, frames=16)
+
+            from src.models import text_to_music_diffusion as checkpoint_module
+
+            real_save_checkpoint = checkpoint_module.save_checkpoint
+            interrupted = False
+
+            def save_then_interrupt(*args, **kwargs):
+                nonlocal interrupted
+                result = real_save_checkpoint(*args, **kwargs)
+                state = kwargs.get("training_state") or {}
+                if not interrupted and state.get("batch_in_epoch") == 1:
+                    interrupted = True
+                    raise RuntimeError("simulated Colab preemption")
+                return result
+
+            with patch.object(
+                checkpoint_module,
+                "save_checkpoint",
+                side_effect=save_then_interrupt,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "preemption"):
+                    train_model(
+                        dataset,
+                        checkpoint,
+                        epochs=1,
+                        batch_size=2,
+                        dim=32,
+                        depth=1,
+                        heads=2,
+                        ff_mult=1,
+                        frames_per_chunk=16,
+                        checkpoint_every_steps=1,
+                    )
+
+            import torch
+
+            interrupted_payload = torch.load(checkpoint, weights_only=False)
+            self.assertEqual(
+                interrupted_payload["training_state"]["batch_in_epoch"],
+                1,
+            )
+            resumed = train_model(
+                dataset,
+                checkpoint,
+                epochs=1,
+                batch_size=2,
+                dim=32,
+                depth=1,
+                heads=2,
+                ff_mult=1,
+                frames_per_chunk=16,
+                resume=True,
+                checkpoint_every_steps=1,
+            )
+            self.assertEqual(resumed["resumed_from_epoch"], 0)
+            self.assertEqual(resumed["resumed_from_batch"], 1)
+            self.assertEqual(resumed["global_step"], 2)
 
     def test_kaggle_job_contains_only_project_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

@@ -57,6 +57,10 @@ class ColabIntegrationTests(unittest.TestCase):
         self.assertIn('userdata.get("KAGGLE_API_TOKEN")', source)
         self.assertIn("run_colab_full_training.py", source)
         self.assertIn("--save-every-epoch", Path("cli.py").read_text(encoding="utf-8"))
+        self.assertIn("CACHE_DATA_ON_DRIVE = True", source)
+        self.assertIn("CHECKPOINT_EVERY_STEPS = 25", source)
+        self.assertIn("--checkpoint-every-steps", source)
+        self.assertIn("--skip-preflight-train", source)
         for kernel_ref in DEFAULT_KERNEL_REFS:
             self.assertIn(kernel_ref, source)
         self.assertNotIn('os.environ["KAGGLE_API_TOKEN"] = "KGAT', source)

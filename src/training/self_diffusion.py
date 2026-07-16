@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import random
 import time
 from dataclasses import asdict, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -200,11 +202,23 @@ class DiffusionTrainer:
             if name in self.ema_parameters:
                 self.ema_parameters[name] = value.detach().to(self.device).clone()
 
-    def train_epoch(self, dataloader) -> list[float]:
+    def train_epoch(
+        self,
+        dataloader,
+        *,
+        epoch_index: int = 0,
+        total_epochs: int = 1,
+        start_batch: int = 0,
+        log_every_steps: int = 10,
+        on_step=None,
+    ) -> list[float]:
         torch, _, _, _ = _torch()
         self.model.train()
         epoch_losses = []
-        for batch in dataloader:
+        total_batches = len(dataloader)
+        for batch_index, batch in enumerate(dataloader):
+            if batch_index < start_batch:
+                continue
             vocal_mel = batch["vocal_mel"].to(self.device)
             backing_mel = batch["backing_mel"].to(self.device)
             style_anchor = batch["style_anchor"].to(self.device)
@@ -231,7 +245,27 @@ class DiffusionTrainer:
             # "loss_gt" mirrors distill_training's field name (there is no teacher
             # here, so loss == loss_gt) so baseline and distilled runs can be
             # compared on the same axis -- see docs/experiments/*.md.
-            epoch_losses.append({"loss": float(loss.detach().cpu()), "loss_gt": float(loss.detach().cpu()), "loss_velocity": None})
+            loss_value = float(loss.detach().cpu())
+            loss_record = {
+                "loss": loss_value,
+                "loss_gt": loss_value,
+                "loss_velocity": None,
+            }
+            epoch_losses.append(loss_record)
+            completed_batches = batch_index + 1
+            should_log = (
+                completed_batches == total_batches
+                or completed_batches % max(1, int(log_every_steps)) == 0
+            )
+            if should_log:
+                print(
+                    f"epoch={epoch_index + 1}/{total_epochs} "
+                    f"batch={completed_batches}/{total_batches} "
+                    f"loss={loss_value:.6f}",
+                    flush=True,
+                )
+            if on_step is not None:
+                on_step(completed_batches, loss_record, should_log)
         return epoch_losses
 
 def create_random_dataset(output_dir: str | Path, *, count: int = 16, frames: int = 128, seed: int = 5602, config: MusicDiffusionConfig | None = None, target_bytes: int | None = None, payload_frames: int = 2048) -> dict[str, Any]:
@@ -393,6 +427,20 @@ def estimate_vocal_mel_stats(
     return float(mean), float(math.sqrt(variance))
 
 
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    """Keep the previous Drive progress file valid if Colab is preempted."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def train_model(
     dataset_dir: str | Path,
     checkpoint_path: str | Path,
@@ -411,6 +459,9 @@ def train_model(
     frames_per_chunk: int | None = None,
     resume: bool = False,
     save_every_epoch: bool = False,
+    checkpoint_every_steps: int = 0,
+    log_every_steps: int = 10,
+    progress_path: str | Path | None = None,
 ) -> dict[str, Any]:
     torch, _, _, DataLoaderClass = _torch()
 
@@ -432,6 +483,7 @@ def train_model(
     arch = {"dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult}
     resumed_payload: dict[str, Any] = {}
     start_epoch = 0
+    resume_batch_in_epoch = 0
 
     if resume and checkpoint.is_file():
         from ..models.text_to_music_diffusion import load_checkpoint
@@ -457,6 +509,12 @@ def train_model(
             )
         config = saved_config
         start_epoch = max(0, int(resumed_payload.get("epoch", 0)))
+        saved_training_state = resumed_payload.get("training_state") or {}
+        if int(saved_training_state.get("epoch", start_epoch)) == start_epoch:
+            resume_batch_in_epoch = max(
+                0,
+                int(saved_training_state.get("batch_in_epoch", 0)),
+            )
     else:
         usable_records = _filter_training_records(_read_records(root))
         records_for_stats = usable_records[:max_records] if max_records is not None else usable_records
@@ -492,15 +550,24 @@ def train_model(
         texts = [item["text"] for item in batch]
         return {"vocal_mel": vocal_mels, "backing_mel": backing_mels, "style_anchor": style_anchors, "text": texts}
 
-    dataloader = DataLoaderClass(
-        dataset, 
-        batch_size=max(1, int(batch_size)), 
-        shuffle=True, 
-        collate_fn=collate_fn
-    )
+    batch_size_value = max(1, int(batch_size))
+
+    def build_dataloader(epoch_index: int):
+        # A deterministic per-epoch sampler lets a resumed Colab session skip
+        # batches already covered by its latest mid-epoch checkpoint.
+        generator = torch.Generator()
+        generator.manual_seed(5602 + int(epoch_index))
+        return DataLoaderClass(
+            dataset,
+            batch_size=batch_size_value,
+            shuffle=True,
+            collate_fn=collate_fn,
+            generator=generator,
+        )
 
     epoch_count = max(1, int(epochs))
-    total_steps = max(1, epoch_count * len(dataloader))
+    steps_per_epoch = len(build_dataloader(0))
+    total_steps = max(1, epoch_count * steps_per_epoch)
     warmup_steps = min(max(1, int(total_steps * 0.05)), max(1, total_steps - 1))
 
     def learning_rate_multiplier(step: int) -> float:
@@ -516,6 +583,22 @@ def train_model(
     if resumed_payload.get("ema"):
         trainer.load_ema_state(resumed_payload["ema"])
 
+    saved_training_state = resumed_payload.get("training_state") or {}
+    global_step = max(
+        0,
+        int(saved_training_state.get("global_step", start_epoch * steps_per_epoch)),
+    )
+    if resume_batch_in_epoch >= steps_per_epoch:
+        start_epoch += resume_batch_in_epoch // steps_per_epoch
+        resume_batch_in_epoch %= steps_per_epoch
+    resumed_from_epoch = start_epoch
+    resumed_from_batch = resume_batch_in_epoch
+    progress_destination = (
+        Path(progress_path)
+        if progress_path is not None
+        else checkpoint.parent / "training_progress.json"
+    )
+
     if start_epoch >= epoch_count:
         return {
             "status": "complete",
@@ -524,7 +607,9 @@ def train_model(
             "checkpoint": str(checkpoint.resolve()),
             "device": selected_device,
             "epochs": epoch_count,
-            "resumed_from_epoch": start_epoch,
+            "resumed_from_epoch": resumed_from_epoch,
+            "resumed_from_batch": resumed_from_batch,
+            "global_step": global_step,
             "message": "Checkpoint already reached the requested epoch count.",
         }
     
@@ -535,7 +620,61 @@ def train_model(
     from ..models.text_to_music_diffusion import save_checkpoint
 
     for epoch in range(start_epoch, epoch_count):
-        epoch_losses = trainer.train_epoch(dataloader)
+        dataloader = build_dataloader(epoch)
+        start_batch = resume_batch_in_epoch if epoch == start_epoch else 0
+
+        def on_step(
+            completed_batches: int,
+            loss_record: dict[str, Any],
+            should_log: bool,
+        ) -> None:
+            nonlocal global_step
+            global_step += 1
+            training_state = {
+                "status": "training",
+                "epoch": epoch,
+                "display_epoch": epoch + 1,
+                "batch_in_epoch": completed_batches,
+                "batches_per_epoch": steps_per_epoch,
+                "global_step": global_step,
+                "total_steps": total_steps,
+                "loss": loss_record["loss"],
+                "checkpoint": str(checkpoint.resolve()),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            interval = max(0, int(checkpoint_every_steps))
+            should_checkpoint = interval > 0 and global_step % interval == 0
+            if should_log or should_checkpoint:
+                _write_json_atomic(progress_destination, training_state)
+            if should_checkpoint:
+                save_checkpoint(
+                    model,
+                    checkpoint,
+                    config,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    ema_state=trainer.ema_parameters,
+                    epoch=epoch,
+                    loss=loss_record["loss"],
+                    arch=arch,
+                    training_state=training_state,
+                )
+                print(
+                    f"checkpoint_saved={checkpoint} global_step={global_step}",
+                    flush=True,
+                )
+
+        epoch_losses = trainer.train_epoch(
+            dataloader,
+            epoch_index=epoch,
+            total_epochs=epoch_count,
+            start_batch=start_batch,
+            log_every_steps=log_every_steps,
+            on_step=on_step,
+        )
+        if not epoch_losses:
+            resume_batch_in_epoch = 0
+            continue
         losses.extend(epoch_losses)
         avg_loss = sum(d["loss"] for d in epoch_losses) / len(epoch_losses)
         loss_curve.append({"epoch": epoch + 1, "loss": avg_loss, "loss_gt": avg_loss, "loss_velocity": None})
@@ -552,9 +691,39 @@ def train_model(
                 epoch=epoch + 1,
                 loss=avg_loss,
                 arch=arch,
+                training_state={
+                    "status": "training",
+                    "epoch": epoch + 1,
+                    "display_epoch": min(epoch + 2, epoch_count),
+                    "batch_in_epoch": 0,
+                    "batches_per_epoch": steps_per_epoch,
+                    "global_step": global_step,
+                    "total_steps": total_steps,
+                    "loss": avg_loss,
+                    "checkpoint": str(checkpoint.resolve()),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
             )
+        resume_batch_in_epoch = 0
 
-    final_loss = sum(d["loss"] for d in losses[-min(10, len(losses)):]) / max(1, min(10, len(losses)))
+    final_loss = (
+        sum(d["loss"] for d in losses[-min(10, len(losses)):])
+        / max(1, min(10, len(losses)))
+        if losses
+        else float(resumed_payload.get("loss") or 0.0)
+    )
+    completed_training_state = {
+        "status": "complete",
+        "epoch": epoch_count,
+        "display_epoch": epoch_count,
+        "batch_in_epoch": 0,
+        "batches_per_epoch": steps_per_epoch,
+        "global_step": global_step,
+        "total_steps": total_steps,
+        "loss": final_loss,
+        "checkpoint": str(checkpoint.resolve()),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
     save_checkpoint(
         model,
         checkpoint,
@@ -565,7 +734,9 @@ def train_model(
         epoch=epoch_count,
         loss=final_loss,
         arch=arch,
+        training_state=completed_training_state,
     )
-    report = {"status": "complete", "backend": "genmusic-vn-self-diffusion", "dataset": str(root.resolve()), "checkpoint": str(checkpoint.resolve()), "device": selected_device, "epochs": epoch_count, "resumed_from_epoch": start_epoch, "batch_size": max(1, int(batch_size)), "record_count": len(dataset.records), "excluded_record_count": dataset.excluded_record_count, "additional_record_count": len(additional_records or []), "step_count": len(losses), "final_loss": round(final_loss, 6), "loss_curve": loss_curve, "elapsed_seconds": round(time.perf_counter() - started, 3), "dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult, "frames_per_chunk": config.frames_per_chunk, "chunk_seconds": config.chunk_seconds, "mel_mean": round(config.mel_mean, 6), "mel_std": round(config.mel_std, 6), "warmup_steps": warmup_steps, "ema_decay": trainer.ema_decay, "mixed_precision": trainer.use_amp}
+    _write_json_atomic(progress_destination, completed_training_state)
+    report = {"status": "complete", "backend": "genmusic-vn-self-diffusion", "dataset": str(root.resolve()), "checkpoint": str(checkpoint.resolve()), "device": selected_device, "epochs": epoch_count, "resumed_from_epoch": resumed_from_epoch, "resumed_from_batch": resumed_from_batch, "batch_size": batch_size_value, "record_count": len(dataset.records), "excluded_record_count": dataset.excluded_record_count, "additional_record_count": len(additional_records or []), "step_count": len(losses), "global_step": global_step, "checkpoint_every_steps": max(0, int(checkpoint_every_steps)), "final_loss": round(final_loss, 6), "loss_curve": loss_curve, "elapsed_seconds": round(time.perf_counter() - started, 3), "dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult, "frames_per_chunk": config.frames_per_chunk, "chunk_seconds": config.chunk_seconds, "mel_mean": round(config.mel_mean, 6), "mel_std": round(config.mel_std, 6), "warmup_steps": warmup_steps, "ema_decay": trainer.ema_decay, "mixed_precision": trainer.use_amp}
     (checkpoint.parent / "training_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report

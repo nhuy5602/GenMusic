@@ -25,7 +25,12 @@ def main() -> None:
     parser.add_argument("--repo-ref", default="master")
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--cache-data-on-drive", action="store_true")
+    parser.add_argument(
+        "--cache-data-on-drive",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument("--checkpoint-every-steps", type=int, default=25)
     args = parser.parse_args()
     report = write_colab_notebook(
         args.out,
@@ -34,6 +39,7 @@ def main() -> None:
         epochs=args.epochs,
         batch_size=args.batch_size,
         cache_data_on_drive=args.cache_data_on_drive,
+        checkpoint_every_steps=args.checkpoint_every_steps,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
 

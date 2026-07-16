@@ -44,7 +44,12 @@ def build_parser() -> argparse.ArgumentParser:
     colab.add_argument("--repo-ref", default="master")
     colab.add_argument("--epochs", type=int, default=40)
     colab.add_argument("--batch-size", type=int, default=4)
-    colab.add_argument("--cache-data-on-drive", action="store_true")
+    colab.add_argument(
+        "--cache-data-on-drive",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    colab.add_argument("--checkpoint-every-steps", type=int, default=25)
 
     local = sub.add_parser("generate-local", help="Sinh WAV/MP3 bằng model tự code tại local.")
     local.add_argument("--text", required=True)
@@ -100,6 +105,9 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--max-records", type=int, default=None)
     train.add_argument("--resume", action="store_true")
     train.add_argument("--save-every-epoch", action="store_true")
+    train.add_argument("--checkpoint-every-steps", type=int, default=0)
+    train.add_argument("--log-every-steps", type=int, default=10)
+    train.add_argument("--progress-file", default=None)
     train.add_argument("--roberta-model", default="xlm-roberta-base", help="Tên model RoBERTa dùng làm Text Encoder.")
     train.add_argument("--dim", type=int, default=256, help="Hidden dim của MicroDiT.")
     train.add_argument("--depth", type=int, default=4, help="Số lớp transformer block.")
@@ -192,6 +200,7 @@ def main(argv: list[str] | None = None) -> int:
             epochs=args.epochs,
             batch_size=args.batch_size,
             cache_data_on_drive=args.cache_data_on_drive,
+            checkpoint_every_steps=args.checkpoint_every_steps,
         )
     elif args.command == "refresh-kaggle":
         report = refresh_kaggle_job(args.state)
@@ -226,7 +235,7 @@ def main(argv: list[str] | None = None) -> int:
         upload_report = upload_dataset_to_kaggle(args.out, username=args.username, dataset_ref=args.dataset_ref, timeout_seconds=args.timeout_seconds)
         report = {"status": upload_report["status"], "dataset_report": dataset_report, "upload": upload_report}
     elif args.command == "train-self":
-        report = train_model(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, roberta_model=args.roberta_model, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, frames_per_chunk=args.frames_per_chunk, resume=args.resume, save_every_epoch=args.save_every_epoch)
+        report = train_model(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, roberta_model=args.roberta_model, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, frames_per_chunk=args.frames_per_chunk, resume=args.resume, save_every_epoch=args.save_every_epoch, checkpoint_every_steps=args.checkpoint_every_steps, log_every_steps=args.log_every_steps, progress_path=args.progress_file)
     elif args.command == "train-distill":
         from src.training.distill_training import run_distillation_training
         report = run_distillation_training(args.dataset, args.student_checkpoint, args.teacher_checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, alpha_feature=args.alpha_feature, repo_id=args.repo_id, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult)

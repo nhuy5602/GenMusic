@@ -8,6 +8,7 @@ shared config, mel-spectrogram <-> waveform conversion, and checkpoint I/O.
 from __future__ import annotations
 
 import math
+import os
 import wave
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
@@ -207,6 +208,7 @@ def save_checkpoint(
     epoch: int = 0,
     loss: float | None = None,
     arch: dict[str, int] | None = None,
+    training_state: dict[str, Any] | None = None,
 ) -> Path:
     torch, _ = _torch()
     destination = Path(path)
@@ -228,7 +230,18 @@ def save_checkpoint(
             name: value.detach().cpu()
             for name, value in ema_state.items()
         }
-    torch.save(payload, destination)
+    if training_state is not None:
+        payload["training_state"] = training_state
+
+    # Colab can terminate while Drive is being written. Save beside the previous
+    # checkpoint and replace it only after torch.save succeeds, so an interrupted
+    # write never destroys the last resumable checkpoint.
+    temporary = destination.with_name(destination.name + ".tmp")
+    try:
+        torch.save(payload, temporary)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
     return destination.resolve()
 
 

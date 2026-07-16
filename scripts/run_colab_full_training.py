@@ -36,7 +36,9 @@ def _now() -> str:
 
 def _run(command: list[str], *, cwd: Path | None = None) -> None:
     print("+", " ".join(command), flush=True)
-    subprocess.run(command, cwd=cwd, check=True)
+    environment = os.environ.copy()
+    environment["PYTHONUNBUFFERED"] = "1"
+    subprocess.run(command, cwd=cwd, check=True, env=environment)
 
 
 def _safe_rmtree(path: Path, allowed_root: Path) -> None:
@@ -133,6 +135,7 @@ def prepare_processed_parts(
     *,
     workspace: Path,
     cache_root: Path | None = None,
+    on_progress=None,
 ) -> list[Path]:
     downloads_root = workspace / "downloads"
     downloads_root.mkdir(parents=True, exist_ok=True)
@@ -149,15 +152,23 @@ def prepare_processed_parts(
             except json.JSONDecodeError:
                 marker = {}
             if marker.get("kernel_ref") == kernel_ref:
+                if on_progress is not None:
+                    on_progress(index, len(kernel_refs), kernel_ref, "cached")
                 prepared.append(cache_dir)
                 continue
 
+        if on_progress is not None:
+            on_progress(index, len(kernel_refs), kernel_ref, "downloading")
         download_dir = downloads_root / f"part_{index:02d}_{slug}"
         processed = _download_processed_output(kernel_ref, download_dir, workspace)
         if cache_dir is not None:
+            if on_progress is not None:
+                on_progress(index, len(kernel_refs), kernel_ref, "caching")
             _cache_dataset(processed, cache_dir, cache_root, kernel_ref)
         # Use the local download during the current session for faster training.
         prepared.append(processed)
+        if on_progress is not None:
+            on_progress(index, len(kernel_refs), kernel_ref, "ready")
     return prepared
 
 
@@ -297,6 +308,8 @@ def main() -> None:
     parser.add_argument("--dim", type=int, default=384)
     parser.add_argument("--depth", type=int, default=6)
     parser.add_argument("--heads", type=int, default=6)
+    parser.add_argument("--checkpoint-every-steps", type=int, default=25)
+    parser.add_argument("--log-every-steps", type=int, default=10)
     parser.add_argument("--skip-preflight-train", action="store_true")
     args = parser.parse_args()
 
@@ -327,10 +340,31 @@ def main() -> None:
             if args.cache_data_on_drive
             else None
         )
+        def update_download_progress(
+            index: int,
+            total: int,
+            kernel_ref: str,
+            part_status: str,
+        ) -> None:
+            state["status"] = "preparing_processed_parts"
+            state["part"] = {
+                "index": index,
+                "total": total,
+                "kernel_ref": kernel_ref,
+                "status": part_status,
+            }
+            state["updated_at"] = _now()
+            _write_state(state_path, state)
+            print(
+                f"part={index}/{total} status={part_status} kernel={kernel_ref}",
+                flush=True,
+            )
+
         processed_parts = prepare_processed_parts(
             kernel_refs,
             workspace=workspace,
             cache_root=cache_root,
+            on_progress=update_download_progress,
         )
 
         state["status"] = "merging"
@@ -344,7 +378,7 @@ def main() -> None:
 
         checkpoint = drive_root / "checkpoints" / "baseline_all_parts.pt"
         checkpoint.parent.mkdir(parents=True, exist_ok=True)
-        if not args.skip_preflight_train:
+        if not args.skip_preflight_train and not checkpoint.is_file():
             state["status"] = "preflight_training"
             _write_state(state_path, state)
             preflight_checkpoint = workspace / "preflight_all_parts.pt"
@@ -405,6 +439,12 @@ def main() -> None:
             str(args.heads),
             "--resume",
             "--save-every-epoch",
+            "--checkpoint-every-steps",
+            str(max(1, args.checkpoint_every_steps)),
+            "--log-every-steps",
+            str(max(1, args.log_every_steps)),
+            "--progress-file",
+            str(state_path),
         ]
         _run(train_command, cwd=project_root)
 

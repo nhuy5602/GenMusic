@@ -53,7 +53,9 @@ def build_colab_notebook(
     expected_records: int = 1843,
     epochs: int = 40,
     batch_size: int = 4,
-    cache_data_on_drive: bool = False,
+    cache_data_on_drive: bool = True,
+    checkpoint_every_steps: int = 25,
+    skip_preflight_train: bool = True,
 ) -> dict[str, Any]:
     config_source = f'''# Colab backend configuration. Kaggle launchers are unchanged.
 COLAB_NOTEBOOK_URL = {colab_url!r}
@@ -65,6 +67,8 @@ EXPECTED_RECORDS = {int(expected_records)}
 EPOCHS = {int(epochs)}
 BATCH_SIZE = {int(batch_size)}
 CACHE_DATA_ON_DRIVE = {bool(cache_data_on_drive)!r}
+CHECKPOINT_EVERY_STEPS = {max(1, int(checkpoint_every_steps))}
+SKIP_PREFLIGHT_TRAIN = {bool(skip_preflight_train)!r}
 KERNEL_REFS = {list(kernel_refs)!r}
 '''
     runtime_source = '''from google.colab import drive
@@ -145,6 +149,7 @@ print("Kaggle token loaded into the current Colab runtime.")
 '''
     run_source = '''command = [
     sys.executable,
+    "-u",
     str(repo_root / "scripts" / "run_colab_full_training.py"),
     "--workspace",
     WORKSPACE,
@@ -156,9 +161,13 @@ print("Kaggle token loaded into the current Colab runtime.")
     str(EPOCHS),
     "--batch-size",
     str(BATCH_SIZE),
+    "--checkpoint-every-steps",
+    str(CHECKPOINT_EVERY_STEPS),
 ]
 if CACHE_DATA_ON_DRIVE:
     command.append("--cache-data-on-drive")
+if SKIP_PREFLIGHT_TRAIN:
+    command.append("--skip-preflight-train")
 for kernel_ref in KERNEL_REFS:
     command.extend(["--kernel", kernel_ref])
 
@@ -197,7 +206,8 @@ elif wav_files:
                 "# GenMusic full-dataset training on Google Colab\n\n"
                 "Backend này chạy song song với Kaggle, không thay thế các launcher Kaggle. "
                 "Notebook tải sáu output preprocessing public, ghép đúng 1.843 record, "
-                "train 40 epoch và lưu checkpoint theo từng epoch vào Google Drive.\n\n"
+                "train 40 epoch, cache từng phần dữ liệu và lưu checkpoint giữa "
+                "epoch vào Google Drive để tiếp tục sau khi runtime bị ngắt.\n\n"
                 "Trước khi chạy: chọn **Runtime → Change runtime type → T4 GPU**. "
                 "Để tránh paste token mỗi lần, có thể thêm Colab secret "
                 "`KAGGLE_API_TOKEN` và bật quyền truy cập notebook."
