@@ -3,42 +3,6 @@ import torch.nn.functional as F
 from .text_to_music_diffusion import MusicDiffusionConfig
 
 
-def _prepare_backing_condition(
-    backing_mel: torch.Tensor | None,
-    *,
-    batch_size: int,
-    frames: int,
-    config: MusicDiffusionConfig,
-    device,
-) -> torch.Tensor:
-    """Normalize backing mels to the model's (batch, frames, n_mels) layout."""
-    if backing_mel is None:
-        return torch.zeros((batch_size, frames, config.n_mels), device=device)
-
-    backing = torch.as_tensor(backing_mel, dtype=torch.float32, device=device)
-    if backing.dim() == 2:
-        backing = backing.unsqueeze(0)
-    if backing.dim() != 3:
-        raise ValueError(f"backing_mel must have 2 or 3 dimensions, got {tuple(backing.shape)}")
-    if backing.shape[-1] == config.n_mels:
-        cond = backing
-    elif backing.shape[1] == config.n_mels:
-        cond = backing.transpose(1, 2)
-    else:
-        raise ValueError(
-            f"backing_mel must contain an n_mels={config.n_mels} axis, got {tuple(backing.shape)}"
-        )
-    if cond.shape[0] == 1 and batch_size > 1:
-        cond = cond.expand(batch_size, -1, -1)
-    elif cond.shape[0] != batch_size:
-        raise ValueError(f"backing_mel batch {cond.shape[0]} does not match text batch {batch_size}")
-    if cond.shape[1] > frames:
-        cond = cond[:, :frames]
-    elif cond.shape[1] < frames:
-        cond = F.pad(cond, (0, 0, 0, frames - cond.shape[1]))
-    return cond
-
-
 def _prepare_style_condition(
     style_prompt: torch.Tensor | None,
     *,
@@ -65,7 +29,6 @@ def _prepare_style_condition(
 def cfm_loss(
     model,
     clean_mel: torch.Tensor,
-    backing_mel: torch.Tensor,
     style_anchor: torch.Tensor,
     texts: list[str],
     config: MusicDiffusionConfig,
@@ -91,24 +54,20 @@ def cfm_loss(
     target_velocity = x1 - x0
     
     # 5. Classifier-free condition dropout teaches the model all inference modes:
-    # real reference conditions, missing backing/style, and an empty lyric prompt.
-    cond = backing_mel
+    # real reference conditions, missing style, and an empty lyric prompt.
     normalized_style = style_anchor
     model_texts = list(texts)
     dropout = max(0.0, min(1.0, float(condition_dropout_prob)))
     if dropout > 0.0:
-        backing_drop = torch.rand(batch_size, device=device) < dropout
         style_drop = torch.rand(batch_size, device=device) < dropout
         text_drop = torch.rand(batch_size, device=device) < dropout
-        cond = cond.masked_fill(backing_drop[:, None, None], 0.0)
         normalized_style = normalized_style.masked_fill(style_drop[:, None], 0.0)
         text_drop_flags = text_drop.detach().cpu().tolist()
         model_texts = ["" if text_drop_flags[index] else text for index, text in enumerate(model_texts)]
     
-    # 6. Predict velocity field using MicroDiT
+    # 6. Predict velocity field using MicroDiT (no cond passed)
     predicted_velocity = model(
         x=xt,
-        cond=cond,
         texts=model_texts,
         timestep=t,
         style_prompt=normalized_style
@@ -134,25 +93,23 @@ def cfm_loss(
 
 
 @torch.no_grad()
-def sample_cfm(model, texts: list[str], frames: int, config: MusicDiffusionConfig, device, steps: int = 32, seed: int | None = None, backing_mel: torch.Tensor | None = None, style_prompt: torch.Tensor | None = None, guidance_scale: float = 1.0) -> torch.Tensor:
-    """Sample a vocal mel, optionally using the same backing/style inputs as training."""
+def sample_cfm(model, texts: list[str], frames: int, config: MusicDiffusionConfig, device, steps: int = 32, seed: int | None = None, style_prompt: torch.Tensor | None = None, guidance_scale: float = 1.0) -> torch.Tensor:
+    """Sample a vocal mel, optionally using the style inputs from training."""
     model.eval()
     
     # Set seed if provided
     if seed is not None:
         torch.manual_seed(seed)
         
+        # Ensure numpy seed is aligned if needed
+        import numpy as np
+        np.random.seed(seed)
+        
     batch_size = len(texts)
     
     # 1. Start with Gaussian noise x0 at t = 0
     xt = torch.randn((batch_size, frames, config.n_mels), device=device)
     
-    # Real preprocessed backing/style conditions should be supplied for models
-    # trained on separated stems. The zero/None fallback remains for old smoke
-    # checkpoints and deliberately unconditional calls.
-    cond = _prepare_backing_condition(
-        backing_mel, batch_size=batch_size, frames=frames, config=config, device=device
-    )
     normalized_style = _prepare_style_condition(
         style_prompt,
         batch_size=batch_size,
@@ -167,10 +124,9 @@ def sample_cfm(model, texts: list[str], frames: int, config: MusicDiffusionConfi
         t_val = step / steps
         t = torch.full((batch_size,), t_val, device=device, dtype=torch.float32)
         
-        # Predict velocity field
+        # Predict velocity field (no cond passed)
         v_pred = model(
             x=xt,
-            cond=cond,
             texts=texts,
             timestep=t,
             style_prompt=normalized_style
@@ -178,7 +134,6 @@ def sample_cfm(model, texts: list[str], frames: int, config: MusicDiffusionConfi
         if guidance_scale != 1.0:
             unconditional = model(
                 x=xt,
-                cond=cond,
                 texts=[""] * batch_size,
                 timestep=t,
                 style_prompt=normalized_style,

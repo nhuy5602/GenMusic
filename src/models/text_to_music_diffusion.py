@@ -308,31 +308,6 @@ def generate_audio(
     torch, _ = _torch()
     model.to(device)
 
-    normalized_backing = None
-    if backing_mel is not None:
-        normalized_backing = torch.as_tensor(backing_mel, dtype=torch.float32, device=device)
-        if normalized_backing.dim() == 2:
-            if normalized_backing.shape[0] == config.n_mels:
-                normalized_backing = normalized_backing.unsqueeze(0)
-            elif normalized_backing.shape[1] == config.n_mels:
-                normalized_backing = normalized_backing.transpose(0, 1).unsqueeze(0)
-            else:
-                raise ValueError(
-                    f"backing_mel must contain an n_mels={config.n_mels} axis, got {tuple(normalized_backing.shape)}"
-                )
-        elif normalized_backing.dim() == 3:
-            if normalized_backing.shape[0] != 1:
-                raise ValueError("generate_audio currently generates one item and requires backing batch size 1")
-            if normalized_backing.shape[1] != config.n_mels and normalized_backing.shape[2] == config.n_mels:
-                normalized_backing = normalized_backing.transpose(1, 2)
-            elif normalized_backing.shape[1] != config.n_mels:
-                raise ValueError(
-                    f"backing_mel must contain an n_mels={config.n_mels} axis, got {tuple(normalized_backing.shape)}"
-                )
-        else:
-            raise ValueError(f"backing_mel must have 2 or 3 dimensions, got {tuple(normalized_backing.shape)}")
-        normalized_backing = normalize_mel(normalized_backing, config)
-
     if style_anchor is not None and style_prompt is not None:
         raise ValueError("Pass only one of style_anchor or style_prompt")
     style_condition = style_anchor if style_anchor is not None else style_prompt
@@ -351,53 +326,27 @@ def generate_audio(
     rendered = []
     lyric_timing = build_lyric_timing(text, duration_seconds)
     section_number = 0
-    backing_frame_cursor = 0
-    # Derive the generation span from the exact training tensor length. This
-    # also fixes old checkpoints whose saved frames_per_chunk=128 conflicted
-    # with the separately hardcoded chunk_seconds=4.0.
-    training_chunk_seconds = config.frames_per_chunk * config.hop_length / config.sample_rate
+    # Derive the generation span from the exact training tensor length.
+    # We no longer condition on backing track frames.
     for section in lyric_timing:
-        section_count = max(1, math.ceil(section["duration_seconds"] / training_chunk_seconds))
-        chunk_duration = section["duration_seconds"] / section_count
-        for chunk_index in range(section_count):
-            # Training now receives lyrics only. Style is already represented
-            # by backing audio and MuQ, so injecting English instructions here
-            # would shift the lyric tokens away from the frames they describe.
-            chunk_text = section["line"]
-            chunk_frames = max(8, int(chunk_duration * config.sample_rate / config.hop_length))
-            from .cfm_flow import sample_cfm
+        chunk_duration = float(section["duration_seconds"])
+        chunk_text = section["line"]
+        chunk_frames = max(8, int(chunk_duration * config.sample_rate / config.hop_length))
+        from .cfm_flow import sample_cfm
 
-            # Training crops the real backing mel at the same temporal offset as
-            # the target vocal. Preserve that alignment while generating chunks
-            # instead of repeatedly conditioning every chunk on frame zero. Wrap
-            # a short reference so later chunks remain conditioned rather than
-            # silently becoming zero-padded.
-            chunk_backing = None
-            if normalized_backing is not None:
-                total_frames = normalized_backing.shape[2]
-                if total_frames == 0:
-                    raise ValueError("backing_mel must contain at least one frame")
-                indices = torch.arange(
-                    backing_frame_cursor,
-                    backing_frame_cursor + chunk_frames,
-                    device=device,
-                ) % total_frames
-                chunk_backing = normalized_backing.index_select(2, indices)
-            mel = sample_cfm(
-                model,
-                [chunk_text],
-                chunk_frames,
-                config=config,
-                device=device,
-                steps=steps,
-                guidance_scale=guidance_scale,
-                seed=seed + section_number,
-                backing_mel=chunk_backing,
-                style_prompt=normalized_style,
-            )
-            rendered.append(mel.squeeze(0))
-            backing_frame_cursor += chunk_frames
-            section_number += 1
+        mel = sample_cfm(
+            model,
+            [chunk_text],
+            chunk_frames,
+            config=config,
+            device=device,
+            steps=steps,
+            guidance_scale=guidance_scale,
+            seed=seed + section_number,
+            style_prompt=normalized_style,
+        )
+        rendered.append(mel.squeeze(0))
+        section_number += 1
     mel = torch.cat(rendered, dim=1)
     target_frames = max(1, int(float(duration_seconds) * config.sample_rate / config.hop_length))
     mel = mel[:, :target_frames]
@@ -417,7 +366,7 @@ def generate_audio(
         "guidance_scale": float(guidance_scale),
         "seed": seed,
         "lyric_timing": lyric_timing,
-        "backing_conditioned": normalized_backing is not None,
+        "backing_conditioned": False,
         "muq_style_conditioned": normalized_style is not None,
     }
 

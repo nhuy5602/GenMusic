@@ -19,29 +19,18 @@ a frozen `vinai/xphonebert-base` encoder using the G2P parser `text2phonemeseque
 (2) a single 512-dim
 **MuQ-MuLan style embedding**, precomputed once per song at preprocessing time
 (`AudioStyleEncoder`, a small 2-layer MLP adapter — *not* an audio encoder
-itself, see `docs/PROJECT_REPORT.md` §3.2) — this replaced an earlier version
-that average-pooled a raw mel crop through an untrained Conv1D, which had no
-learned notion of musical style at all. Training target is Conditional Flow
+itself, see `docs/PROJECT_REPORT.md` §3.2). Training target is Conditional Flow
 Matching (`src/models/cfm_flow.py`): a noisy mel state is interpolated between
 Gaussian noise and the clean vocal target, and the network learns the velocity
 field, integrated at sample time with fixed-step Euler ODE integration.
 
-The student's mel representation (100 mels, 24kHz, n_fft=1024, hop=256) is
-chosen to exactly match the pretrained Vocos vocoder's own native format, not
-any dimension DiffRhythm2 itself uses — this was the single highest-impact fix
-in this project's history (see `docs/experiments/vocoder_fix.md`).
+Unlike the previous version which concatenated all features (`x`, `backing_mel`, `text`, `time`, `style`) along the channel dimension, the model now implements **additive conditioning** matching DiffRhythm2:
+- The vocal mel spectrogram is projected from `100` mel-bins to the model's internal transformer dimension.
+- Lyric phoneme embeddings, style embeddings, and time embeddings are added directly to the projected vocal representation.
+- The backing track mel-spectrogram conditioning (`backing_mel`/`cond`) has been completely removed to align the student's architecture with the teacher's (since DiffRhythm2 does not condition on raw instrumentals, only on the style vector).
 
-**Generation conditioning**: `generate_audio()` accepts `backing_mel`/`style_anchor`
-tensors; without them (the default), generation uses a zero backing-track and a
-pooled-text stand-in for the style vector instead of a real MuQ-MuLan anchor — a
-genuine train/inference mismatch, not a deliberate simplification, since training
-always conditions on real `backing_mel` + a real (or zero-fallback) style anchor.
-`load_reference_conditioning()` (`src/training/self_diffusion.py`) extracts both
-from an existing preprocessed dataset record, and `generate-local --reference-dataset
---reference-id` wires it into the CLI — see README's Local Generation section.
-Long lyrics spanning multiple flow-matching chunks get the *matching* time window of
-the reference backing track per chunk (not always frame 0), wrapping around if the
-reference is shorter than the requested duration.
+**Generation conditioning**: `generate_audio()` accepts a `style_prompt`/`style_anchor` tensor; without them, generation falls back to using the pooled-text representation as a stand-in style vector.
+`load_reference_conditioning()` (`src/training/self_diffusion.py`) extracts the style anchor from a preprocessed dataset record, and `generate-local --reference-dataset --reference-id` wires it into the CLI — see README's Local Generation section.
 
 Architecture size is configurable: `--dim`/`--depth`/`--heads`/`--ff-mult` on
 both `train-self` and `train-distill`. Default

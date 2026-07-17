@@ -266,7 +266,7 @@ class SelfDiffusionTests(unittest.TestCase):
         t = torch.rand(2)
         style = torch.randn(2, 512)
         v_teacher = trainer._teacher_velocity(xt, t, ["xin chao"] * 2, style)
-        v_student = student(x=xt, cond=torch.zeros_like(xt), texts=["xin chao"] * 2, timestep=t, style_prompt=style)
+        v_student = student(x=xt, texts=["xin chao"] * 2, timestep=t, style_prompt=style)
         (v_student - v_teacher).pow(2).mean().backward()
 
         self.assertIsNotNone(trainer.from_teacher_mel.weight.grad)
