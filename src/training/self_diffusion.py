@@ -479,6 +479,7 @@ def train_model(
         )
     selected_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     arch = {"dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult}
+    arch_to_save = {**arch, "roberta_model": roberta_model}
     resumed_payload: dict[str, Any] = {}
     start_epoch = 0
     resume_batch_in_epoch = 0
@@ -654,7 +655,7 @@ def train_model(
                     ema_state=trainer.ema_parameters,
                     epoch=epoch,
                     loss=loss_record["loss"],
-                    arch=arch,
+                    arch=arch_to_save,
                     training_state=training_state,
                 )
                 print(
@@ -688,7 +689,7 @@ def train_model(
                 ema_state=trainer.ema_parameters,
                 epoch=epoch + 1,
                 loss=avg_loss,
-                arch=arch,
+                arch=arch_to_save,
                 training_state={
                     "status": "training",
                     "epoch": epoch + 1,
@@ -731,7 +732,7 @@ def train_model(
         ema_state=trainer.ema_parameters,
         epoch=epoch_count,
         loss=final_loss,
-        arch=arch,
+        arch=arch_to_save,
         training_state=completed_training_state,
     )
     _write_json_atomic(progress_destination, completed_training_state)

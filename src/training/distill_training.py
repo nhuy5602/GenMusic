@@ -414,6 +414,7 @@ def run_distillation_training(
     depth: int = 4,
     heads: int = 4,
     ff_mult: int = 4,
+    roberta_model: str = "vinai/xphonebert-base",
 ) -> dict[str, Any]:
     torch, _, _, DataLoaderClass = _torch()
 
@@ -453,7 +454,9 @@ def run_distillation_training(
     if parse_lyrics_fn is None:
         raise RuntimeError(f"train-distill requires the real lyric tokenizer; it failed to load: {tokenizer_status}.")
 
-    model_student = MicroDiT(config, dim=dim, depth=depth, heads=heads, ff_mult=ff_mult, style_dim=TEACHER_COND_DIM).to(selected_device)
+    model_student = MicroDiT(
+        config, roberta_model=roberta_model, dim=dim, depth=depth, heads=heads, ff_mult=ff_mult, style_dim=TEACHER_COND_DIM,
+    ).to(selected_device)
 
     dataset = MusicDiffusionDataset(root, config)
 
@@ -512,7 +515,7 @@ def run_distillation_training(
 
     save_checkpoint(
         model_student, student_checkpoint, config, optimizer=trainer.optimizer, epoch=epochs, loss=final_loss,
-        arch={"dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult, "style_dim": TEACHER_COND_DIM},
+        arch={"dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult, "style_dim": TEACHER_COND_DIM, "roberta_model": roberta_model},
     )
 
     report = {

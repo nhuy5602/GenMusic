@@ -249,7 +249,7 @@ def load_checkpoint(
     path: str | Path,
     *,
     device="cpu",
-    roberta_model: str = "xlm-roberta-base",
+    roberta_model: str | None = None,
     use_ema: bool = True,
 ) -> tuple[Any, MusicDiffusionConfig, dict[str, Any]]:
     torch, _ = _torch()
@@ -261,10 +261,18 @@ def load_checkpoint(
     # Reconstruct with the exact architecture size the checkpoint was trained
     # with (defaults match the old hardcoded values, for checkpoints saved
     # before "arch" was tracked) -- a size mismatch here would silently fail
-    # to load most weights via load_state_dict(strict=False).
+    # to load most weights via load_state_dict(strict=False). Same for the
+    # frozen text encoder: it's not saved in the checkpoint (see save_checkpoint),
+    # so reloading with the wrong model_name silently feeds it text tokenized/
+    # embedded a completely different way than what the trainable projection
+    # layer actually learned against. Explicit roberta_model always wins;
+    # otherwise trust what the checkpoint says it was trained with, falling
+    # back to the pre-XPhoneBERT default only for checkpoints saved before
+    # "roberta_model" was tracked in arch.
     arch = payload.get("arch") or {}
+    resolved_roberta_model = roberta_model or arch.get("roberta_model", "xlm-roberta-base")
     model = MicroDiT(
-        config, roberta_model=roberta_model,
+        config, roberta_model=resolved_roberta_model,
         dim=arch.get("dim", 256), depth=arch.get("depth", 4),
         heads=arch.get("heads", 4), ff_mult=arch.get("ff_mult", 4),
         style_dim=arch.get("style_dim", 512),
