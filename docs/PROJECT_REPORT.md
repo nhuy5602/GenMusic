@@ -18,8 +18,12 @@ cấu hình đã thử. Trong lúc đó, đồng nghiệp đổi kiến trúc (s
 đo lường (load sai frozen text encoder, đã fix tận gốc, §4.18). So sánh cô lập đúng biến
 kiến trúc (§4.19, `dim=256/25ep` khớp exp06): kiến trúc mới không cải thiện loss_gt, **chậm
 hơn 4.4 lần**, và đổi đặc tính output (voiced_ratio thấp hơn, pitch_std/flatness gần thật
-hơn) theo hướng chưa rõ là tốt hơn hay chỉ khác — cần nghe thật để quyết định có đáng chi phí
-4.4x đó không trước khi tiếp tục scale trên kiến trúc mới.
+hơn) theo hướng chưa rõ là tốt hơn hay chỉ khác. Đồng nghiệp sau đó phát hiện một bug nghiêm
+trọng hơn hẳn: teacher thực ra chạy ở 5 Hz, nhưng mọi lần distill trong report này (kể cả
+§4.19) đưa vào teacher chuỗi dài gấp **18.75 lần** phân phối huấn luyện thật của nó (§4.20,
+đã fix). Chạy lại đúng cấu hình exp06 với fix này (§4.21) cho kết quả **mơ hồ nhất trong
+toàn bộ report**: flatness khớp gần hoàn hảo vocal thật (0.0556 vs 0.0558) nhưng voiced_ratio
+sụp về đúng 0% trên cả 6/6 bài — không thể phân xử bằng số liệu, bắt buộc cần nghe thật.
 
 ---
 
@@ -629,6 +633,7 @@ Thứ mục không nằm trong git (`outputs/` được gitignore) — chỉ có
 | `exp13_distill_alpha08_dim512.wav` | §4.15 — model to hơn nữa (dim=512) | 81.7% (1 bài); 79.2% (TB 6 bài) | 0.058 | flatness gần vocal thật nhất (0.058 vs 0.056) trong toàn bộ report — **CHƯA nghe thử** |
 | `exp14_distill_seqconcat_dim384_alpha08_40ep.wav` | §4.18 — kiến trúc mới, dim=384/40ep | 2.1% (1 bài, đo ĐÚNG encoder) | 0.062 | Kiến trúc mới scale lớn — kém hơn hẳn exp06, gần như mất pitch (4/6 bài N=6 không có voiced frame) — **CHƯA nghe thử** |
 | `exp15_distill_seqconcat_dim256_alpha08_25ep.wav` | §4.19 — kiến trúc mới, cùng size exp06 | 43.8% (1 bài); 53.5% (TB 6 bài) | 0.033 | So sánh cô lập đúng biến kiến trúc — pitch_std/flatness gần thật hơn exp06 nhưng voiced_ratio thấp hơn, chậm hơn 4.4x — **CHƯA nghe thử** |
+| `exp16_distill_vaefix_dim256_alpha08_25ep.wav` | §4.21 — fix VAE-rate 5Hz/18.75x mismatch | **0%** (1 bài + TB 6 bài, cả 2 đều 0%) | **0.0523** (gần khớp tuyệt đối vocal thật 0.056) | Mâu thuẫn chỉ số ở mức cực đại trong cả report — flatness gần hoàn hảo nhưng hoàn toàn không có pitch ổn định — **BẮT BUỘC nghe thử, không đoán được từ số liệu** |
 
 *(§4.10 — 75 epoch code cũ — không có file nghe vì chỉ tải log/report lúc đó, không tải
 checkpoint, để tiết kiệm băng thông.)*
@@ -1074,6 +1079,56 @@ train nào trong report tính đến giờ dùng đúng fix này** — bước t
 lại `train-distill` ở quy mô nhỏ (khớp exp06, `dim=256/25ep/alpha=0.8`) với code đã fix, đo
 lại đủ bộ 3 chỉ số (voiced_ratio/flatness/pitch_std_semitones) trước khi tin bất kỳ kết luận
 cũ nào về alpha/size/kiến trúc.
+
+### 4.21 Kết quả lần train đầu tiên với fix VAE-rate — kết quả mơ hồ nhất trong toàn bộ report, mâu thuẫn chỉ số ở mức cực đại
+
+Chạy **exp16** (`ddvnam05/genmusic-distill-1784288826`) — đúng cấu hình exp06/exp15
+(`dim=256/25ep/alpha=0.8`) nhưng với fix VAE-rate + block-attention-mask của §4.20 đã áp
+dụng. `loss_gt` cuối **0.572** (gần exp06's 0.605, exp15's 0.600 — không đổi nhiều), nhưng
+wall-clock **4029s** — nhanh hơn exp15 (5481s, chưa fix) đúng như dự đoán, vì teacher giờ chỉ
+xử lý chuỗi ngắn 5Hz thay vì chuỗi dài 93.75Hz đầy đủ.
+
+**Đo N=6 bài** (`outputs/eval_multi_vaefix_dim256/`):
+
+| Chỉ số | exp06 (mốc §4.14) | exp15 (kiến trúc mới, chưa fix VAE-rate) | **exp16 (đã fix VAE-rate)** | Vocal thật |
+|---|---|---|---|---|
+| voiced_ratio (TB 6 bài) | 92.4% | 53.5% | **0.0%** (0/6 bài) | 74.3% |
+| pitch_std_semitones | 0.91 | 1.49 | **None** (không có voiced frame) | 6.39 |
+| spectral flatness | 0.011 | 0.034 | **0.0556** | 0.0558 |
+| RMS | — | — | 0.058-0.060 (bình thường, không im lặng) | 0.08-0.10 |
+
+**Kết quả cực đoan theo cả hai hướng cùng lúc**: flatness của exp16 (0.0556) là **gần khớp
+tuyệt đối** với vocal thật (0.0558, sai biệt <0.5%) — chỉ số tốt nhất đo được trong TOÀN BỘ
+report này trên trục này. Nhưng voiced_ratio rơi về **đúng 0%** trên **cả 6/6 bài** — không
+tệ hơn một chút như exp14/exp15, mà **tuyệt đối không có** một khung nào được `pyin` nhận
+diện là có pitch ổn định. RMS vẫn ở mức bình thường (không im lặng, không clip) — loại trừ
+khả năng output chỉ là silence/degenerate đơn giản.
+
+**Không thể diễn giải chỉ bằng số liệu — đây là trường hợp mơ hồ nhất trong report**:
+1. **Khả dĩ 1 (tích cực)**: audio giờ có kết cấu phổ tần số rất giống giọng hát thật
+   (flatness khớp gần hoàn hảo) — có thể là giọng hát/nói có thật nhưng theo kiểu không giữ
+   một nốt ổn định lâu (hát nhanh, nhiều âm tiết, hoặc gần với nói hơn hát) — hợp lý một phần
+   vì ngay cả vocal thật trong dataset này cũng chỉ có 74.3% voiced_ratio (không phải 100%),
+   tức giọng hát thật cũng có nhiều đoạn `pyin` không track được pitch ổn định (phụ âm,
+   chuyển âm, hơi thở) — có thể exp16 tạo ra kết cấu gần giống nhưng tỉ lệ đoạn "khó track"
+   cao hơn hẳn.
+2. **Khả dĩ 2 (tiêu cực)**: đây là một dạng thoái hoá hoàn toàn khác — âm thanh có kết cấu
+   phổ giống giọng hát về mặt thống kê tổng thể (flatness là chỉ số trung bình toàn cục) nhưng
+   không có bất kỳ cấu trúc pitch/giai điệu nào thật — tương tự nhiễu có màu (colored noise)
+   được thiết kế tình cờ khớp phân phối phổ của giọng hát mà không mang nội dung âm nhạc nào.
+
+**Bắt buộc phải nghe thật để phân xử — không có lựa chọn khác lần này**: cả 2 khả dĩ trên đều
+hoàn toàn tương thích với số liệu đo được, và không giống các trường hợp mơ hồ trước (§4.16,
+§4.18 cuối cùng đều giải quyết được nhờ có ít nhất một chỉ số đồng thuận rõ) — lần này 2 chỉ
+số quan trọng nhất mâu thuẫn ở mức tuyệt đối (flatness ~hoàn hảo vs voiced_ratio ~hoàn toàn
+sụp). File: `outputs/listening_guide/exp16_distill_vaefix_dim256_alpha08_25ep.wav`.
+
+**Không nên vội kết luận fix VAE-rate ở §4.20 "không hiệu quả" hay "đã giải quyết vấn đề"**
+chỉ từ bảng số liệu này — cần nghe thật trước. Nếu nghe thật xác nhận khả dĩ 1 (giọng hát/nói
+thật, chỉ thiếu ổn định pitch), đây là bước tiến very đáng kể, và hướng tiếp theo là cải thiện
+độ ổn định pitch (có thể qua nhiều epoch hơn, hoặc điều kiện F0 rõ ràng hơn — xem §5.2, mục
+điều kiện pitch/F0 chưa khôi phục). Nếu xác nhận khả dĩ 2, fix VAE-rate dù đúng về mặt lý
+thuyết vẫn chưa đủ để tạo tín hiệu distillation hữu ích ở quy mô 250 bài/25 epoch hiện tại.
 
 ---
 
