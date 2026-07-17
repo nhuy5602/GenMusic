@@ -7,15 +7,15 @@ from transformers.models.llama import LlamaConfig
 
 from .text_to_music_diffusion import MusicDiffusionConfig
 
-class PretrainedRobertaEncoder(nn.Module):
-    """Frozen pretrained RoBERTa text encoder to extract rich semantic sequence embeddings."""
-    def __init__(self, model_name: str = "xlm-roberta-base", out_dim: int = 256):
+class PretrainedPhonemeEncoder(nn.Module):
+    """Frozen pretrained XPhoneBERT text encoder to extract rich semantic phoneme-level sequence embeddings."""
+    def __init__(self, model_name: str = "vinai/xphonebert-base", out_dim: int = 256):
         super().__init__()
-        print(f"Loading pretrained RoBERTa text encoder: {model_name}...", flush=True)
+        print(f"Loading pretrained XPhoneBERT phoneme encoder: {model_name}...", flush=True)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.roberta = AutoModel.from_pretrained(model_name)
         
-        # Freeze all RoBERTa parameters
+        # Freeze all XPhoneBERT parameters
         for param in self.roberta.parameters():
             param.requires_grad = False
             
@@ -27,17 +27,32 @@ class PretrainedRobertaEncoder(nn.Module):
 
     def train(self, mode: bool = True):
         # The projection remains trainable, but the frozen backbone must stay in
-        # eval mode or RoBERTa dropout makes the same lyric embedding fluctuate
+        # eval mode or XPhoneBERT dropout makes the same lyric embedding fluctuate
         # between optimization steps.
         super().train(mode)
         self.roberta.eval()
         return self
 
     def forward(self, texts: list[str], device) -> tuple[torch.Tensor, torch.Tensor]:
+        # Lazily initialize G2P model with appropriate CUDA setting
+        if not hasattr(self, "text2phone_model"):
+            from text2phonemesequence import Text2PhonemeSequence
+            is_cuda = "cuda" in str(device)
+            self.text2phone_model = Text2PhonemeSequence(language='vie', is_cuda=is_cuda)
+
+        # Convert texts to phoneme sequences
+        phoneme_texts = []
+        for text in texts:
+            try:
+                phonemes = self.text2phone_model.infer_sentence(text)
+            except Exception:
+                phonemes = text
+            phoneme_texts.append(phonemes)
+
         # Tokenize inputs
-        inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=128).to(device)
+        inputs = self.tokenizer(phoneme_texts, return_tensors="pt", padding=True, truncation=True, max_length=128).to(device)
         
-        # Extract embeddings from RoBERTa (no gradients computed)
+        # Extract embeddings from XPhoneBERT (no gradients computed)
         with torch.no_grad():
             outputs = self.roberta(**inputs)
             # Use sequence output (batch_size, seq_len, hidden_size)
@@ -47,6 +62,7 @@ class PretrainedRobertaEncoder(nn.Module):
         projected = self.projection(seq_embeddings)
         attention_mask = inputs["attention_mask"].bool() # (batch_size, seq_len)
         return projected, attention_mask
+
 
 
 def align_text_embeddings_to_frames(
@@ -155,7 +171,7 @@ class MicroDiT(nn.Module):
     def __init__(
         self,
         config: MusicDiffusionConfig,
-        roberta_model: str = "xlm-roberta-base",
+        roberta_model: str = "vinai/xphonebert-base",
         dim: int = 256,
         depth: int = 4,
         heads: int = 4,
@@ -169,7 +185,7 @@ class MicroDiT(nn.Module):
         self.style_dim = style_dim
 
         # Core embeddings and adapters
-        self.text_encoder = PretrainedRobertaEncoder(model_name=roberta_model, out_dim=dim)
+        self.text_encoder = PretrainedPhonemeEncoder(model_name=roberta_model, out_dim=dim)
         self.time_embed = TimestepEmbedding(self.cond_dim)
         self.audio_style_encoder = AudioStyleEncoder(style_dim, dim)
         self.style_embed = nn.Sequential(
