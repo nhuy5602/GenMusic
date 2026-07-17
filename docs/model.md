@@ -24,10 +24,11 @@ Matching (`src/models/cfm_flow.py`): a noisy mel state is interpolated between
 Gaussian noise and the clean vocal target, and the network learns the velocity
 field, integrated at sample time with fixed-step Euler ODE integration.
 
-Unlike the previous version which concatenated all features (`x`, `backing_mel`, `text`, `time`, `style`) along the channel dimension, the model now implements **additive conditioning** matching DiffRhythm2:
-- The vocal mel spectrogram is projected from `100` mel-bins to the model's internal transformer dimension.
-- Lyric phoneme embeddings, style embeddings, and time embeddings are added directly to the projected vocal representation.
-- The backing track mel-spectrogram conditioning (`backing_mel`/`cond`) has been completely removed to align the student's architecture with the teacher's (since DiffRhythm2 does not condition on raw instrumentals, only on the style vector).
+Unlike the previous version which concatenated all features along the channel dimension, or the intermediate version which added lyric embeddings directly, the model now implements **unified sequence concatenation** matching DiffRhythm2 exactly:
+- **Sequence Concatenation**: The text phoneme embeddings (from XPhoneBERT) and the projected vocal mel-spectrogram embeddings are concatenated along the **sequence dimension** (`dim=1`), forming a single unified sequence of length `text_len + seq_len` passed to the Transformer.
+- **Additive Conditioning**: Style embeddings (from MuQ-MuLan) and 2D time embeddings (with `-1.0` sentinels for text tokens and timestep `t` for vocal frames) are added directly to the concatenated sequence representation.
+- **Attention**: The model uses bidirectional non-causal attention across the entire text-audio sequence (excluding padding tokens), allowing the model to learn soft G2P-audio alignment implicitly.
+- The backing track mel-spectrogram conditioning (`backing_mel`/`cond`) has been completely removed to align the student's architecture with the teacher's.
 
 **Generation conditioning**: `generate_audio()` accepts a `style_prompt`/`style_anchor` tensor; without them, generation falls back to using the pooled-text representation as a stand-in style vector.
 `load_reference_conditioning()` (`src/training/self_diffusion.py`) extracts the style anchor from a preprocessed dataset record, and `generate-local --reference-dataset --reference-id` wires it into the CLI — see README's Local Generation section.

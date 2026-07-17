@@ -3,12 +3,6 @@
 GenMusic VN is a semi-autoregressive Conditional Flow Matching (CFM) diffusion transformer model inspired by DiffRhythm 2. It is engineered to generate high-fidelity Vietnamese vocals conditioned on both a text lyric prompt and an **Audio Style Anchor** extracted from the backing track.
 
 Detailed technical documentations are located in the `docs/` folder:
-- [Project Report](docs/PROJECT_REPORT.md) — related work, architecture, experiments, conclusion (start here)
-- [Run Guide](docs/guides/run_full_pipeline.md) — practical step-by-step commands
-- [System Architecture](docs/architecture.md)
-- [Machine Learning Models](docs/model.md)
-- [Training & Improvement Pipelines](docs/training.md)
-- [Experiment write-ups](docs/experiments/) — specific bugs found and fixed (vocoder distortion, non-functional distillation, a Kaggle-quota-burning hang)
 
 ---
 
