@@ -36,7 +36,6 @@ has practical run instructions.
 ## Source Mapping
 
 - `src/data/vietnamese_text.py`: lyric normalization.
-- `src/data/vietnamese_g2p.py`: Vietnamese grapheme-to-phoneme conversion.
 - `src/data/lyric_alignment.py`: lyric timing and LRC helpers.
 - `src/data/preprocess_raw_vietnamese.py`: recursive audio discovery, Demucs
   separation, Whisper transcription, and Mel tensor export.

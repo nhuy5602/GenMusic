@@ -7,7 +7,6 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from src.data.vietnamese_g2p import vietnamese_g2p
 from src.data.vietnamese_text import normalize_vietnamese_lyrics
 from src.integrations.kaggle_auto import DEFAULT_KAGGLE_DATASET_SLUG, DEFAULT_MODEL, KaggleJobConfig, resolve_training_dataset_ref, run_local_generation, stage_text_to_music_job, validate_dataset_ref
 from src.models.text_to_music_diffusion import build_lyric_timing, estimate_minimum_lyric_duration
@@ -286,9 +285,10 @@ class SelfDiffusionTests(unittest.TestCase):
 
     def test_vietnamese_text_contract(self) -> None:
         self.assertIn("mười hai", normalize_vietnamese_lyrics("Mưa 12 ngày, ko về."))
-        result = vietnamese_g2p("Sóng gió", use_phonemizer=False)
-        self.assertEqual(result.backend, "rule-based-ipa")
-        self.assertEqual(len(result.tokens), 2)
+        from text2phonemesequence import Text2PhonemeSequence
+        text2phone = Text2PhonemeSequence(language='vie', is_cuda=False)
+        phonemes = text2phone.infer_sentence("Sóng gió")
+        self.assertTrue(len(phonemes) > 0)
 
     def test_model_preserves_lyric_line_structure(self) -> None:
         timing = build_lyric_timing("Một câu chậm.\nMột câu khác.", 8)

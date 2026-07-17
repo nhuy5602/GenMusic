@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 
 from src.data.lyric_alignment import align_wav_to_lyrics, load_segments, write_lrc
-from src.data.vietnamese_g2p import vietnamese_g2p
 from src.data.vietnamese_text import normalize_vietnamese_lyrics
 from src.evaluation.jam_metrics import objective_metrics, write_metric_report
 from src.evaluation.jam_plots import write_jam_plots
@@ -221,11 +220,15 @@ def main(argv: list[str] | None = None) -> int:
         output.write_text(normalize_vietnamese_lyrics(Path(args.input).read_text(encoding="utf-8")) + "\n", encoding="utf-8")
         report = {"status": "normalized", "path": str(output.resolve())}
     elif args.command == "lyrics-g2p":
-        result = vietnamese_g2p(Path(args.input).read_text(encoding="utf-8"), use_phonemizer=not args.no_phonemizer)
+        from text2phonemesequence import Text2PhonemeSequence
+        text2phone = Text2PhonemeSequence(language='vie', is_cuda=False)
+        text_content = Path(args.input).read_text(encoding="utf-8")
+        phonemes = text2phone.infer_sentence(text_content)
         output = Path(args.out)
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(json.dumps(result.as_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-        report = result.as_dict()
+        result = {"text": text_content, "phonemes": phonemes, "backend": "text2phonemesequence"}
+        output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        report = result
     elif args.command == "align-lyrics":
         segments = load_segments(args.segments) if args.segments else None
         lines = align_wav_to_lyrics(args.audio, Path(args.lyrics).read_text(encoding="utf-8"), segments=segments, asr_model=args.asr_model, allow_heuristic=args.allow_heuristic)

@@ -210,10 +210,8 @@ dựa vào status `RUNNING` — tránh tốn quota cho một job bị treo mà k
 
 ### 3.6 Những gì chưa tích hợp (giới hạn phạm vi có chủ đích)
 
-- **Vietnamese G2P có dấu thanh** (`src/data/vietnamese_g2p.py`) và **khớp ASR-lyric**
-  (`src/data/lyric_alignment.py`) tồn tại như tiện ích độc lập, có test, nhưng chưa được
-  pipeline huấn luyện dùng — model điều kiện theo lyric text thô qua `xlm-roberta-base`
-  đóng băng, không qua phoneme. Đây là một lever chất lượng thật, chưa kéo (xem §5).
+- **Vietnamese G2P và Tokenizer âm vị**: Đã được tích hợp chính thức vào mô hình (thay thế `xlm-roberta-base` bằng `vinai/xphonebert-base` kết hợp thư viện `text2phonemesequence` hỗ trợ tiếng Việt có dấu thanh).
+- **Khớp ASR-lyric** (`src/data/lyric_alignment.py`) tồn tại như tiện ích độc lập, có test.
 - **Điều kiện pitch/F0** từng có ở phiên bản trước (`librosa.pyin`), bị bỏ khi thêm Audio
   Style Anchor; chưa khôi phục, vì cần tích hợp lại đúng cách vào pipeline mel/style hiện
   tại thay vì gắn thêm như một tín hiệu riêng biệt.
@@ -979,8 +977,7 @@ chỉ số chuẩn (song song `voiced_ratio`) cho mọi lần đánh giá tiếp
   của bài đó (§3.1, §3.6) — thử lấy đoạn đại diện hơn (ví dụ đoạn giữa bài) hoặc trung bình
   nhiều đoạn, xem có cải thiện chất lượng không; cần preprocess lại nên cân nhắc quota
   trước khi làm.
-- **Vietnamese G2P có dấu thanh + khớp ASR-lyric**: đã có sẵn, có test, nhưng chưa nối vào
-  pipeline huấn luyện (§3.6) — một lever chất lượng thật chưa kéo.
+- **Vietnamese G2P có dấu thanh + khớp ASR-lyric**: Phần G2P âm vị tiếng Việt đã được kéo thành công bằng cách tích hợp `XPhoneBERT` + `text2phonemesequence` vào mô hình. Phần còn lại (ASR-lyric alignment) và điều kiện pitch/F0 vẫn là các lever tiềm năng cho nghiên cứu tiếp theo.
 - **Điều kiện pitch/F0**: từng có, đã bỏ, chưa khôi phục đúng cách (§3.6).
 - **Đánh giá bằng người nghe thật**: mọi số liệu trong report này là khách quan (loss,
   spectral flatness, mel std) — chưa có đánh giá nghe chủ quan có hệ thống (MOS/CMOS,
