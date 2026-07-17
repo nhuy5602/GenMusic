@@ -6,10 +6,12 @@ báo khoa học (Giới thiệu → Nghiên cứu liên quan → Phương pháp 
 được cập nhật đồng bộ với codebase và với các job Kaggle thật đã chạy — mọi số liệu ở đây
 đều lấy từ log/report thật, không suy đoán.
 
-**Trạng thái tại 2026-07-16**: đã chạy thành công distillation thật trên toàn bộ 250 bài
+**Trạng thái tại 2026-07-17**: đã chạy thành công distillation thật trên toàn bộ 250 bài
 (`sonlest/vietnamese-music-dataset-version3-part6`), so sánh với self-diffusion (không
-distill), đánh giá chất lượng khách quan, và ablation kích thước model. Đang chạy thực
-nghiệm tiếp theo (tăng số epoch) để kiểm tra giả thuyết "cần nhiều step huấn luyện hơn".
+distill), đánh giá chất lượng khách quan (đa-bài, N=6), xác nhận `alpha_feature=0.8` là điểm
+tối ưu (§4.14), và làm lại ablation kích thước model + epoch với loss mới (§4.15) — phát hiện
+`voiced_ratio` và flatness-so-với-thật mâu thuẫn nhau trên trục này, đang chờ nghe thật để
+phân xử trước khi quyết định hướng scale tiếp theo.
 
 ---
 
@@ -719,6 +721,9 @@ Thứ mục không nằm trong git (`outputs/` được gitignore) — chỉ có
 | `exp08_distill_newloss_lr2e-4.wav` | §4.12 — + LR=2e-4 | 0% | 0.091 | Bất thường — mel-std bình thường nhưng mất hết pitch, đáng điều tra |
 | `exp09_trainself_newloss.wav` | §4.9/§4.13 — self-diffusion, loss mới | 8.4% | 0.028 | Mel-std/flatness "đẹp nhất" trên giấy nhưng vẫn nghe ra nhiễu — đúng lý do có đính chính này |
 | `exp10_distill_newloss_alpha09.wav` | §4.14 — + alpha=0.9 | 82.0% (1 bài); 77.8% (TB 6 bài) | 0.032 | Không vượt được exp06 — xác nhận alpha=0.8 là điểm tối ưu, không phải "cao hơn luôn tốt" |
+| `exp11_distill_newloss_alpha08_50ep.wav` | §4.15 — + 50 epoch (thay 25) | 77.0% (1 bài); 85.1% (TB 6 bài) | 0.046 | loss_gt tốt hơn (0.447 vs 0.605) nhưng voiced_ratio thấp hơn exp06 — **CHƯA nghe thử để xác nhận cái nào tự nhiên hơn** |
+| `exp12_distill_alpha08_dim384.wav` | §4.15 — model to hơn (dim=384) | 87.0% (1 bài); 66.0% (TB 6 bài) | 0.037 | loss_gt tốt hơn (0.411) nhưng voiced_ratio TB 6 bài thấp nhất trong nhóm mới — **CHƯA nghe thử** |
+| `exp13_distill_alpha08_dim512.wav` | §4.15 — model to hơn nữa (dim=512) | 81.7% (1 bài); 79.2% (TB 6 bài) | 0.058 | flatness gần vocal thật nhất (0.058 vs 0.056) trong toàn bộ report — **CHƯA nghe thử** |
 
 *(§4.10 — 75 epoch code cũ — không có file nghe vì chỉ tải log/report lúc đó, không tải
 checkpoint, để tiết kiệm băng thông.)*
@@ -747,6 +752,79 @@ mở rộng dữ liệu qua toàn bộ ~1843 bài (không chỉ 250), và/hoặc
 transcribe lại audio sinh ra với Whisper (đã có sẵn trong pipeline) so với lyric gốc — cho
 một con số cụ thể về mức độ "nghe ra từ" thay vì chỉ dựa cảm nhận.
 
+### 4.15 Ablation kích thước model làm lại với loss mới + alpha=0.8 — kết quả đảo ngược §4.9, và một mâu thuẫn chỉ số mới
+
+§4.9 kết luận "tăng kích thước model không giúp gì" — nhưng kết luận đó dùng **code loss cũ**
+và đo bằng **mel std** (§4.13 đã chỉ ra mel std không đáng tin). Với loss chống collapse +
+`alpha_feature=0.8` đã xác nhận tối ưu (§4.14), câu hỏi này đáng làm lại. Chạy thêm 3 lần
+thử, giữ `alpha_feature=0.8`/dataset 250 bài/batch=4 cố định:
+
+- **exp11** (`ddvnam05/genmusic-distill-1784246328`): giữ nguyên kiến trúc exp06
+  (`dim=256, depth=4, heads=4`), tăng **epoch 25→50** (không có resume thật — chạy lại từ
+  đầu với gấp đôi epoch, vì `train-distill` không hỗ trợ tiếp tục từ checkpoint, khác
+  `train-self`).
+- **exp12** (`ddvnam05/genmusic-distill-1784252775`): `dim=384, depth=6, heads=6` (khớp
+  đúng cấu hình "to hơn" đã thử ở §4.9, để so sánh trực tiếp), 25 epoch.
+- **exp13** (`ddvnam05/genmusic-distill-1784253088`): `dim=512, depth=8, heads=8` (to hơn
+  nữa), 25 epoch.
+
+| Cấu hình | epoch | loss_gt cuối | voiced_ratio (TB 6 bài) | flatness (TB 6 bài) | silence_ratio (TB 6 bài) |
+|---|---|---|---|---|---|
+| `dim=256` (exp06, mốc, §4.14) | 25 | 0.605 | **92.4%** | 0.011 | 0.0014 |
+| `dim=256` (exp11) | 50 | **0.447** | 85.1% | 0.051 | 0.0206 |
+| `dim=384` (exp12) | 25 | **0.411** | 66.0% | 0.039 | 0.0414 |
+| `dim=512` (exp13) | 25 | **0.410** | 79.2% | 0.065 | 0.0343 |
+| Vocal thật (mốc) | — | — | 74.3% | 0.056 | — |
+
+**Quan sát 1 — `loss_gt` cải thiện rõ theo cả epoch lẫn kích thước, nhưng bão hoà nhanh**:
+tăng epoch (0.605→0.447) hoặc tăng size (0.605→0.411) đều giảm loss_gt đáng kể — đảo ngược
+kết luận §4.9 ("size không giúp gì"), vì lần này dùng đúng loss đã chống collapse. Nhưng từ
+`dim=384` lên `dim=512`, loss_gt gần như không đổi (0.411→0.410) — dấu hiệu bão hoà ở
+khoảng 3-8 lần tham số baseline, cùng ngân sách 1575 step.
+
+**Quan sát 2 — nhưng `voiced_ratio` di chuyển NGƯỢC HƯỚNG với `loss_gt` trên cả hai trục**:
+cấu hình khớp ground-truth tốt hơn (loss_gt thấp hơn) lại có voiced_ratio **thấp hơn** hẳn
+so với exp06 (92.4% → 66-85%), dù vẫn cao hơn hoặc ngang vocal thật (74.3%). Đây là quan hệ
+**ngược chiều nhất quán** trên cả trục epoch và trục kích thước — không phải nhiễu ngẫu
+nhiên một lần.
+
+**Quan sát 3 — `flatness` lại di chuyển CÙNG HƯỚNG với `loss_gt`, tiến sát giá trị thật**:
+flatness của exp06 (0.011) thấp hơn hẳn vocal thật (0.056) — bất thường, gợi ý phổ tần số
+quá "sạch"/đơn giản so với giọng hát thật. Ba cấu hình mới đều có flatness tiến gần hơn tới
+0.056 (0.051, 0.039, 0.065 — `dim=512` thậm chí vượt qua, hơi nhiễu hơn thật một chút).
+
+**Diễn giải (giả thuyết, chưa kiểm chứng bằng nghe thật)**: `voiced_ratio` cao bất thường
+của exp06 có thể không phải dấu hiệu "hát tốt hơn" mà là dấu hiệu **output quá đơn điệu** —
+một pitch gần như đứng yên (giữ nguyên một nốt/một hoạ âm suốt cả đoạn) sẽ được `librosa.pyin`
+chấm rất cao vì cực kỳ dễ track, nhưng nghe có thể giống một tiếng hum/drone hơn là một giai
+điệu thật (khớp với xác nhận nghe thật ở §4.13: exp06 vẫn chưa nghe ra giai điệu mạch lạc dù
+voiced_ratio 92.7%). Các cấu hình khớp ground-truth tốt hơn (epoch nhiều hơn hoặc model to
+hơn) có thể tạo ra phổ tần số phức tạp/chi tiết hơn, gần với kết cấu thật hơn (flatness gần
+0.056 hơn) — nhưng phần chi tiết thêm đó, nếu không phải là pitch ổn định theo đúng cách
+`pyin` nhận diện, sẽ bị tính là "kém voiced hơn" dù có thể nghe gần giọng hát thật hơn với
+tai người. Đây là **lần đầu tiên trong toàn bộ investigation này hai chỉ số khách quan
+(voiced_ratio và độ lệch flatness-so-với-thật) mâu thuẫn nhau về việc cấu hình nào "tốt
+hơn"** — đúng dạng vấn đề đã gặp ở §4.13 (metric không đo đúng thứ cần đo), lặp lại ở một
+trục khác (size/epoch thay vì distill-vs-self).
+
+**Không thể kết luận chắc bằng số liệu — cần nghe thật**: đã sinh file nghe tương ứng
+(`exp11_distill_newloss_alpha08_50ep.wav`, `exp12_distill_alpha08_dim384.wav`,
+`exp13_distill_alpha08_dim512.wav`, cùng điều kiện với các file khác trong
+`outputs/listening_guide/`, xem bảng cập nhật bên dưới) nhưng **chưa có xác nhận nghe thật
+cho 3 file này** — không nên vội kết luận "exp06 vẫn tốt nhất" (theo voiced_ratio) hay
+"exp13 tốt hơn" (theo flatness) chỉ từ hai chỉ số đang mâu thuẫn nhau ở đây.
+
+**Giới hạn cần lưu ý**: mỗi cấu hình (epoch/size) trong bảng trên chỉ chạy **một lần** (khác
+với ablation alpha ở §4.14 đã có N=6 bài × so sánh đối chứng rõ) — nên xu hướng nhất quán
+trên 2 trục độc lập (epoch và size) làm quan sát đáng tin hơn một điểm dữ liệu đơn lẻ, nhưng
+vẫn chưa có repeat-run để loại trừ hoàn toàn nhiễu ngẫu nhiên giữa các lần train khác nhau.
+
+**Khuyến nghị**: nghe thử 3 file mới này trước khi quyết định hướng tiếp theo. Nếu nghe thật
+xác nhận cấu hình loss_gt thấp hơn (epoch nhiều hơn hoặc model to hơn) nghe **tự nhiên hơn**
+dù voiced_ratio thấp hơn, thì kết luận ở §4.14 ("alpha=0.8/dim=256/25ep là cấu hình tốt
+nhất") cần được xem lại — có thể voiced_ratio đã hướng lựa chọn tối ưu sai chỗ, về phía một
+cấu hình "hát một nốt rất đều" thay vì "hát có giai điệu thật".
+
 ---
 
 ## 5. Kết luận và hướng phát triển
@@ -770,9 +848,11 @@ một con số cụ thể về mức độ "nghe ra từ" thay vì chỉ dựa c
   với biên độ output của `train-distill` bám sát audio vocal thật hơn. Đổi lại,
   distillation tốn ~49 lần thời gian GPU của baseline không-teacher — đây là trade-off
   thật, không phải chiến thắng miễn phí.
-- Tăng kích thước model (§4.9) **không** giúp ở cùng ngân sách 1575 step — bác bỏ giả
-  thuyết "model quá nhỏ" ở khoảng kích thước đã thử; nút thắt khả năng cao hơn là số
-  step huấn luyện và/hoặc độ đa dạng dữ liệu, không phải công suất model.
+- Tăng kích thước model (§4.9, code loss cũ) **không** giúp ở cùng ngân sách 1575 step —
+  nhưng **§4.15 (loss mới + alpha=0.8) đảo ngược lại**: tăng epoch hoặc kích thước đều giảm
+  `loss_gt` rõ rệt (bão hoà sau ~dim=384). Đồng thời phát hiện `voiced_ratio` và
+  flatness-so-với-thật **mâu thuẫn nhau** về cấu hình nào "tốt hơn" trên trục này — cần
+  nghe thật để phân xử, chưa có kết luận chắc chắn (§4.15).
 - Hai bug hạ tầng thật (timeout preprocess giết một run lành mạnh, CUDA OOM do
   fragmentation allocator) được phát hiện và fix trong lúc chạy thực nghiệm ở quy mô đầy
   đủ — không phải bug logic distillation hay hạn chế công suất model (§4.8).
@@ -796,15 +876,23 @@ một con số cụ thể về mức độ "nghe ra từ" thay vì chỉ dựa c
 
 ### 5.2 Hướng phát triển
 
-- **Ưu tiên cao nhất (§4.13-§4.14): scale up `train-distill` với loss mới + `alpha_feature≈0.8`,
-  không phải `train-self`**. Đã kiểm chứng đa-bài (N=6, §4.14, không chỉ N=1): alpha=0.8 cho
-  voiced_ratio trung bình 92.4% — vượt cả vocal thật (74.3%) — trong khi alpha=0.5 (60.7%) và
-  alpha=0.9 (77.8%) đều thấp hơn rõ. Đây là điểm tối ưu thật, không phải nhiễu. **Không cần
-  dò thêm alpha khác** — dùng 0.8 làm mặc định, dồn quota vào: (a) mở rộng dữ liệu/epoch với
-  alpha=0.8 (chưa thử), (b) test tổ hợp alpha=0.8 cùng dropout/LR khác (job 7, 8 mới chạy ở
-  alpha=0.5), (c) điều tra vì sao job 8 (LR=2e-4, alpha=0.5) lại 0% voiced dù mel-std bình
-  thường, (d) đo Word Error Rate bằng Whisper cho checkpoint alpha=0.8 — voiced_ratio cao
-  không đồng nghĩa nghe ra được lời/giai điệu mạch lạc (xem xác nhận nghe thật ở cuối §4.13).
+- **Ưu tiên cao nhất ngay lúc này (§4.15): nghe thử 3 file mới** —
+  `exp11_distill_newloss_alpha08_50ep.wav` (50 epoch), `exp12_distill_alpha08_dim384.wav`,
+  `exp13_distill_alpha08_dim512.wav` — so với `exp06` (mốc hiện tại). §4.15 phát hiện
+  `voiced_ratio` và flatness-so-với-vocal-thật **mâu thuẫn nhau** khi tăng epoch/kích thước:
+  loss_gt và flatness đều cải thiện (tiến gần vocal thật hơn) nhưng voiced_ratio giảm so với
+  exp06. Chưa rõ đây là do exp06 thật ra "hát" tốt hơn, hay do exp06 chỉ đơn điệu/dễ track-pitch
+  hơn (một dạng regression-to-mean nhẹ mà voiced_ratio không bắt được, giống cách mel-std đã
+  từng đánh lừa ở §4.13). Kết luận "alpha=0.8/dim=256/25ep là cấu hình tốt nhất" ở §4.14 **có
+  thể cần xem lại** sau khi nghe — đừng scale tiếp dựa 100% vào voiced_ratio trước khi có xác
+  nhận nghe thật cho nhánh size/epoch này.
+- **Nếu nghe thật xác nhận exp06 vẫn tốt nhất**: `alpha_feature≈0.8` + `dim=256` + 25 epoch
+  vẫn là mặc định hợp lý; dồn quota vào (a) mở rộng dữ liệu qua toàn bộ ~1843 bài, (b) đo
+  Word Error Rate bằng Whisper để đo trực tiếp "nghe ra từ" thay vì suy luận qua voiced_ratio,
+  (c) điều tra vì sao job 8 (LR=2e-4, alpha=0.5) lại 0% voiced dù mel-std bình thường.
+- **Nếu nghe thật xác nhận epoch/size lớn hơn nghe tự nhiên hơn**: cần một chỉ số khách quan
+  mới thay voiced_ratio (ví dụ đo độ biến thiên pitch theo thời gian — pitch contour, không
+  chỉ có-pitch-hay-không) trước khi tiếp tục scale mù theo voiced_ratio.
 - **Mở rộng dữ liệu thay vì tăng epoch**: §4.10 xác nhận tăng epoch đơn thuần (25→75, code
   cũ) không giúp `loss_gt` cải thiện thêm — chững lại thật, không phải chưa đủ thời gian.
   Hướng tiếp theo hợp lý hơn là mở rộng dữ liệu qua các script của đồng nghiệp
