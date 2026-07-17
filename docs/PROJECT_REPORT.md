@@ -538,98 +538,6 @@ chính của khoảng cách còn lại.
 > test tổ hợp alpha=0.8 cùng dropout (job 7) hay LR khác (job 8) — cả hai đều chạy ở alpha=0.5.
 > Hướng tiếp theo hợp lý: thử alpha cao hơn nữa (0.9-0.95) kết hợp thêm epoch/dữ liệu.
 
-### 4.14 alpha=0.8 xác nhận là điểm tối ưu thật — không phải nhiễu (kiểm chứng đa-bài)
-
-Theo hướng đề xuất ở §4.13, chạy **lần thử thứ 9** (`ddvnam05/genmusic-distill-1784223424`,
-alpha=0.9, giữ nguyên mọi thứ khác) để xem xu hướng "alpha cao hơn → voiced_ratio cao hơn"
-có tiếp tục không. **Kết quả trên 1 bài (`-6s_eRHYqVM`, cùng điều kiện các lần trước)**:
-alpha=0.9 chỉ đạt **82.0%** — thấp hơn alpha=0.8 (92.7%), không tiếp tục xu hướng tăng.
-
-Vì mẫu 1 bài/checkpoint có thể là nhiễu (đã cảnh báo ở trên), đo lại **voiced_ratio trên 6
-bài khác nhau** cho cả 3 giá trị alpha (miễn phí, chạy local, không cần Kaggle):
-
-| alpha_feature | voiced_ratio TB (6 bài, dao động từng bài) | So với vocal thật (74.3%) |
-|---|---|---|
-| 0.5 (job 5) | 60.7% (41-78%) | thấp hơn |
-| **0.8 (job 6)** | **92.4%** (90.6-96.3%, rất đều) | **cao hơn** |
-| 0.9 (job 9) | 77.8% (67-85%) | ~ngang |
-
-**Kết luận (lần này có cơ sở thống kê chắc hơn, N=6 không phải N=1)**: alpha=0.8 thắng rõ
-và nhất quán trên toàn bộ 6 bài, không phải một lần chạy may — có một **điểm tối ưu thật**
-quanh alpha=0.8, không phải "alpha cao hơn luôn tốt hơn". Cả alpha=0.5 và alpha=0.9 đều rơi
-về mức gần vocal-thật-trung-bình hoặc thấp hơn, còn alpha=0.8 vượt hẳn. Đây là dạng quan hệ
-phi-tuyến giữa alpha_feature và voiced_ratio — hợp lý về mặt trực giác (quá ít trọng số cho
-`loss_gt` thì thiếu tín hiệu cấu trúc thật; quá nhiều thì có thể mất luôn phần tín hiệu hữu
-ích mà teacher đóng góp, ví dụ ổn định hoá hoặc cung cấp thông tin ngoài phạm vi 250 bài) —
-nhưng chưa có giải thích cơ chế chắc chắn, chỉ là quan sát thực nghiệm.
-
-**Bài học phương pháp thứ hai trong cùng nhánh điều tra**: N=1 (1 bài, 1 lần train) là không
-đủ để tin vào bất kỳ so sánh alpha nào — kết luận "alpha=0.9 tệ hơn alpha=0.8" ban đầu (dựa
-1 bài) TRÙNG với kết luận đa-bài, nhưng đây là hai lần kiểm chứng ngẫu nhiên khớp nhau chứ
-không phải một quy luật đã kiểm chứng chắc chắn — mọi so sánh alpha trong report này (job
-5/6/7/8) trước §4.14 đều chỉ dựa N=1/checkpoint (đo trên `-6s_eRHYqVM`), nên nên đọc với mức
-tin tưởng thấp hơn số liệu ở đây.
-
-**Khuyến nghị thực tế**: dùng `alpha_feature≈0.8` làm mặc định cho các lần train tiếp theo
-(đã kiểm chứng đa-bài), không cần thử thêm giá trị alpha khác trừ khi có lý do cụ thể — nên
-dồn quota còn lại vào hướng khác (mở rộng dữ liệu/epoch, xem §5.2) thay vì tiếp tục dò alpha.
-
-**Giả thuyết condition dropout cũng bị bác bỏ**: lúc port công thức loss ở §4.11, phần
-**classifier-free condition dropout** của `cfm_loss()` (drop ngẫu nhiên backing/style/text
-10% mỗi loại) đã bị bỏ sót. Bổ sung vào `train_epoch()` và chạy lần thử thứ 7
-(`ddvnam05/genmusic-distill-1784206082`, alpha=0.5 + dropout) — kết quả std=**1.35**, vẫn
-trong cùng khoảng 1.27-1.40 như các lần trước, không cải thiện thêm đáng kể.
-
-**Khác biệt thật tiếp theo tìm được: learning rate**. `cli.py`: `train-self` mặc định
-`--learning-rate 2e-4`, `train-distill` mặc định `1e-4` — **chỉ bằng một nửa**. Ở cùng 25
-epoch/1575 step, LR thấp hơn khiến model tiến chậm hơn tới cùng đích, một khác biệt hoàn
-toàn không liên quan gì tới việc có teacher hay không nhưng vẫn ảnh hưởng tới việc so sánh
-công bằng giữa 2 đường train. Thêm `--learning-rate` vào launcher, chạy **lần thử thứ 8**
-(`ddvnam05/genmusic-distill-1784208706`, LR=2e-4 khớp `train-self`) để kiểm tra.
-*(Kết quả cập nhật tiếp.)*
-
-**Learning rate cũng bị bác bỏ**: lần thử thứ 8 (LR=2e-4 khớp `train-self`) cho std=**1.25**
-— vẫn trong đúng khoảng 1.25-1.40 như 3 lần thử trước, không cải thiện.
-
-**Lần thử thứ 4** (`ddvnam05/genmusic-distill-1784191327`, §4.10, 75 epoch, code CŨ) hoàn
-tất (19623s ≈ 5.45h). `loss_gt` tại epoch 25/50/75: **4.32 → 3.05 → 2.76** (tốt nhất tại
-epoch 64: 2.26) — có cải thiện tiếp khi tăng epoch, nhưng **không tỉ lệ với chi phí**: gấp 3
-lần epoch (và 3 lần thời gian GPU) chỉ đưa loss_gt tốt nhất từ ~3.28 (epoch 25 gốc, §4.8)
-xuống ~2.26, chậm hẳn và rất nhiều nhiễu giữa các epoch (không phải một đường giảm mượt).
-So với việc chỉ đổi loss formula (job 5, §4.11) đã cho đường giảm mượt hẳn (1.74→0.66) trong
-đúng 25 epoch với 1/3 thời gian — "sửa loss" hiệu quả hơn nhiều so với "chạy lâu hơn" ở cùng
-mức chi phí.
-
-**Tổng hợp toàn bộ nhánh điều tra §4.11-4.12** (bảng đầy đủ, tất cả cùng dataset 250 bài,
-`dim=256,depth=4,heads=4`, batch=4, 25 epoch trừ khi ghi khác):
-
-| Cấu hình | mel std | Ghi chú |
-|---|---|---|
-| Distill code cũ, 25 epoch (§4.8) | 1.09 | mốc xuất phát |
-| Distill code cũ, 75 epoch (§4.10) | — (chưa đo std) | loss_gt tốt nhất 2.26 (epoch 64), chậm + nhiều nhiễu, không tỉ lệ với 3x chi phí |
-| Distill code mới + loss port, alpha=0.5 | **1.40** | +28%, cải thiện thật duy nhất |
-| + alpha=0.8 | 1.27 | không cải thiện thêm |
-| + condition dropout | 1.35 | không cải thiện thêm |
-| + learning_rate=2e-4 | 1.25 | không cải thiện thêm |
-| `train-self` code mới, 25 epoch | **3.13** | không dùng teacher |
-| Vocal thật (target) | 2.95 | — |
-
-**Kết luận cho nhánh điều tra này**: đúng 1 thay đổi tạo ra cải thiện đo được (port loss
-formula chống collapse từ `train-self`, §4.11: 1.09→1.40). Ba giả thuyết tiếp theo
-(alpha_feature, condition dropout, learning rate) đều **không** đóng thêm khoảng cách còn
-lại tới `train-self`/vocal thật — mọi biến thể distillation đều tụ lại quanh **1.25-1.40**,
-bất kể chỉnh gì ở phía student. Điều này gợi ý khoảng cách còn lại **không** nằm ở một
-siêu tham số cụ thể của student, mà khả năng cao nằm ở chính **tín hiệu teacher** — dù chỉ
-chiếm 20-50% trọng số loss, teacher (qua adapter mel-dim 64→100, và bản chất "nhìn" dữ liệu
-tiếng Việt/pop nhỏ như ngoài phân phối huấn luyện của nó) có thể tự nhiên đưa ra dự đoán
-mượt hơn theo góc nhìn riêng, và việc khớp theo nó (dù ít) vẫn kéo student về phía đó nhiều
-hơn tỷ trọng danh nghĩa của loss gợi ý. Đây là giả thuyết chưa kiểm chứng đầy đủ, không phải
-kết luận chắc chắn — xem hướng phát triển ở §5.2.
-
-**Hệ quả thực tiễn (đã ĐÍNH CHÍNH ở §4.13 — đừng dừng đọc ở đây)**: kết luận ban đầu ở bản
-báo cáo này là "`train-self` thực tế hơn vì mel-std/flatness gần target thật hơn". §4.13 cho
-thấy đó là kết luận **sai**, vì mel-std/flatness không đo đúng thứ cần đo.
-
 ### 4.13 Đính chính quan trọng: nghe thử thật cho thấy `train-self` vẫn ra nhiễu — mel std/flatness không đo đúng thứ cần đo
 
 Sau khi báo cáo (không chính xác) rằng `train-self` "gần đạt target thật", người dùng nghe
@@ -732,6 +640,93 @@ dropout, learning rate (§4.11-4.12) và không có hướng nào tạo bước 
 mở rộng dữ liệu qua toàn bộ ~1843 bài (không chỉ 250), và/hoặc đo Word Error Rate bằng cách
 transcribe lại audio sinh ra với Whisper (đã có sẵn trong pipeline) so với lyric gốc — cho
 một con số cụ thể về mức độ "nghe ra từ" thay vì chỉ dựa cảm nhận.
+
+### 4.14 alpha=0.8 xác nhận là điểm tối ưu thật — không phải nhiễu (kiểm chứng đa-bài)
+
+Theo hướng đề xuất ở §4.13, chạy **lần thử thứ 9** (`ddvnam05/genmusic-distill-1784223424`,
+alpha=0.9, giữ nguyên mọi thứ khác) để xem xu hướng "alpha cao hơn → voiced_ratio cao hơn"
+có tiếp tục không. **Kết quả trên 1 bài (`-6s_eRHYqVM`, cùng điều kiện các lần trước)**:
+alpha=0.9 chỉ đạt **82.0%** — thấp hơn alpha=0.8 (92.7%), không tiếp tục xu hướng tăng.
+
+Vì mẫu 1 bài/checkpoint có thể là nhiễu (đã cảnh báo ở trên), đo lại **voiced_ratio trên 6
+bài khác nhau** cho cả 3 giá trị alpha (miễn phí, chạy local, không cần Kaggle):
+
+| alpha_feature | voiced_ratio TB (6 bài, dao động từng bài) | So với vocal thật (74.3%) |
+|---|---|---|
+| 0.5 (job 5) | 60.7% (41-78%) | thấp hơn |
+| **0.8 (job 6)** | **92.4%** (90.6-96.3%, rất đều) | **cao hơn** |
+| 0.9 (job 9) | 77.8% (67-85%) | ~ngang |
+
+**Kết luận (lần này có cơ sở thống kê chắc hơn, N=6 không phải N=1)**: alpha=0.8 thắng rõ
+và nhất quán trên toàn bộ 6 bài, không phải một lần chạy may — có một **điểm tối ưu thật**
+quanh alpha=0.8, không phải "alpha cao hơn luôn tốt hơn". Cả alpha=0.5 và alpha=0.9 đều rơi
+về mức gần vocal-thật-trung-bình hoặc thấp hơn, còn alpha=0.8 vượt hẳn. Đây là dạng quan hệ
+phi-tuyến giữa alpha_feature và voiced_ratio — hợp lý về mặt trực giác (quá ít trọng số cho
+`loss_gt` thì thiếu tín hiệu cấu trúc thật; quá nhiều thì có thể mất luôn phần tín hiệu hữu
+ích mà teacher đóng góp, ví dụ ổn định hoá hoặc cung cấp thông tin ngoài phạm vi 250 bài) —
+nhưng chưa có giải thích cơ chế chắc chắn, chỉ là quan sát thực nghiệm.
+
+**Bài học phương pháp thứ hai trong cùng nhánh điều tra**: N=1 (1 bài, 1 lần train) là không
+đủ để tin vào bất kỳ so sánh alpha nào — kết luận "alpha=0.9 tệ hơn alpha=0.8" ban đầu (dựa
+1 bài) TRÙNG với kết luận đa-bài, nhưng đây là hai lần kiểm chứng ngẫu nhiên khớp nhau chứ
+không phải một quy luật đã kiểm chứng chắc chắn — mọi so sánh alpha trong report này (job
+5/6/7/8) trước §4.14 đều chỉ dựa N=1/checkpoint (đo trên `-6s_eRHYqVM`), nên nên đọc với mức
+tin tưởng thấp hơn số liệu ở đây.
+
+**Khuyến nghị thực tế**: dùng `alpha_feature≈0.8` làm mặc định cho các lần train tiếp theo
+(đã kiểm chứng đa-bài), không cần thử thêm giá trị alpha khác trừ khi có lý do cụ thể — nên
+dồn quota còn lại vào hướng khác (mở rộng dữ liệu/epoch, xem §5.2) thay vì tiếp tục dò alpha.
+
+**Giả thuyết condition dropout cũng bị bác bỏ**: lúc port công thức loss ở §4.11, phần
+**classifier-free condition dropout** của `cfm_loss()` (drop ngẫu nhiên backing/style/text
+10% mỗi loại) đã bị bỏ sót. Bổ sung vào `train_epoch()` và chạy lần thử thứ 7
+(`ddvnam05/genmusic-distill-1784206082`, alpha=0.5 + dropout) — kết quả std=**1.35**, vẫn
+trong cùng khoảng 1.27-1.40 như các lần trước, không cải thiện thêm đáng kể.
+
+**Khác biệt thật tiếp theo tìm được: learning rate**. `cli.py`: `train-self` mặc định
+`--learning-rate 2e-4`, `train-distill` mặc định `1e-4` — **chỉ bằng một nửa**. Ở cùng 25
+epoch/1575 step, LR thấp hơn khiến model tiến chậm hơn tới cùng đích, một khác biệt hoàn
+toàn không liên quan gì tới việc có teacher hay không nhưng vẫn ảnh hưởng tới việc so sánh
+công bằng giữa 2 đường train. Thêm `--learning-rate` vào launcher, chạy **lần thử thứ 8**
+(`ddvnam05/genmusic-distill-1784208706`, LR=2e-4 khớp `train-self`) để kiểm tra.
+
+**Learning rate cũng bị bác bỏ**: lần thử thứ 8 (LR=2e-4 khớp `train-self`) cho std=**1.25**
+— vẫn trong đúng khoảng 1.25-1.40 như 3 lần thử trước, không cải thiện.
+
+**Lần thử thứ 4** (`ddvnam05/genmusic-distill-1784191327`, §4.10, 75 epoch, code CŨ) hoàn
+tất (19623s ≈ 5.45h). `loss_gt` tại epoch 25/50/75: **4.32 → 3.05 → 2.76** (tốt nhất tại
+epoch 64: 2.26) — có cải thiện tiếp khi tăng epoch, nhưng **không tỉ lệ với chi phí**: gấp 3
+lần epoch (và 3 lần thời gian GPU) chỉ đưa loss_gt tốt nhất từ ~3.28 (epoch 25 gốc, §4.8)
+xuống ~2.26, chậm hẳn và rất nhiều nhiễu giữa các epoch (không phải một đường giảm mượt).
+So với việc chỉ đổi loss formula (job 5, §4.11) đã cho đường giảm mượt hẳn (1.74→0.66) trong
+đúng 25 epoch với 1/3 thời gian — "sửa loss" hiệu quả hơn nhiều so với "chạy lâu hơn" ở cùng
+mức chi phí.
+
+**Tổng hợp toàn bộ nhánh điều tra §4.11-4.12** (bảng đầy đủ, tất cả cùng dataset 250 bài,
+`dim=256,depth=4,heads=4`, batch=4, 25 epoch trừ khi ghi khác):
+
+| Cấu hình | mel std | Ghi chú |
+|---|---|---|
+| Distill code cũ, 25 epoch (§4.8) | 1.09 | mốc xuất phát |
+| Distill code cũ, 75 epoch (§4.10) | — (chưa đo std) | loss_gt tốt nhất 2.26 (epoch 64), chậm + nhiều nhiễu, không tỉ lệ với 3x chi phí |
+| Distill code mới + loss port, alpha=0.5 | **1.40** | +28%, cải thiện thật duy nhất |
+| + alpha=0.8 | 1.27 | không cải thiện thêm |
+| + condition dropout | 1.35 | không cải thiện thêm |
+| + learning_rate=2e-4 | 1.25 | không cải thiện thêm |
+| `train-self` code mới, 25 epoch | **3.13** | không dùng teacher |
+| Vocal thật (target) | 2.95 | — |
+
+**Kết luận cho nhánh điều tra này**: đúng 1 thay đổi tạo ra cải thiện đo được (port loss
+formula chống collapse từ `train-self`, §4.11: 1.09→1.40). Ba giả thuyết tiếp theo
+(alpha_feature, condition dropout, learning rate) đều **không** đóng thêm khoảng cách còn
+lại tới `train-self`/vocal thật — mọi biến thể distillation đều tụ lại quanh **1.25-1.40**,
+bất kể chỉnh gì ở phía student. Điều này gợi ý khoảng cách còn lại **không** nằm ở một
+siêu tham số cụ thể của student, mà khả năng cao nằm ở chính **tín hiệu teacher** — dù chỉ
+chiếm 20-50% trọng số loss, teacher (qua adapter mel-dim 64→100, và bản chất "nhìn" dữ liệu
+tiếng Việt/pop nhỏ như ngoài phân phối huấn luyện của nó) có thể tự nhiên đưa ra dự đoán
+mượt hơn theo góc nhìn riêng, và việc khớp theo nó (dù ít) vẫn kéo student về phía đó nhiều
+hơn tỷ trọng danh nghĩa của loss gợi ý. Đây là giả thuyết chưa kiểm chứng đầy đủ, không phải
+kết luận chắc chắn — xem hướng phát triển ở §5.2.
 
 ### 4.15 Ablation kích thước model làm lại với loss mới + alpha=0.8 — kết quả đảo ngược §4.9, và một mâu thuẫn chỉ số mới
 
