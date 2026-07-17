@@ -111,21 +111,28 @@ class TimestepEmbedding(nn.Module):
 
 
 class InputEmbedding(nn.Module):
-    """Mel, Text, Time, and Style projection block."""
-    def __init__(self, mel_dim: int, text_dim: int, out_dim: int, cond_dim: int):
+    """Mel, Text, Time, and Style projection block using additive fusion."""
+    def __init__(self, mel_dim: int, text_dim: int, out_dim: int):
         super().__init__()
-        # Project mel (x), mel_cond (cond), text_embed, and time/style embeddings
-        self.proj = nn.Linear(mel_dim * 2 + text_dim + cond_dim * 2, out_dim)
+        # Project mel (x) to out_dim
+        self.proj_x = nn.Linear(mel_dim, out_dim)
+        # Project text_embed to out_dim if shapes differ
+        self.proj_text = nn.Linear(text_dim, out_dim) if text_dim != out_dim else nn.Identity()
+        self.proj_final = nn.Linear(out_dim, out_dim)
 
-    def forward(self, x: torch.Tensor, cond: torch.Tensor, text_embed: torch.Tensor, time_emb: torch.Tensor, style_emb: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, text_embed: torch.Tensor, time_emb: torch.Tensor, style_emb: torch.Tensor) -> torch.Tensor:
         # Expand time and style across seq dimension
         seq_len = x.shape[1]
         time_emb_expanded = time_emb.unsqueeze(1).repeat(1, seq_len, 1)
         style_emb_expanded = style_emb.unsqueeze(1).repeat(1, seq_len, 1)
         
-        # Concatenate features and project
-        merged = torch.cat((x, cond, text_embed, time_emb_expanded, style_emb_expanded), dim=-1)
-        return self.proj(merged)
+        # Project components to the same out_dim space
+        x_proj = self.proj_x(x)
+        text_proj = self.proj_text(text_embed)
+        
+        # Sum the representations directly
+        merged = x_proj + text_proj + time_emb_expanded + style_emb_expanded
+        return self.proj_final(merged)
 
 
 class AudioStyleEncoder(nn.Module):
@@ -194,7 +201,7 @@ class MicroDiT(nn.Module):
             nn.Linear(self.cond_dim, self.cond_dim)
         )
         
-        self.input_embed = InputEmbedding(config.n_mels, dim, dim, cond_dim=self.cond_dim)
+        self.input_embed = InputEmbedding(config.n_mels, dim, dim)
         
         # Llama decoding blocks
         llama_config = LlamaConfig(
@@ -232,7 +239,6 @@ class MicroDiT(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        cond: torch.Tensor,
         texts: list[str],
         timestep: torch.Tensor,
         style_prompt: torch.Tensor | None = None
@@ -260,7 +266,7 @@ class MicroDiT(nn.Module):
         text_embeds_padded = align_text_embeddings_to_frames(text_embeds, text_mask, seq_len)
         
         # 3. Project and embed features
-        x = self.input_embed(x, cond, text_embeds_padded, t_emb, s_emb)
+        x = self.input_embed(x, text_embeds_padded, t_emb, s_emb)
         
         # 4. Apply Llama Transformer Blocks
         pos_ids = torch.arange(seq_len, device=device).unsqueeze(0).repeat(batch_size, 1)

@@ -220,7 +220,6 @@ class DiffusionTrainer:
             if batch_index < start_batch:
                 continue
             vocal_mel = batch["vocal_mel"].to(self.device)
-            backing_mel = batch["backing_mel"].to(self.device)
             style_anchor = batch["style_anchor"].to(self.device)
             texts = batch["text"]
             self.optimizer.zero_grad(set_to_none=True)
@@ -229,10 +228,9 @@ class DiffusionTrainer:
             # style_anchor is already a flat (batch, 512) MuQ-MuLan embedding, not
             # mel-shaped, so it needs no transpose.
             vocal_mel_t = vocal_mel.transpose(1, 2)
-            backing_mel_t = backing_mel.transpose(1, 2)
             from ..models.cfm_flow import cfm_loss
             with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=self.use_amp):
-                loss = cfm_loss(self.model, vocal_mel_t, backing_mel_t, style_anchor, texts, self.config)
+                loss = cfm_loss(self.model, vocal_mel_t, style_anchor, texts, self.config)
 
             self.scaler.scale(loss).backward()
             self.scaler.unscale_(self.optimizer)

@@ -315,12 +315,10 @@ class KnowledgeDistillationTrainer:
 
         for batch in dataloader:
             vocal_mel = batch["vocal_mel"].to(self.device)  # (B, n_mels, seq_len)
-            backing_mel = batch["backing_mel"].to(self.device)
             style_anchor = batch["style_anchor"].to(self.device)  # (B, 512) precomputed MuQ-MuLan embedding
             texts = batch["text"]
 
             x1 = vocal_mel.transpose(1, 2)  # (B, seq_len, n_mels)
-            cond = backing_mel.transpose(1, 2)
             x0 = torch.randn_like(x1)
 
             batch_size = x1.shape[0]
@@ -328,19 +326,16 @@ class KnowledgeDistillationTrainer:
             xt = (1.0 - t.view(-1, 1, 1)) * x0 + t.view(-1, 1, 1) * x1
 
             # Classifier-free condition dropout, ported from cfm_loss() (train-self,
-            # src/models/cfm_flow.py) -- forces the model to see backing/style/text
+            # src/models/cfm_flow.py) -- forces the model to see style/text
             # dropped out ~10% of the time each, the same recipe that (along with the
             # loss changes above) fixed train-self's mel-variance collapse. Applied
             # before both the teacher and student calls so the teacher's supervision
             # reflects the same conditioning the student actually sees at this step,
             # not a mismatched fully-conditioned target for a partially-conditioned
-            # input. (backing_mel dropout only affects the student -- the teacher never
-            # takes backing_mel as an input in the first place, see _teacher_velocity.)
+            # input.
             dropout = 0.1
-            backing_drop = torch.rand(batch_size, device=self.device) < dropout
             style_drop = torch.rand(batch_size, device=self.device) < dropout
             text_drop = torch.rand(batch_size, device=self.device) < dropout
-            cond = cond.masked_fill(backing_drop[:, None, None], 0.0)
             style_anchor = style_anchor.masked_fill(style_drop[:, None], 0.0)
             text_drop_flags = text_drop.detach().cpu().tolist()
             texts = ["" if text_drop_flags[index] else text for index, text in enumerate(texts)]
@@ -352,7 +347,7 @@ class KnowledgeDistillationTrainer:
             # tracking; only the frozen teacher's own forward pass is no_grad-scoped.
             v_teacher = self._teacher_velocity(xt, t, texts, style_anchor)
 
-            v_student = self.student(x=xt, cond=cond, texts=texts, timestep=t, style_prompt=style_anchor)
+            v_student = self.student(x=xt, texts=texts, timestep=t, style_prompt=style_anchor)
 
             target_velocity = x1 - x0
             # loss_gt: same frame-weighted-MSE + reconstruction + time/frequency-delta
