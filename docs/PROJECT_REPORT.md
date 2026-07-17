@@ -990,6 +990,20 @@ Trong quá trình rà soát tài liệu thiết kế và source code của DiffR
 
 Phát hiện này giải thích lý do thực sự tại sao chưng cất (`train-distill`) trước đây cho kết quả thoái hóa hoặc không vượt trội hẳn so với tự học (`train-self`). Hướng sửa đổi bắt buộc phải bao gồm việc đồng bộ hóa tần số thời gian và không gian đặc trưng giữa hai mô hình trước khi chưng cất.
 
+#### Trạng thái sửa đổi và Mức độ ưu tiên của các điểm lệch pha:
+
+1. **Đồng bộ tần số thời gian và Lệch phân phối (Mục 2 & 3)**:
+   * *Trạng thái*: **ĐÃ FIX**. Đã chèn các bước downsample và upsample trục thời gian (`_resample_time_dimension`) vào `_teacher_velocity`. Teacher hiện nhận đúng chuỗi 5 Hz theo phân phối huấn luyện và trả về vận tốc dự đoán chính xác, sau đó được upsample lại 93.75 Hz cho Student.
+   * *Đánh giá*: Loại bỏ hoàn toàn lỗi nghiêm trọng Out-of-Distribution ở attention/RoPE của Teacher.
+
+2. **Cơ chế Attention Mask theo khối (Mục 4)**:
+   * *Trạng thái*: **ĐÃ FIX**. Đã hiện thực hóa hàm `_build_block_attn_mask` để tạo mặt nạ attention tự hồi quy theo từng block (mặc định size = 10 của Teacher) và gộp chuỗi đầu vào thành dạng `(S, L, Z, Zt)` gồm cả Clean Latent $Z$ và Noisy Latent $Zt$.
+   * *Đánh giá*: Sửa đổi này giúp Teacher tính toán attention chính xác theo đúng cấu trúc tự hồi quy mà nó được huấn luyện, ngăn chặn việc rò rỉ thông tin tương lai trong lúc chưng cất tri thức.
+
+3. **Bản chất dữ liệu ẩn VAE Latent vs. Mel-spectrogram (Mục 1)**:
+   * *Trạng thái*: **TẠM HOÃN / GIỮ NGUYÊN THIẾT KẾ**. Mô hình Student vẫn sinh trực tiếp phổ Mel 100 chiều để giải mã qua Vocos (không dùng VAE riêng cho Student). Sự lệch pha kênh đặc trưng 64-latent vs 100-mel được giải quyết thông qua adapter tuyến tính có thể huấn luyện (`from_teacher_mel`).
+   * *Mức độ cần fix*: **THẤP**. Do Vocos mang lại chất lượng tái tạo âm thanh vượt trội mà không cần huấn luyện lại bộ Music VAE cực kỳ tốn tài nguyên tính toán. Đây là một trade-off kiến trúc hợp lý và tối ưu trong điều kiện giới hạn phần cứng.
+
 ---
 
 ## 5. Kết luận và hướng phát triển
