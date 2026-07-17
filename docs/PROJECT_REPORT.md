@@ -978,6 +978,18 @@ biến nào (kiến trúc/size/epoch/encoder đều đổi cùng lúc, §4.17) l
 một lần chạy nữa giữ `dim=256/25ep` (khớp exp06) trên kiến trúc mới, đo đúng encoder ngay từ
 đầu, mới tách được hiệu ứng kiến trúc khỏi hiệu ứng size/epoch.
 
+### 4.19 Phát hiện sai lệch cốt lõi về bản chất dữ liệu (VAE Latent vs. Mel-spectrogram) và tần số thời gian (5 Hz vs. 93.75 Hz) giữa Teacher và Student
+
+Trong quá trình rà soát tài liệu thiết kế và source code của DiffRhythm2, một sai lệch cấu trúc cực kỳ lớn giữa Teacher và Student đã được phát hiện:
+1. **Bản chất dữ liệu ẩn (VAE Latents vs. Mel-spectrogram)**: Teacher DiffRhythm2 thực chất hoạt động trên không gian ẩn (latents) 64 chiều của một bộ **Music VAE** tự thiết kế (dựa trên Stable Audio 2 VAE), chứ không phải phổ Mel-spectrogram 64-kênh thông thường.
+2. **Lệch pha tần số thời gian (5 Hz vs. 93.75 Hz)**: Bộ Music VAE của Teacher nén tín hiệu âm thanh cực mạnh xuống tần số thời gian chỉ **5 Hz** (5 khung/giây). Trong khi đó, Student hoạt động trực tiếp trên phổ Mel-spectrogram chuẩn (hop_length=256 ở 24kHz) với tần số thời gian **93.75 Hz** (gần 94 khung/giây).
+3. **Cơ chế chưng cất bị lệch phân phối (Out-of-Distribution)**: 
+   * Hàm `_teacher_velocity` trong `distill_training.py` hiện tại chỉ thực hiện nội suy tuyến tính kênh tần số từ 100 về 64 kênh (`_resize_mel_bins`), nhưng **giữ nguyên trục thời gian** (ví dụ giữ nguyên chuỗi 375 khung ứng với 4 giây thay vì nén về 20 khung tương thích với 5Hz).
+   * Việc đẩy một chuỗi dài gấp 18.75 lần so với phân phối huấn luyện vào khối Llama của Teacher khiến bộ mã hóa vị trí quay (RoPE) và Attention mask của Teacher cho ra kết quả dự đoán vận tốc bị sai lệch nghiêm trọng, làm mất đi ý nghĩa hướng dẫn của chưng cất tri thức.
+4. **Cơ chế Attention Mask theo khối**: Teacher được huấn luyện theo cơ chế ghép chuỗi clean-noisy tự hồi quy theo từng khối (`block-by-block autoregressive attention mask`), trong khi Student hiện đang dùng attention bidirectional không nhân quả hoàn toàn trên toàn chuỗi phổ Mel.
+
+Phát hiện này giải thích lý do thực sự tại sao chưng cất (`train-distill`) trước đây cho kết quả thoái hóa hoặc không vượt trội hẳn so với tự học (`train-self`). Hướng sửa đổi bắt buộc phải bao gồm việc đồng bộ hóa tần số thời gian và không gian đặc trưng giữa hai mô hình trước khi chưng cất.
+
 ---
 
 ## 5. Kết luận và hướng phát triển
