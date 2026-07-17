@@ -21,9 +21,13 @@ hơn 4.4 lần**, và đổi đặc tính output (voiced_ratio thấp hơn, pitc
 hơn) theo hướng chưa rõ là tốt hơn hay chỉ khác. Đồng nghiệp sau đó phát hiện một bug nghiêm
 trọng hơn hẳn: teacher thực ra chạy ở 5 Hz, nhưng mọi lần distill trong report này (kể cả
 §4.19) đưa vào teacher chuỗi dài gấp **18.75 lần** phân phối huấn luyện thật của nó (§4.20,
-đã fix). Chạy lại đúng cấu hình exp06 với fix này (§4.21) cho kết quả **mơ hồ nhất trong
-toàn bộ report**: flatness khớp gần hoàn hảo vocal thật (0.0556 vs 0.0558) nhưng voiced_ratio
-sụp về đúng 0% trên cả 6/6 bài — không thể phân xử bằng số liệu, bắt buộc cần nghe thật.
+đã fix). Chạy lại đúng cấu hình exp06 với fix này (§4.21) cho kết quả mơ hồ nhất trong toàn
+bộ report theo số liệu (flatness khớp gần hoàn hảo vocal thật nhưng voiced_ratio sụp về 0%) —
+**đã xác nhận bằng nghe thật (2026-07-17): vẫn toàn nhiễu ở nội dung lời hát**, dù cấu trúc
+thời gian (đoạn nào ứng với lời nào) nghe có vẻ đúng. **Kết luận hiện tại: vấn đề cốt lõi của
+project (chưa nghe ra lời hát mạch lạc) vẫn chưa được giải quyết** sau khi đã thử alpha_feature,
+kích thước model, kiến trúc mới, và fix VAE-rate — xem §5.2 cho hướng tiếp theo (mở rộng dữ
+liệu, khôi phục điều kiện F0, đo WER bằng Whisper).
 
 ---
 
@@ -1130,6 +1134,33 @@ thật, chỉ thiếu ổn định pitch), đây là bước tiến very đáng 
 điều kiện pitch/F0 chưa khôi phục). Nếu xác nhận khả dĩ 2, fix VAE-rate dù đúng về mặt lý
 thuyết vẫn chưa đủ để tạo tín hiệu distillation hữu ích ở quy mô 250 bài/25 epoch hiện tại.
 
+**Xác nhận bằng nghe thật (2026-07-17)**: người dùng nghe trực tiếp `exp16` và xác nhận
+**khả dĩ 2** — "vẫn khá nhiễu... những đoạn lời thì toàn nhiễu". Vậy flatness gần-hoàn-hảo đo
+được không phản ánh chất lượng giọng hát thật; đó là một chỉ số toàn cục (trung bình phổ tần
+số trên cả file) có thể trùng khớp thống kê với vocal thật mà không mang nội dung âm nhạc nào
+— đúng dạng "colored noise" đã lo ngại, không phải "giọng hát thiếu ổn định pitch". Đây là
+lần thứ 3 trong report này một chỉ số khách quan (mel-std §4.13, voiced_ratio §4.16, giờ
+flatness §4.21) tạo cảm giác "gần đạt target" nhưng nghe thật lại phủ nhận — xác nhận thêm
+quy tắc đã rút ra: **không một chỉ số đơn lẻ nào trong bộ 3 hiện có là đủ để tin cậy hoàn
+toàn, kể cả khi nó khớp gần tuyệt đối với vocal thật**.
+
+**Nhưng có một tín hiệu tích cực cụ thể, đáng ghi nhận riêng**: người dùng ghi nhận "có cảm
+giác đã được căn chỉnh lời" — nghĩa là **cấu trúc thời gian** của các đoạn lời (khi nào có
+tiếng hát, khi nào là nhạc đệm/im lặng, theo đúng nhịp của lyric timing) nghe có vẻ đúng vị
+trí, dù *nội dung* âm thanh tại các đoạn đó vẫn là nhiễu. Đây là tách biệt quan trọng: vấn đề
+còn lại nhiều khả năng nằm ở **chất lượng sinh audio tại từng đoạn** (velocity field/pitch/
+timbre), không phải ở **cấu trúc thời gian tổng thể** (đoạn nào ứng với lời nào) — hai lớp
+vấn đề khác nhau, và lớp thứ hai (cấu trúc thời gian) có vẻ đã được giải quyết tốt hơn qua
+các fix tích lũy (lyric_timing, block-attention mask §4.20, v.v.), trong khi lớp thứ nhất
+(chất lượng nội dung mỗi đoạn) vẫn là nút thắt chính.
+
+**Kết luận thực tế cho §4.20-4.21**: fix VAE-rate là một fix đúng và cần thiết về lý thuyết
+(loại bỏ một lỗi out-of-distribution có thật), nhưng **một mình nó không đủ** để giải quyết
+vấn đề "toàn nhiễu" ở lời hát — vẫn cần điều tra thêm ở tầng chất lượng sinh audio (có thể là
+quy mô dữ liệu/model vẫn còn nhỏ, §4.13's giả thuyết cũ; hoặc cần điều kiện F0/pitch rõ ràng
+hơn thay vì chỉ dựa vào teacher signal; hoặc một hạn chế khác chưa phát hiện). Không nên coi
+đây là "đã giải quyết được noise" — vẫn còn nguyên vấn đề cốt lõi ban đầu của cả project.
+
 ---
 
 ## 5. Kết luận và hướng phát triển
@@ -1183,19 +1214,24 @@ thuyết vẫn chưa đủ để tạo tín hiệu distillation hữu ích ở q
 
 ### 5.2 Hướng phát triển
 
-- **Ưu tiên cao nhất ngay lúc này (§4.19): nghe thử 3 file `exp06`/`exp14`/`exp15`** để
-  quyết định có tiếp tục kiến trúc mới (sequence-concat + XPhoneBERT) hay không. So sánh cô
-  lập đúng biến (exp15, `dim=256/25ep` khớp exp06) cho thấy kiến trúc mới: (a) không cải
-  thiện loss_gt ở cùng ngân sách step (0.605→0.600), (b) **chậm hơn 4.4 lần** cùng cấu hình
-  (5481s vs 1240s — chi phí thật lớn, không miễn phí), (c) giảm voiced_ratio (92.4%→53.5%)
-  nhưng tăng pitch_std/flatness gần vocal thật hơn (0.91→1.49 semitone, 0.011→0.034) — cùng
-  dạng đánh đổi đã thấy khi tăng size/epoch trên kiến trúc cũ (§4.15-4.16), không rõ là cải
-  thiện thật hay chỉ dịch chuyển cùng kiểu thoái hoá sang trục khác. Lần đo đầu (§4.18, đã
-  đính chính) từng nghĩ nhầm là "đột phá" do bug đo lường (load sai frozen text encoder) —
-  bài học: **luôn in ra và kiểm tra tên model encoder thật đang load** sau bất kỳ thay đổi
-  kiến trúc nào liên quan tới encoder/tokenizer trước khi tin số liệu. Chỉ có 2 điểm dữ liệu
-  trên kiến trúc mới (N=1 run/cấu hình) — chưa đủ để kết luận chắc, và chi phí 4.4x khiến
-  việc lặp lại để kiểm chứng cũng tốn quota hơn hẳn trước.
+- **Ưu tiên cao nhất ngay lúc này (§4.21, ĐÃ XÁC NHẬN bằng nghe thật): vấn đề "toàn nhiễu" ở
+  nội dung lời hát VẪN CHƯA được giải quyết**, dù đã thử alpha_feature, kích thước model,
+  kiến trúc sequence-concat, và fix VAE-rate — không hướng nào trong số đó (kể cả fix VAE-rate
+  ở §4.20, về lý thuyết đúng và cần thiết) tạo ra bước nhảy chất lượng nội dung âm thanh mỗi
+  đoạn lời. Tín hiệu tích cực duy nhất xác nhận được: **cấu trúc thời gian của lyric timing
+  nghe có vẻ đúng vị trí** — vấn đề còn lại nằm ở tầng "chất lượng sinh audio mỗi đoạn", không
+  phải "đoạn nào ứng với lời nào". Hướng tiếp theo nên tập trung vào: (a) mở rộng dữ liệu qua
+  toàn bộ ~1843 bài (chưa thử ở bất kỳ hướng nào trong report này — luôn chỉ dùng 250 bài),
+  (b) khôi phục điều kiện pitch/F0 rõ ràng (§3.6, đã bỏ khi thêm Audio Style Anchor, chưa quay
+  lại) thay vì trông chờ teacher signal tự mang thông tin pitch, (c) đo Word Error Rate bằng
+  Whisper để có con số cụ thể thay vì chỉ "nghe thấy nhiễu" — hiện tại mọi đánh giá "còn nhiễu"
+  đều là cảm nhận, chưa có chỉ số định lượng cho riêng trục "nghe ra từ".
+- **Kiến trúc mới (sequence-concat + XPhoneBERT, §4.17-4.19) chưa chứng minh được lợi ích rõ
+  ràng và tốn chi phí thật (chậm hơn 4.4 lần cùng cấu hình)** — chưa đủ dữ liệu (chỉ 2-3 lần
+  chạy N=1/cấu hình) để kết luận chắc nó tốt hơn hay kém hơn kiến trúc cũ; không nên đầu tư
+  thêm quota vào việc scale kiến trúc này trước khi giải quyết được vấn đề chất lượng nội dung
+  cốt lõi ở trên, vì bất kỳ cải thiện nào cũng sẽ bị vấn đề nhiễu che lấp trong đánh giá nghe
+  thật.
 - **Ưu tiên cao nhất (§4.16): dùng `dim=384` hoặc `dim=512` (không phải `dim=256`) làm mặc
   định tiếp theo, cùng `alpha_feature=0.8`, và tăng epoch khi quota cho phép.** §4.14 từng
   chọn `dim=256/25ep` (exp06) làm "tối ưu" hoàn toàn dựa vào voiced_ratio (92.4%) — nhưng
