@@ -98,7 +98,7 @@ def run_local_generation(
     device: str | None = None,
     mel_output: str | Path | None = None,
     vocoder: str = "vocos",
-    roberta_model: str = "xlm-roberta-base",
+    roberta_model: str = "vinai/xphonebert-base",
     reference_dataset: str | Path | None = None,
     reference_id: str | None = None,
     backing_mel: str | Path | None = None,

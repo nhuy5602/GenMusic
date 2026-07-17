@@ -1027,6 +1027,54 @@ học N=1 đã nêu ở §4.14).
 để so sánh cả 3 hướng (kiến trúc cũ tốt nhất đã biết, kiến trúc mới cùng size, kiến trúc mới
 scale lớn hơn).
 
+**Cập nhật quan trọng (xem §4.20 ngay dưới)**: exp06/exp14/exp15 ở trên đều chạy TRƯỚC một
+phát hiện lớn hơn hẳn của đồng nghiệp — teacher thực ra vận hành ở tần số thời gian 5 Hz
+(không phải mel thường), trong khi mọi lần distillation trong report này (kể cả exp15) đưa
+vào teacher một chuỗi dài gấp **18.75 lần** phân phối huấn luyện thật của nó. So sánh
+kiến trúc ở §4.19 vẫn hợp lệ nội tại (cả hai vế đều có cùng lỗi này, nên vẫn là so sánh công
+bằng giữa "kiến trúc cũ" và "kiến trúc mới" dưới cùng một tín hiệu teacher bị lệch), nhưng
+**không phản ánh tiềm năng thật của distillation** — cả hai phía đều bị giới hạn bởi cùng
+một bug nghiêm trọng hơn nhiều so với bất kỳ biến số nào đã thử (alpha/size/kiến trúc). Xem
+§4.20 để biết chi tiết và trạng thái fix.
+
+### 4.20 Phát hiện sai lệch cốt lõi về bản chất dữ liệu (VAE Latent vs. Mel-spectrogram) và tần số thời gian (5 Hz vs. 93.75 Hz) giữa Teacher và Student
+
+Trong quá trình rà soát tài liệu thiết kế và source code của DiffRhythm2, một sai lệch cấu trúc cực kỳ lớn giữa Teacher và Student đã được phát hiện:
+1. **Bản chất dữ liệu ẩn (VAE Latents vs. Mel-spectrogram)**: Teacher DiffRhythm2 thực chất hoạt động trên không gian ẩn (latents) 64 chiều của một bộ **Music VAE** tự thiết kế (dựa trên Stable Audio 2 VAE), chứ không phải phổ Mel-spectrogram 64-kênh thông thường.
+2. **Lệch pha tần số thời gian (5 Hz vs. 93.75 Hz)**: Bộ Music VAE của Teacher nén tín hiệu âm thanh cực mạnh xuống tần số thời gian chỉ **5 Hz** (5 khung/giây). Trong khi đó, Student hoạt động trực tiếp trên phổ Mel-spectrogram chuẩn (hop_length=256 ở 24kHz) với tần số thời gian **93.75 Hz** (gần 94 khung/giây).
+3. **Cơ chế chưng cất bị lệch phân phối (Out-of-Distribution)**: 
+   * Hàm `_teacher_velocity` trong `distill_training.py` hiện tại chỉ thực hiện nội suy tuyến tính kênh tần số từ 100 về 64 kênh (`_resize_mel_bins`), nhưng **giữ nguyên trục thời gian** (ví dụ giữ nguyên chuỗi 375 khung ứng với 4 giây thay vì nén về 20 khung tương thích với 5Hz).
+   * Việc đẩy một chuỗi dài gấp 18.75 lần so với phân phối huấn luyện vào khối Llama của Teacher khiến bộ mã hóa vị trí quay (RoPE) và Attention mask của Teacher cho ra kết quả dự đoán vận tốc bị sai lệch nghiêm trọng, làm mất đi ý nghĩa hướng dẫn của chưng cất tri thức.
+4. **Cơ chế Attention Mask theo khối**: Teacher được huấn luyện theo cơ chế ghép chuỗi clean-noisy tự hồi quy theo từng khối (`block-by-block autoregressive attention mask`), trong khi Student hiện đang dùng attention bidirectional không nhân quả hoàn toàn trên toàn chuỗi phổ Mel.
+
+Phát hiện này giải thích lý do thực sự tại sao chưng cất (`train-distill`) trước đây cho kết quả thoái hóa hoặc không vượt trội hẳn so với tự học (`train-self`). Hướng sửa đổi bắt buộc phải bao gồm việc đồng bộ hóa tần số thời gian và không gian đặc trưng giữa hai mô hình trước khi chưng cất.
+
+#### Trạng thái sửa đổi và Mức độ ưu tiên của các điểm lệch pha:
+
+1. **Đồng bộ tần số thời gian và Lệch phân phối (Mục 2 & 3)**:
+   * *Trạng thái*: **ĐÃ FIX**. Đã chèn các bước downsample và upsample trục thời gian (`_resample_time_dimension`) vào `_teacher_velocity`. Teacher hiện nhận đúng chuỗi 5 Hz theo phân phối huấn luyện và trả về vận tốc dự đoán chính xác, sau đó được upsample lại 93.75 Hz cho Student.
+   * *Đánh giá*: Loại bỏ hoàn toàn lỗi nghiêm trọng Out-of-Distribution ở attention/RoPE của Teacher.
+
+2. **Cơ chế Attention Mask theo khối (Mục 4)**:
+   * *Trạng thái*: **ĐÃ FIX**. Đã hiện thực hóa hàm `_build_block_attn_mask` để tạo mặt nạ attention tự hồi quy theo từng block (mặc định size = 10 của Teacher) và gộp chuỗi đầu vào thành dạng `(S, L, Z, Zt)` gồm cả Clean Latent $Z$ và Noisy Latent $Zt$.
+   * *Đánh giá*: Sửa đổi này giúp Teacher tính toán attention chính xác theo đúng cấu trúc tự hồi quy mà nó được huấn luyện, ngăn chặn việc rò rỉ thông tin tương lai trong lúc chưng cất tri thức.
+
+3. **Bản chất dữ liệu ẩn VAE Latent vs. Mel-spectrogram (Mục 1)**:
+   * *Trạng thái*: **TẠM HOÃN / GIỮ NGUYÊN THIẾT KẾ**. Mô hình Student vẫn sinh trực tiếp phổ Mel 100 chiều để giải mã qua Vocos (không dùng VAE riêng cho Student). Sự lệch pha kênh đặc trưng 64-latent vs 100-mel được giải quyết thông qua adapter tuyến tính có thể huấn luyện (`from_teacher_mel`).
+   * *Mức độ cần fix*: **THẤP**. Do Vocos mang lại chất lượng tái tạo âm thanh vượt trội mà không cần huấn luyện lại bộ Music VAE cực kỳ tốn tài nguyên tính toán. Đây là một trade-off kiến trúc hợp lý và tối ưu trong điều kiện giới hạn phần cứng.
+
+**Ý nghĩa đối với mọi kết luận trước đó trong report này**: fix này (đã merge vào `master`
+sau exp06/14/15) làm lại đúng tín hiệu velocity của teacher lần đầu tiên trong toàn bộ
+project — mọi so sánh alpha_feature (§4.14), kích thước model (§4.15-16), và kiến trúc
+(§4.19) đều được đo dưới một teacher signal bị lệch phân phối nghiêm trọng (input dài gấp
+18.75 lần bình thường). Đây có thể là lời giải thích thật cho "khoảng cách còn lại" mà §4.12
+từng nêu là "giả thuyết chưa kiểm chứng đầy đủ" (teacher tự nhiên đưa dự đoán mượt hơn) —
+khả năng cao đó không phải do bản chất teacher mà do chính bug này. **Chưa có bất kỳ lần
+train nào trong report tính đến giờ dùng đúng fix này** — bước tiếp theo hợp lý nhất là chạy
+lại `train-distill` ở quy mô nhỏ (khớp exp06, `dim=256/25ep/alpha=0.8`) với code đã fix, đo
+lại đủ bộ 3 chỉ số (voiced_ratio/flatness/pitch_std_semitones) trước khi tin bất kỳ kết luận
+cũ nào về alpha/size/kiến trúc.
+
 ---
 
 ## 5. Kết luận và hướng phát triển

@@ -56,6 +56,79 @@ def _resize_mel_bins(mel: torch.Tensor, target_bins: int) -> torch.Tensor:
     return resized.reshape(batch, seq_len, target_bins)
 
 
+def _resample_time_dimension(x: torch.Tensor, target_len: int) -> torch.Tensor:
+    """Deterministic resize across the temporal axis (middle dim) via linear interpolation
+    to bridge the student's frame rate (93.75 Hz) and the teacher's VAE frame rate (5 Hz)."""
+    # x shape: [B, T_orig, C] -> transpose to [B, C, T_orig] for F.interpolate
+    transposed = x.transpose(1, 2)
+    resized = F.interpolate(transposed, size=target_len, mode="linear", align_corners=False)
+    return resized.transpose(1, 2)
+
+
+def _build_block_attn_mask(
+    batch_size: int,
+    text_len: int,
+    T_teacher: int,
+    block_size: int,
+    device,
+    token_valid: torch.Tensor
+) -> torch.Tensor:
+    """Constructs the block-wise autoregressive attention mask exactly matching DiffRhythm 2.
+    The sequence layout is: [Text (S, L), Clean Latent (Z), Noisy Latent (Zt)]"""
+    total_len = text_len + T_teacher + T_teacher
+    mask = torch.zeros((total_len, total_len), dtype=torch.bool, device=device)
+
+    # Compute block IDs: text tokens get -1, Clean blocks get 0..k, Noisy blocks get 0..k
+    block_ids = torch.empty(total_len, dtype=torch.long, device=device)
+    block_ids[:text_len] = -1
+    
+    clean_indices = torch.arange(T_teacher, device=device)
+    block_ids[text_len : text_len + T_teacher] = clean_indices // block_size
+    
+    noisy_indices = torch.arange(T_teacher, device=device)
+    block_ids[text_len + T_teacher :] = noisy_indices // block_size
+
+    row_block_ids = block_ids.unsqueeze(1)
+    col_block_ids = block_ids.unsqueeze(0)
+
+    is_text = torch.zeros(total_len, dtype=torch.bool, device=device)
+    is_text[:text_len] = True
+    
+    is_clean = torch.zeros(total_len, dtype=torch.bool, device=device)
+    is_clean[text_len : text_len + T_teacher] = True
+    
+    is_noisy = torch.zeros(total_len, dtype=torch.bool, device=device)
+    is_noisy[text_len + T_teacher :] = True
+
+    row_is_text = is_text.unsqueeze(1)
+    row_is_clean = is_clean.unsqueeze(1)
+    row_is_noisy = is_noisy.unsqueeze(1)
+
+    col_is_text = is_text.unsqueeze(0)
+    col_is_clean = is_clean.unsqueeze(0)
+    col_is_noisy = is_noisy.unsqueeze(0)
+
+    # 1. Text can always be attended
+    mask = mask | col_is_text
+    # 2. Clean query can attend to Clean key if block_id(col) <= block_id(row)
+    mask = mask | (row_is_clean & col_is_clean & (col_block_ids <= row_block_ids))
+    # 3. Noisy query can attend to Clean key if block_id(col) < block_id(row)
+    mask = mask | (row_is_noisy & col_is_clean & (col_block_ids < row_block_ids))
+    # 4. Noisy query can attend to Noisy key if block_id(col) == block_id(row)
+    mask = mask | (row_is_noisy & col_is_noisy & (col_block_ids == row_block_ids))
+    # 5. Mask out text queries attending to audio
+    mask = mask & ~(row_is_text & (col_is_clean | col_is_noisy))
+
+    # Apply batch-wise token padding mask
+    mask_4d = mask.unsqueeze(0).unsqueeze(1).repeat(batch_size, 1, 1, 1)
+    audio_valid = torch.ones((batch_size, T_teacher + T_teacher), dtype=torch.bool, device=device)
+    full_valid = torch.cat([token_valid, audio_valid], dim=1)
+    mask_4d = mask_4d & full_valid.unsqueeze(1).unsqueeze(2)
+
+    return mask_4d
+
+
+
 def _hf_hub_download_with_retry(*, attempts: int = 8, initial_backoff_seconds: float = 5.0, max_backoff_seconds: float = 60.0, **kwargs) -> str:
     """`hf_hub_download` with no retry has a single-network-blip failure mode:
     one transient Hub hiccup burns an entire multi-hour Kaggle job before
@@ -227,12 +300,14 @@ class KnowledgeDistillationTrainer:
         alpha_feature: float = 0.5,
         parse_lyrics_fn=None,
         teacher_mel_dim: int | None = None,
+        teacher_block_size: int = 10,
     ):
         self.teacher = teacher_model.to(device) if teacher_model is not None else None
         self.student = student_model.to(device)
         self.config = config
         self.optimizer = optimizer
         self.device = device
+        self.teacher_block_size = teacher_block_size
         self.parse_lyrics_fn = parse_lyrics_fn
         # If the teacher (or its tokenizer) is unavailable, there is no
         # distillation signal to blend in -- fall back to pure ground-truth CFM.
@@ -262,7 +337,7 @@ class KnowledgeDistillationTrainer:
     def adapter_parameters(self) -> list[torch.nn.Parameter]:
         return list(self.from_teacher_mel.parameters()) if self.from_teacher_mel is not None else []
 
-    def _teacher_velocity(self, xt: torch.Tensor, t: torch.Tensor, texts: list[str], style_prompt: torch.Tensor) -> torch.Tensor | None:
+    def _teacher_velocity(self, xt: torch.Tensor, x1: torch.Tensor, t: torch.Tensor, texts: list[str], style_prompt: torch.Tensor) -> torch.Tensor | None:
         if self.teacher is None or self.parse_lyrics_fn is None:
             return None
         batch_size, seq_len = xt.shape[0], xt.shape[1]
@@ -274,20 +349,43 @@ class KnowledgeDistillationTrainer:
         text_time = torch.full((batch_size, text_len), -1.0, device=self.device, dtype=xt.dtype)
         text_position_ids = torch.arange(text_len, device=self.device).unsqueeze(0).repeat(batch_size, 1)
 
-        teacher_xt = _resize_mel_bins(xt, self.teacher_mel_dim) if self.needs_mel_resize else xt
+        # 1. Downsample the time dimension of student's Mel to match the teacher's VAE 5 Hz frame rate
+        student_fps = self.config.sample_rate / self.config.hop_length  # 93.75 Hz
+        teacher_fps = 5.0
+        teacher_seq_len = max(1, round(seq_len * (teacher_fps / student_fps)))
+
+        teacher_xt = _resample_time_dimension(xt, teacher_seq_len)
+        teacher_x1 = _resample_time_dimension(x1, teacher_seq_len)
+        
+        # 2. Resize the frequency dimension from 100 to 64
+        teacher_xt = _resize_mel_bins(teacher_xt, self.teacher_mel_dim) if self.needs_mel_resize else teacher_xt
+        teacher_x1 = _resize_mel_bins(teacher_x1, self.teacher_mel_dim) if self.needs_mel_resize else teacher_x1
 
         with torch.no_grad():
-            noisy_latent = self.teacher.latent_embed(teacher_xt)  # (B, seq_len, cond_dim)
-            noisy_time = t[:, None].repeat(1, seq_len)
-            noisy_position_ids = torch.arange(seq_len, device=self.device).unsqueeze(0).repeat(batch_size, 1)
+            # Z: Clean sequence
+            clean_latent = self.teacher.latent_embed(teacher_x1)  # (B, teacher_seq_len, cond_dim)
+            clean_time = torch.full((batch_size, teacher_seq_len), 1.0, device=self.device, dtype=xt.dtype)
+            clean_position_ids = torch.arange(teacher_seq_len, device=self.device).unsqueeze(0).repeat(batch_size, 1)
 
-            x = torch.cat([text_emb, noisy_latent], dim=1)
-            time = torch.cat([text_time, noisy_time], dim=1)
-            position_ids = torch.cat([text_position_ids, noisy_position_ids], dim=1)
+            # Zt: Noisy sequence
+            noisy_latent = self.teacher.latent_embed(teacher_xt)  # (B, teacher_seq_len, cond_dim)
+            noisy_time = t[:, None].repeat(1, teacher_seq_len)
+            noisy_position_ids = torch.arange(teacher_seq_len, device=self.device).unsqueeze(0).repeat(batch_size, 1)
 
-            total_len = text_len + seq_len
-            key_valid = torch.cat([token_valid, torch.ones(batch_size, seq_len, dtype=torch.bool, device=self.device)], dim=1)
-            attn_mask = key_valid[:, None, None, :].repeat(1, 1, total_len, 1)  # (B, 1, total_len, total_len), True=attend
+            # Concatenate clean and noisy to form (S, L, Z, Zt)
+            x = torch.cat([text_emb, clean_latent, noisy_latent], dim=1)
+            time = torch.cat([text_time, clean_time, noisy_time], dim=1)
+            position_ids = torch.cat([text_position_ids, clean_position_ids, noisy_position_ids], dim=1)
+
+            # Replicate the block-wise attention mask
+            attn_mask = _build_block_attn_mask(
+                batch_size=batch_size,
+                text_len=text_len,
+                T_teacher=teacher_seq_len,
+                block_size=self.teacher_block_size,
+                device=self.device,
+                token_valid=token_valid
+            )
 
             outputs = self.teacher(
                 x=x,
@@ -299,10 +397,14 @@ class KnowledgeDistillationTrainer:
                 past_key_value=None,
             )
             pred = outputs[0] if isinstance(outputs, tuple) else outputs
-            teacher_velocity = pred[:, text_len:].detach()
+            teacher_velocity = pred[:, text_len + teacher_seq_len:].detach()  # (B, teacher_seq_len, 64)
 
+        # 3. Map the channel dimension from 64 to 100 using trainable adapter
         if self.from_teacher_mel is not None:
-            teacher_velocity = self.from_teacher_mel(teacher_velocity)
+            teacher_velocity = self.from_teacher_mel(teacher_velocity)  # (B, teacher_seq_len, 100)
+
+        # 4. Upsample the teacher's predicted velocity back to student's original sequence length
+        teacher_velocity = _resample_time_dimension(teacher_velocity, seq_len)  # (B, seq_len, 100)
         return teacher_velocity
 
     def train_epoch(self, dataloader) -> list[dict[str, float | None]]:
@@ -345,7 +447,7 @@ class KnowledgeDistillationTrainer:
             # Not wrapped in torch.no_grad() here -- from_teacher_mel (inside
             # _teacher_velocity) is a real trainable adapter and needs gradient
             # tracking; only the frozen teacher's own forward pass is no_grad-scoped.
-            v_teacher = self._teacher_velocity(xt, t, texts, style_anchor)
+            v_teacher = self._teacher_velocity(xt, x1, t, texts, style_anchor)
 
             v_student = self.student(x=xt, texts=texts, timestep=t, style_prompt=style_anchor)
 
@@ -478,6 +580,7 @@ def run_distillation_training(
         alpha_feature=alpha_feature,
         teacher_mel_dim=teacher_mel_dim,
         parse_lyrics_fn=parse_lyrics_fn,
+        teacher_block_size=teacher_config.get("block_size", 10) if teacher_config else 10,
     )
     trainable_params = [p for p in model_student.parameters() if p.requires_grad] + trainer.adapter_parameters()
     trainer.optimizer = torch.optim.AdamW(trainable_params, lr=learning_rate)
