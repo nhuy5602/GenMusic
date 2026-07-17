@@ -56,6 +56,15 @@ def _resize_mel_bins(mel: torch.Tensor, target_bins: int) -> torch.Tensor:
     return resized.reshape(batch, seq_len, target_bins)
 
 
+def _resample_time_dimension(x: torch.Tensor, target_len: int) -> torch.Tensor:
+    """Deterministic resize across the temporal axis (middle dim) via linear interpolation
+    to bridge the student's frame rate (93.75 Hz) and the teacher's VAE frame rate (5 Hz)."""
+    # x shape: [B, T_orig, C] -> transpose to [B, C, T_orig] for F.interpolate
+    transposed = x.transpose(1, 2)
+    resized = F.interpolate(transposed, size=target_len, mode="linear", align_corners=False)
+    return resized.transpose(1, 2)
+
+
 def _hf_hub_download_with_retry(*, attempts: int = 8, initial_backoff_seconds: float = 5.0, max_backoff_seconds: float = 60.0, **kwargs) -> str:
     """`hf_hub_download` with no retry has a single-network-blip failure mode:
     one transient Hub hiccup burns an entire multi-hour Kaggle job before
@@ -274,19 +283,27 @@ class KnowledgeDistillationTrainer:
         text_time = torch.full((batch_size, text_len), -1.0, device=self.device, dtype=xt.dtype)
         text_position_ids = torch.arange(text_len, device=self.device).unsqueeze(0).repeat(batch_size, 1)
 
-        teacher_xt = _resize_mel_bins(xt, self.teacher_mel_dim) if self.needs_mel_resize else xt
+        # 1. Downsample the time dimension of student's Mel to match the teacher's VAE 5 Hz frame rate
+        student_fps = self.config.sample_rate / self.config.hop_length  # 93.75 Hz
+        teacher_fps = 5.0
+        teacher_seq_len = max(1, round(seq_len * (teacher_fps / student_fps)))
+
+        teacher_xt = _resample_time_dimension(xt, teacher_seq_len)
+        
+        # 2. Resize the frequency dimension from 100 to 64
+        teacher_xt = _resize_mel_bins(teacher_xt, self.teacher_mel_dim) if self.needs_mel_resize else teacher_xt
 
         with torch.no_grad():
-            noisy_latent = self.teacher.latent_embed(teacher_xt)  # (B, seq_len, cond_dim)
-            noisy_time = t[:, None].repeat(1, seq_len)
-            noisy_position_ids = torch.arange(seq_len, device=self.device).unsqueeze(0).repeat(batch_size, 1)
+            noisy_latent = self.teacher.latent_embed(teacher_xt)  # (B, teacher_seq_len, cond_dim)
+            noisy_time = t[:, None].repeat(1, teacher_seq_len)
+            noisy_position_ids = torch.arange(teacher_seq_len, device=self.device).unsqueeze(0).repeat(batch_size, 1)
 
             x = torch.cat([text_emb, noisy_latent], dim=1)
             time = torch.cat([text_time, noisy_time], dim=1)
             position_ids = torch.cat([text_position_ids, noisy_position_ids], dim=1)
 
-            total_len = text_len + seq_len
-            key_valid = torch.cat([token_valid, torch.ones(batch_size, seq_len, dtype=torch.bool, device=self.device)], dim=1)
+            total_len = text_len + teacher_seq_len
+            key_valid = torch.cat([token_valid, torch.ones(batch_size, teacher_seq_len, dtype=torch.bool, device=self.device)], dim=1)
             attn_mask = key_valid[:, None, None, :].repeat(1, 1, total_len, 1)  # (B, 1, total_len, total_len), True=attend
 
             outputs = self.teacher(
@@ -299,10 +316,14 @@ class KnowledgeDistillationTrainer:
                 past_key_value=None,
             )
             pred = outputs[0] if isinstance(outputs, tuple) else outputs
-            teacher_velocity = pred[:, text_len:].detach()
+            teacher_velocity = pred[:, text_len:].detach()  # (B, teacher_seq_len, 64)
 
+        # 3. Map the channel dimension from 64 to 100 using trainable adapter
         if self.from_teacher_mel is not None:
-            teacher_velocity = self.from_teacher_mel(teacher_velocity)
+            teacher_velocity = self.from_teacher_mel(teacher_velocity)  # (B, teacher_seq_len, 100)
+
+        # 4. Upsample the teacher's predicted velocity back to student's original sequence length
+        teacher_velocity = _resample_time_dimension(teacher_velocity, seq_len)  # (B, seq_len, 100)
         return teacher_velocity
 
     def train_epoch(self, dataloader) -> list[dict[str, float | None]]:
