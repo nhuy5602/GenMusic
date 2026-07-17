@@ -68,6 +68,11 @@ try:
 
     print("--- STEP 3: Installing dependencies ---")
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "librosa", "imageio-ffmpeg"], check=True)
+    # The student's text encoder defaults to XPhoneBERT + text2phonemesequence
+    # (see src/models/dit_transformer.py) -- not covered above, so train-self
+    # fails with ModuleNotFoundError without this explicit install (same bug
+    # class already hit and fixed for run_kaggle_distill.py).
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "text2phonemesequence"], check=True)
 
     print("--- STEP 4: Checking CUDA compatibility ---")
     torch_probe = subprocess.run(
@@ -149,6 +154,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--processed-kernel-ref", default=None)
     args = parser.parse_args()
 
     # Resolved parent because it is located inside the scripts/ directory
@@ -175,7 +181,7 @@ def main():
     # KAGGLE_PROCESSED_DATASET_REF: a pre-existing published Dataset (attached via
     # dataset_sources instead) -- kept for compatibility with datasets published before
     # this fix, or shared manually outside this project's scripts.
-    processed_kernel_ref = os.getenv("KAGGLE_PROCESSED_KERNEL_REF") or tokens.get("KAGGLE_PROCESSED_KERNEL_REF")
+    processed_kernel_ref = args.processed_kernel_ref or os.getenv("KAGGLE_PROCESSED_KERNEL_REF") or tokens.get("KAGGLE_PROCESSED_KERNEL_REF")
     processed_dataset_ref = os.getenv("KAGGLE_PROCESSED_DATASET_REF") or tokens.get(
         "KAGGLE_PROCESSED_DATASET_REF",
         "ngochuy5602/genmusic-vn-part3-vocal-vocos-smoke" if not processed_kernel_ref else None,
