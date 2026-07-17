@@ -1161,6 +1161,72 @@ quy mô dữ liệu/model vẫn còn nhỏ, §4.13's giả thuyết cũ; hoặc 
 hơn thay vì chỉ dựa vào teacher signal; hoặc một hạn chế khác chưa phát hiện). Không nên coi
 đây là "đã giải quyết được noise" — vẫn còn nguyên vấn đề cốt lõi ban đầu của cả project.
 
+### 4.22 Truy tìm nguyên nhân gốc: có phải bug, hay đúng là do quy mô? Ba thử nghiệm rẻ, cùng ngày, cùng chỉ về một hướng
+
+Sau §4.21, câu hỏi đặt ra: liệu còn một bug cụ thể chưa tìm ra, hay đây là hạn chế thật về
+cách tiếp cận (ví dụ: student sinh mel-spectrogram + Vocos trong khi teacher "nói" bằng VAE
+latent riêng — một giả thuyết hợp lý được đề xuất trong lúc thảo luận)? Ba thử nghiệm rẻ
+(không tốn nhiều quota Kaggle, chủ yếu chạy local) được thực hiện cùng lúc để trả lời:
+
+**1) Tăng số bước sampling (6/16/30/40/64) trên exp16 — loại trừ giả thuyết "chưa hội tụ"**:
+
+| steps | 6 | 16 | 30 | 40 | 64 |
+|---|---|---|---|---|---|
+| voiced_ratio | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| flatness | 0.0554 | 0.0523 | 0.0513 | 0.0510 | 0.0507 |
+
+voiced_ratio **giữ đúng 0% ở MỌI mức step** — tăng 10x số bước tích phân ODE không thay đổi
+gì. Xác nhận lại đúng kết luận cũ của §4.9 (test 6 vs 64 bước trên checkpoint đời trước) —
+vấn đề nằm ở chính velocity field đã học, không phải cách tích phân lúc sinh.
+
+**2) train-self (KHÔNG dùng teacher) trên code hiện tại đầy đủ fix — kiểm tra trực tiếp giả
+thuyết Vocos/mel vs VAE-latent**: nếu giả thuyết đó đúng, bỏ hẳn teacher đi (loại bỏ hoàn
+toàn nguồn gây lệch pha Vocos/VAE-latent) phải cho kết quả tốt hơn rõ rệt. Chạy **exp17**
+(`ddvnam05/genmusic-train-1784297100`, `dim=256/25ep`, cùng dataset, code hiện tại — mel
+normalization + loss chống collapse + kiến trúc sequence-concat + XPhoneBERT, chỉ khác đúng
+1 biến: không có teacher):
+
+| Chỉ số | exp16 (train-distill, có fix VAE-rate) | **exp17 (train-self, KHÔNG teacher)** | Vocal thật |
+|---|---|---|---|
+| voiced_ratio (TB 6 bài) | 0.0% (0/6) | **0.0% (0/6)** | 74.3% |
+| pitch_std_semitones | None | **None** | 6.39 |
+| spectral flatness | 0.0556 | **0.0650** | 0.0558 |
+| wall-clock | 4029s | **7415s** (!) | — |
+
+**Kết quả giống hệt nhau về mặt định tính** — cả hai đều 0% voiced trên toàn bộ 6 bài. Bỏ
+hẳn teacher đi (loại bỏ hoàn toàn khả năng lệch pha Vocos/VAE-latent) **không** thay đổi bản
+chất kết quả. Đây là bằng chứng khá mạnh **bác bỏ** giả thuyết "vấn đề nằm ở tín hiệu teacher
+bị lệch không gian đặc trưng" — vì thất bại xảy ra y hệt cả khi không có teacher. Một phát
+hiện phụ đáng chú ý: **train-self giờ CHẬM HƠN train-distill** (7415s vs 4029s) — đảo ngược
+hoàn toàn kinh tế học đã ghi nhận ở §4.8 (train-self rẻ hơn 49 lần) — vì text encoder mới
+(XPhoneBERT + G2P neural mỗi batch) tạo overhead cố định mà trước đây bị chi phí teacher che
+lấp; khi không có teacher, chi phí đó lộ ra và trở thành nút thắt chính.
+
+**3) So sánh trực quan spectrogram — vocal thật vs. 4 checkpoint (exp06/15/16/17)**:
+`docs/assets/spectrogram_comparison.png`. Vocal thật cho thấy **cấu trúc rõ ràng**: dải hài
+âm sắc nét (harmonic banding) khi có tiếng hát, xen giữa các **khoảng lặng thật** (hơi thở,
+ngắt câu). Cả 4 checkpoint sinh ra — **kể cả exp17 không dùng teacher** — đều cho năng lượng
+**liên tục, không đứt đoạn, trải khắp mọi tần số** suốt cả file, không có khoảng lặng, không
+có dải hài âm tách biệt. exp06 có một dải hẹp sáng gần 0Hz (khớp giả thuyết "hát một nốt đơn
+điệu", §4.16); exp15/16/17 trải năng lượng rộng hơn (khớp flatness gần thật hơn) nhưng vẫn
+không có cấu trúc thời gian nào giống giọng hát thật.
+
+**Tổng hợp 3 thử nghiệm — cùng chỉ về một hướng**: không phải sampling chưa hội tụ (thử 1),
+không phải riêng tín hiệu teacher/Vocos-VAE mismatch (thử 2 — train-self cũng fail y hệt),
+và về mặt thị giác thì THIẾU CẤU TRÚC THỜI GIAN (không có khoảng lặng, không có onset/offset
+rời rạc như hát thật) là đặc điểm chung của MỌI checkpoint, không phân biệt có/không teacher,
+cũ/mới kiến trúc (thử 3). Điều duy nhất KHÔNG đổi giữa tất cả các thử nghiệm trong toàn bộ
+report — từ đầu tới giờ — là **quy mô dữ liệu (250 bài) và số step huấn luyện (1575-3900
+step)**. Đây là biến duy nhất chưa từng được thử thay đổi thật, và là ứng viên hợp lý nhất
+cho nguyên nhân gốc còn lại, dựa trên loại trừ toàn bộ các giả thuyết khác đã kiểm chứng được
+trong report này.
+
+*(Đang chờ thêm 1 điểm dữ liệu: cho chính teacher DiffRhythm2 tự sinh nhạc bằng pipeline gốc
+của nó — `scripts/test_teacher_inference.py`, đã chạy sẵn từ trước, launch qua
+`run_kaggle_teacher_test.py` — nếu spectrogram của teacher tự sinh cũng sạch/có cấu trúc,
+đó là xác nhận cuối cùng rằng "công thức" (CFM + Llama-decoder + MuLan style) hoạt động tốt
+ở quy mô teacher, chỉ riêng student+dữ liệu nhỏ là chưa đủ. Kết quả cập nhật tiếp.)*
+
 ---
 
 ## 5. Kết luận và hướng phát triển
