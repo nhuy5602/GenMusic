@@ -139,44 +139,24 @@ dựa trên timestamp ASR ở trên. Style embedding thì **không** cắt theo 
 
 ### 3.2 Kiến trúc student — MicroDiT (`src/models/dit_transformer.py`)
 
-Một model dự đoán vận tốc CFM dạng Diffusion-Transformer nhỏ:
+Một model dự đoán vận tốc CFM dạng Diffusion-Transformer nhỏ, đã được tái cấu trúc sang cơ chế **Ghép chuỗi thống nhất (Sequence Concatenation)** để khớp hoàn toàn với DiffRhythm2:
 
-- **Điều kiện text**: `xlm-roberta-base` đóng băng (`PretrainedRobertaEncoder`, ~278M
-  tham số, `requires_grad=False`) chiếu qua một MLP 2 lớp có thể train. Chọn model này vì
-  thực sự đa ngôn ngữ (khác tokenizer lyric Trung/Anh-only của teacher) — đây là thành
-  phần mang ngữ nghĩa lyric tiếng Việt thật vào model.
-- **Điều kiện style ("Audio Style Anchor")**: một embedding MuQ-MuLan 512-chiều duy nhất,
-  tính một lần/bài lúc preprocess, chiếu vào không gian điều kiện của model qua
-  `AudioStyleEncoder` (MLP 2 lớp). Đây là **cùng không gian embedding** mà teacher
-  DiffRhythm2 thật sự điều kiện theo, nên distillation và tự-sinh của student dùng chung
-  một khái niệm "style".
-- **Backbone**: `depth` block `LlamaDecoderLayer` của HuggingFace (rotary embedding, SDPA
-  attention, không causal mask — attention hai chiều đầy đủ trên chuỗi mel),
-  `dim`/`heads`/`ff_mult` cấu hình được (CLI: `--dim`/`--depth`/`--heads`/`--ff-mult` trên
-  `train-self`/`train-distill`). Mặc định `dim=256, depth=4, heads=4, ff_mult=4` — khoảng
-  vài triệu tham số có thể train, rất nhỏ so với `dim=2048, depth=16, heads=16` của teacher.
-- **I/O mel**: dự đoán trường vận tốc trên `(seq_len, n_mels=100)`, ở 24kHz/n_fft=1024/
-  hop=256 — chọn để khớp *chính xác* công thức mel gốc của Vocos (§2.3), không phải công
-  thức mel của DiffRhythm2.
+- **Điều kiện text**: `vinai/xphonebert-base` đóng băng kết hợp G2P `text2phonemesequence` hỗ trợ tiếng Việt có dấu thanh. Đầu ra là các vector nhúng âm vị thô (không bị kéo giãn hay lặp lại theo khung thời gian).
+- **Điều kiện style ("Audio Style Anchor")**: một embedding MuQ-MuLan 512-chiều duy nhất, tính một lần/bài lúc preprocess, chiếu qua `AudioStyleEncoder` (MLP 2 lớp) và cộng trực tiếp vào chuỗi đặc trưng đầu vào.
+- **Cơ chế ghép chuỗi (Sequence Concatenation)**: Thay vì kéo giãn text và ghép kênh song song (concat theo chiều đặc trưng), chúng ta ghép nối Text embeddings và Mel embeddings dọc theo **chiều dài chuỗi (sequence dimension)** tại lớp `InputEmbedding`, tạo ra một chuỗi thống nhất có độ dài `text_len + seq_len`.
+- **Thông tin Vị trí và Thời gian**: 
+  - Vị trí (`pos_ids`) được ghép nối tương ứng: `0..text_len-1` cho text và `0..seq_len-1` cho Mel.
+  - Thời gian (`time`) được thiết lập: `-1.0` sentinel cho các token text và timestep `t` thực tế cho các khung Mel. Sau đó, chuỗi thời gian 2D này được đưa qua `TimestepEmbedding` để sinh ra vector nhúng thời gian tương ứng từng vị trí.
+- **Backbone**: `depth` block `LlamaDecoderLayer` của HuggingFace hoạt động trên chuỗi thống nhất đã ghép nối, sử dụng **Attention hai chiều đầy đủ (Non-causal bidirectional attention)** thông qua một mặt nạ 4D (`attn_mask_4d`) che đi các token text padding. Lớp residual fusion `text_fusion_linears` cũ đã được loại bỏ hoàn toàn để bám sát thiết kế tối giản của teacher.
+- **Đầu ra**: Sau khi đi qua các khối Transformer, mô hình cắt lấy phân đoạn ứng với Mel (`x[:, text_len:]`), điều chế (modulate) qua lớp AdaLN-Zero cuối cùng sử dụng tổng embedding thời gian thực + style, và chiếu ra không gian phổ 100-mel của học sinh.
 
 ### 3.3 Huấn luyện với Conditional Flow Matching (`train-self`, `src/training/self_diffusion.py`)
 
-Huấn luyện thuần CFM, không có teacher: với mỗi batch, lấy `vocal_mel` làm `x1`,
-`backing_mel` làm điều kiện, nhiễu Gauss làm `x0`, nội suy `x_t`, và tối ưu
-`‖v_student(x_t, t, cond, text, style) - (x_1 - x_0)‖²` (`cfm_loss`,
-`src/models/cfm_flow.py`). Đây là baseline "không distillation" dùng để so sánh (§4.6),
-và cũng là backend cho lệnh `train-self`/CLI `generate-local` khi không có checkpoint
-distill.
+Huấn luyện thuần CFM, không có teacher: với mỗi batch, lấy `vocal_mel` làm `x1`, nhiễu Gauss làm `x0`, nội suy `x_t`, và tối ưu `‖v_student(x_t, t, text, style) - (x_1 - x_0)‖²` (`cfm_loss`, `src/models/cfm_flow.py`). Điều kiện nhạc nền (`backing_mel`) đã được loại bỏ hoàn toàn khỏi hàm loss và mô hình để đảm bảo tính đồng bộ cấu hình với teacher.
 
 ### 3.4 Chắt lọc tri thức từ DiffRhythm2 (`train-distill`, `src/training/distill_training.py`)
 
-Teacher (`diffrhythm2.backbones.dit.DiT`, khởi tạo với đúng kích thước từ `config.json`
-tải thật, không đoán) và student huấn luyện theo cùng công thức CFM: cùng `x_t`, cùng `t`,
-cùng style embedding. Token lyric và latent mel nhiễu của teacher được nối vào một chuỗi
-(`text_embed(tokens)` ở vị trí `time=-1` sentinel, `latent_embed(x_t)` ở vị trí `time=t`)
-và forward một lần không cache — tương đương về toán học với đường suy luận streaming
-block-cache của chính teacher, chỉ bỏ phần tối ưu cache (xem
-`docs/experiments/distillation_fix.md`).
+Nhờ việc chuyển đổi mô hình học sinh sang cơ chế ghép chuỗi thống nhất (Sequence Concatenation), cấu trúc chuỗi đầu vào của Student lúc này đã **khớp toán học hoàn hảo** với cấu trúc chuỗi của Teacher (`text_emb` ở vị trí sentinels và `latent_embed(x_t)` ở vị trí `time=t`). Điều này loại bỏ hoàn toàn sự lệch pha kiến trúc, giúp việc chưng cất tri thức trực tiếp từ các biểu thị ẩn của DiffRhythm2 đạt hiệu quả tối đa mà không cần thông qua các cơ chế căn chỉnh trung gian.
 
 **Adapter mel-dim**: vì checkpoint thật của teacher dùng `mel_dim=64` còn không gian mel
 của student là 100-chiều (bắt buộc bởi lựa chọn vocoder, §2.3), một cặp adapter bắc cầu

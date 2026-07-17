@@ -8,30 +8,11 @@ from unittest.mock import patch
 
 import torch
 
-from src.models.dit_transformer import align_text_embeddings_to_frames
 from src.models.text_to_music_diffusion import MusicDiffusionConfig, denormalize_mel, normalize_mel
 from src.training.self_diffusion import MusicDiffusionDataset, lyric_text_for_window
 
 
 class ModelImprovementTests(unittest.TestCase):
-    def test_text_alignment_ignores_padding_embeddings(self) -> None:
-        embeddings = torch.tensor(
-            [
-                [[0.0], [1.0], [2.0], [3.0], [999.0]],
-                [[0.0], [4.0], [999.0], [999.0], [999.0]],
-            ]
-        )
-        mask = torch.tensor(
-            [
-                [True, True, True, True, False],
-                [True, True, False, False, False],
-            ]
-        )
-
-        aligned = align_text_embeddings_to_frames(embeddings, mask, frames=8)
-
-        self.assertEqual(tuple(aligned.shape), (2, 8, 1))
-        self.assertLess(float(aligned.max()), 10.0)
 
     def test_old_segment_records_get_approximate_word_alignment(self) -> None:
         segments = [{"start": 0.0, "end": 4.0, "text": "mot hai ba bon"}]
