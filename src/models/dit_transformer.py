@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from transformers import AutoTokenizer, AutoModel
-from transformers.models.llama.modeling_llama import LlamaDecoderLayer, LlamaRotaryEmbedding
+from transformers.models.llama.modeling_llama import LlamaDecoderLayer, LlamaRotaryEmbedding, apply_rotary_pos_emb, repeat_kv
 from transformers.models.llama import LlamaConfig
 
 from .text_to_music_diffusion import MusicDiffusionConfig
@@ -196,7 +196,13 @@ class MicroDiT(nn.Module):
             hidden_act="silu",
             max_position_embeddings=2048
         )
-        llama_config._attn_implementation = "sdpa" # FlashAttention speedup
+        # "eager" (not "sdpa") is required so self_attn actually materializes and
+        # returns attention weights -- sdpa's fused kernel always returns
+        # (attn_output, None) regardless of output_attentions (see
+        # transformers.integrations.sdpa_attention.sdpa_attention_forward), which
+        # would silently break attention-matrix distillation (see
+        # docs/PROJECT_REPORT.md's attention-distillation section).
+        llama_config._attn_implementation = "eager"
         
         self.transformer_blocks = nn.ModuleList(
             [LlamaDecoderLayer(llama_config, layer_idx=i) for i in range(depth)]
@@ -211,8 +217,9 @@ class MicroDiT(nn.Module):
         x: torch.Tensor,
         texts: list[str],
         timestep: torch.Tensor,
-        style_prompt: torch.Tensor | None = None
-    ) -> torch.Tensor:
+        style_prompt: torch.Tensor | None = None,
+        return_attentions: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]:
         device = x.device
         batch_size, seq_len = x.shape[0], x.shape[1]
         
@@ -255,14 +262,68 @@ class MicroDiT(nn.Module):
         attention_mask_4d = key_valid.unsqueeze(1).unsqueeze(2).repeat(1, 1, total_len, 1)
         attention_mask_inverted = (~attention_mask_4d).float() * torch.finfo(x.dtype).min
         
-        for i, block in enumerate(self.transformer_blocks):
-            # Feed through llama block on the unified sequence
-            res = block(x, attention_mask=attention_mask_inverted, position_embeddings=rotary_embed)
-            x = res[0] if isinstance(res, tuple) else res
-        
+        # LlamaDecoderLayer.forward (this transformers version) computes attn_weights
+        # inside self.self_attn but discards them (`hidden_states, _ = self.self_attn(...)`)
+        # before returning. Reading them off self_attn's own return value via a plain
+        # forward hook is *also* unreliable: it depends on the resolved attention
+        # implementation (config._attn_implementation) actually being "eager" at
+        # call time, which was observed to silently NOT hold on a real Kaggle GPU run
+        # despite setting it on the LlamaConfig before constructing the layers (see
+        # docs/PROJECT_REPORT.md's attention-distillation section -- local CPU test
+        # passed, real CUDA run returned None for every layer, and no GPU is
+        # available locally to root-cause the discrepancy further). Recomputing the
+        # attention weights directly from self_attn's own q_proj/k_proj -- the exact
+        # same computation eager_attention_forward does -- sidesteps that dispatch
+        # entirely and is correct regardless of which implementation the module
+        # itself ends up using internally for its own output.
+        captured_attentions: list[torch.Tensor] = []
+        hook_handles = []
+        if return_attentions:
+            def _capture(module, _args, kwargs):
+                hidden_states = kwargs["hidden_states"]
+                position_embeddings = kwargs["position_embeddings"]
+                attention_mask = kwargs.get("attention_mask")
+                b, seq_len_local = hidden_states.shape[0], hidden_states.shape[1]
+                head_dim = module.head_dim
+                q = module.q_proj(hidden_states).view(b, seq_len_local, -1, head_dim).transpose(1, 2)
+                k = module.k_proj(hidden_states).view(b, seq_len_local, -1, head_dim).transpose(1, 2)
+                cos, sin = position_embeddings
+                q, k = apply_rotary_pos_emb(q, k, cos, sin)
+                if getattr(module, "num_key_value_groups", 1) > 1:
+                    k = repeat_kv(k, module.num_key_value_groups)
+                # head_dim**-0.5 is the standard attention scaling factor computed
+                # directly rather than read off module.scaling -- that attribute's
+                # name/presence varies across transformers versions (confirmed: it
+                # exists locally but the version actually installed on the Kaggle
+                # kernel from DiffRhythm2's requirements.txt raised AttributeError
+                # for it), so recomputing the well-defined constant here is more
+                # robust than depending on either version's internal naming.
+                scaling = head_dim ** -0.5
+                scores = (q @ k.transpose(-1, -2)) * scaling
+                if attention_mask is not None:
+                    scores = scores + attention_mask
+                captured_attentions.append(torch.softmax(scores, dim=-1, dtype=torch.float32).to(q.dtype))
+
+            hook_handles = [
+                block.self_attn.register_forward_pre_hook(_capture, with_kwargs=True)
+                for block in self.transformer_blocks
+            ]
+
+        try:
+            for i, block in enumerate(self.transformer_blocks):
+                # Feed through llama block on the unified sequence
+                res = block(x, attention_mask=attention_mask_inverted, position_embeddings=rotary_embed)
+                x = res[0] if isinstance(res, tuple) else res
+        finally:
+            for handle in hook_handles:
+                handle.remove()
+
         # 6. Extract the audio mel portion of the sequence
         x = x[:, text_len:]
-        
+
         # 7. Modulate and project out
         x = self.norm_out(x, c)
-        return self.proj_out(x)
+        out = self.proj_out(x)
+        if return_attentions:
+            return out, captured_attentions, text_len
+        return out

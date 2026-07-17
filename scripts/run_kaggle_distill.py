@@ -18,7 +18,8 @@ from src.integrations.kaggle_auto import (
     write_source_zip,
 )
 
-def _kernel_script_content(epochs: str = "25", batch_size: str = "8", dim: str = "256", depth: str = "4", heads: str = "4", ff_mult: str = "4", alpha_feature: str = "0.5", learning_rate: str = "1e-4") -> str:
+def _kernel_script_content(epochs: str = "25", batch_size: str = "8", dim: str = "256", depth: str = "4", heads: str = "4", ff_mult: str = "4", alpha_feature: str = "0.5", learning_rate: str = "1e-4", beta_attention: str = "0.0", max_records: str | None = None) -> str:
+    max_records_line = f'        "--max-records", "{max_records}",\n' if max_records is not None else ""
     return f'''import os
 import shutil
 import subprocess
@@ -92,11 +93,12 @@ try:
         "--batch-size", "{batch_size}",
         "--learning-rate", "{learning_rate}",
         "--alpha-feature", "{alpha_feature}",
+        "--beta-attention", "{beta_attention}",
         "--dim", "{dim}",
         "--depth", "{depth}",
         "--heads", "{heads}",
         "--ff-mult", "{ff_mult}",
-    ], env=os.environ, check=True)
+{max_records_line}    ], env=os.environ, check=True)
 
     print("DISTILLATION TRAINING COMPLETED SUCCESSFULLY!")
     print("Output model checkpoint saved at: /kaggle/working/distilled_student.pt")
@@ -107,7 +109,7 @@ except Exception as e:
     sys.exit(1)
 '''
 
-def run_kaggle_distillation(epochs: int = 25, batch_size: int = 8, processed_kernel_ref_override: str | None = None, dim: int = 256, depth: int = 4, heads: int = 4, ff_mult: int = 4, alpha_feature: float = 0.5, learning_rate: float = 1e-4) -> None:
+def run_kaggle_distillation(epochs: int = 25, batch_size: int = 8, processed_kernel_ref_override: str | None = None, dim: int = 256, depth: int = 4, heads: int = 4, ff_mult: int = 4, alpha_feature: float = 0.5, learning_rate: float = 1e-4, beta_attention: float = 0.0, max_records: int | None = None) -> None:
     project_root = Path(__file__).resolve().parents[1]
 
     # 0. Load tokens and authenticate
@@ -167,7 +169,7 @@ def run_kaggle_distillation(epochs: int = 25, batch_size: int = 8, processed_ker
     kernel_slug = f"genmusic-distill-{int(time.time())}"
     kernel_ref = f"{username}/{kernel_slug}"
     
-    (kernel_dir / "run_distill.py").write_text(_kernel_script_content(str(epochs), str(batch_size), str(dim), str(depth), str(heads), str(ff_mult), str(alpha_feature), str(learning_rate)), encoding="utf-8")
+    (kernel_dir / "run_distill.py").write_text(_kernel_script_content(str(epochs), str(batch_size), str(dim), str(depth), str(heads), str(ff_mult), str(alpha_feature), str(learning_rate), str(beta_attention), str(max_records) if max_records is not None else None), encoding="utf-8")
 
     # Processed data source: a preprocess-kernel output (kernel_sources, no credentials
     # needed) takes priority; falls back to a pre-existing published Dataset for
@@ -220,9 +222,11 @@ def main():
     parser.add_argument("--heads", type=int, default=4, help="Number of attention heads.")
     parser.add_argument("--ff-mult", type=int, default=4, help="Feed-forward multiplier.")
     parser.add_argument("--alpha-feature", type=float, default=0.5, help="Blend weight: loss = (1-alpha)*loss_velocity + alpha*loss_gt.")
+    parser.add_argument("--beta-attention", type=float, default=0.0, help="Weight of TinyBERT-style attention-matrix distillation loss (0.0 disables it).")
     parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument("--max-records", type=int, default=None, help="Limit training to the first N usable records (for cheap smoke tests).")
     args = parser.parse_args()
-    run_kaggle_distillation(args.epochs, args.batch_size, args.processed_kernel_ref, args.dim, args.depth, args.heads, args.ff_mult, args.alpha_feature, args.learning_rate)
+    run_kaggle_distillation(args.epochs, args.batch_size, args.processed_kernel_ref, args.dim, args.depth, args.heads, args.ff_mult, args.alpha_feature, args.learning_rate, args.beta_attention, args.max_records)
 
 if __name__ == "__main__":
     main()

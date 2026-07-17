@@ -273,6 +273,72 @@ class SelfDiffusionTests(unittest.TestCase):
         self.assertIsNotNone(trainer.from_teacher_mel.weight.grad)
         self.assertGreater(trainer.from_teacher_mel.weight.grad.abs().sum().item(), 0.0)
 
+    def test_attention_distillation_loss_flows_gradient(self) -> None:
+        # Regression/smoke test for TinyBERT-style attention-matrix distillation
+        # (see docs/PROJECT_REPORT.md): with beta_attention > 0, train_epoch must
+        # (a) not crash extracting attention from both sides despite the teacher's
+        # 3-segment [text, clean, noisy] layout vs. the student's 2-segment
+        # [text, noisy] layout, (b) actually populate loss_attention (not silently
+        # skip it), and (c) produce a real, nonzero gradient on student params
+        # through that term specifically.
+        import torch
+        import torch.nn as nn
+        from src.models.dit_transformer import MicroDiT
+        from src.models.text_to_music_diffusion import MusicDiffusionConfig
+
+        class FakeTeacherWithAttention(nn.Module):
+            """Minimal stand-in that mimics DiT.forward's documented contract:
+            accepts output_attentions and returns (output, attn_weights_list,
+            past_key_value), attn_weights_list holding one (B, heads, T, T)
+            tensor per teacher layer -- real softmax outputs (not just
+            correctly-shaped noise), so a genuine MSE gradient exists."""
+            def __init__(self, cond_dim=512, mel_dim=64, heads=4, depth=3):
+                super().__init__()
+                self.text_embed = nn.Embedding(600, cond_dim)
+                self.latent_embed = nn.Sequential(nn.Linear(mel_dim, cond_dim))
+                self.proj_out = nn.Linear(cond_dim, mel_dim)
+                self.q_proj = nn.Linear(cond_dim, cond_dim)
+                self.k_proj = nn.Linear(cond_dim, cond_dim)
+                self.heads = heads
+                self.head_dim = cond_dim // heads
+                self.depth = depth
+
+            def forward(self, x, time, position_ids, style_prompt, attn_mask, output_attentions=False, use_cache=False, past_key_value=None):
+                attn_list = None
+                if output_attentions:
+                    b, seq_len, _ = x.shape
+                    q = self.q_proj(x).view(b, seq_len, self.heads, self.head_dim).transpose(1, 2)
+                    k = self.k_proj(x).view(b, seq_len, self.heads, self.head_dim).transpose(1, 2)
+                    scores = (q @ k.transpose(-1, -2)) / (self.head_dim ** 0.5)
+                    weights = torch.softmax(scores, dim=-1)  # (B, heads, T, T)
+                    attn_list = [weights for _ in range(self.depth)]
+                return self.proj_out(x), attn_list, None
+
+        config = MusicDiffusionConfig(frames_per_chunk=16)
+        student = MicroDiT(config, dim=32, depth=2, heads=2, ff_mult=1, style_dim=512)
+        trainer = KnowledgeDistillationTrainer(
+            teacher_model=FakeTeacherWithAttention(), student_model=student, config=config, optimizer=torch.optim.AdamW(student.parameters(), lr=1e-4),
+            device="cpu", alpha_feature=0.5, parse_lyrics_fn=lambda text: [500, 3, 4, 511], teacher_mel_dim=64,
+            beta_attention=1.0,
+        )
+
+        batch = {
+            "vocal_mel": torch.randn(2, 100, 16),
+            "backing_mel": torch.randn(2, 100, 16),
+            "style_anchor": torch.randn(2, 512),
+            "text": ["xin chao"] * 2,
+        }
+        epoch_losses = trainer.train_epoch([batch])
+
+        self.assertEqual(len(epoch_losses), 1)
+        self.assertIsNotNone(epoch_losses[0]["loss_attention"])
+        self.assertGreaterEqual(epoch_losses[0]["loss_attention"], 0.0)
+        # A real gradient must have reached at least one student transformer
+        # block's attention weights through this new loss term (not just loss_gt/
+        # loss_velocity, which the other test already covers).
+        grad_norms = [p.grad.abs().sum().item() for p in student.transformer_blocks[0].self_attn.parameters() if p.grad is not None]
+        self.assertTrue(grad_norms, "no gradient reached the student's first attention block")
+
     def test_train_distill_raises_when_teacher_unavailable(self) -> None:
         # train-distill must never silently downgrade to ground-truth-only training
         # under the distillation name -- it should raise so the failure is impossible

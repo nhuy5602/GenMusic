@@ -65,6 +65,90 @@ def _resample_time_dimension(x: torch.Tensor, target_len: int) -> torch.Tensor:
     return resized.transpose(1, 2)
 
 
+def _map_student_layer_to_teacher(student_depth: int, teacher_depth: int) -> list[int]:
+    """Uniform-stride layer mapping (student layer i -> teacher layer
+    round(i * (teacher_depth-1) / (student_depth-1))), the same scheme TinyBERT
+    uses to bridge depth-mismatched transformer distillation. The teacher has far
+    more layers (16) than any student config tried here (4/6/8) -- this discards
+    most of the teacher's compositional depth (see docs/PROJECT_REPORT.md's
+    weight-transfer feasibility note, same caveat applies here), but gives each
+    student layer a specific, reproducible teacher layer to match against rather
+    than an arbitrary one."""
+    if student_depth <= 1:
+        return [0]
+    return [round(i * (teacher_depth - 1) / (student_depth - 1)) for i in range(student_depth)]
+
+
+def _audio_self_attention(attn: torch.Tensor | None, audio_start: int) -> torch.Tensor | None:
+    """Slices the (B, heads, T, T) attention matrix down to just the
+    audio/noisy-frame self-attention block (rows and cols >= audio_start),
+    excluding text tokens and (for the teacher) the separate clean-latent
+    stream -- neither has a meaningful counterpart on the other side (student
+    has no clean-latent stream at all, per §4.20/§4.22, and text token counts/
+    identities differ completely between teacher's CN/EN tokenizer and
+    student's XPhoneBERT). Then averages over heads (teacher has 16, student
+    has 4/6/8 -- not comparable head-for-head, see weight-transfer feasibility
+    note on head_dim mismatch) to get a single (B, T_audio, T_audio) map."""
+    if attn is None:
+        return None
+    audio_block = attn[:, :, audio_start:, audio_start:]
+    return audio_block.mean(dim=1)
+
+
+def _resize_attention_map(attn_map: torch.Tensor, target_len: int) -> torch.Tensor:
+    """Bilinear-resizes a (B, T, T) attention map to (B, target_len, target_len)
+    so teacher (T_teacher, ~20 frames at 5 Hz) and student (T_student, ~seq_len
+    frames at 93.75 Hz) maps can be compared despite the different native
+    resolutions -- same rationale as `_resample_time_dimension`, extended to 2
+    dimensions since an attention map is seq x seq, not seq x channel."""
+    return F.interpolate(
+        attn_map.unsqueeze(1), size=(target_len, target_len), mode="bilinear", align_corners=False
+    ).squeeze(1)
+
+
+def _attention_distillation_loss(
+    teacher_attentions: list[torch.Tensor | None],
+    teacher_audio_start: int,
+    student_attentions: list[torch.Tensor | None],
+    student_audio_start: int,
+) -> torch.Tensor | None:
+    """MSE between head-averaged, audio-only self-attention maps at a handful of
+    uniformly-mapped layers (TinyBERT-style attention distillation, see
+    docs/PROJECT_REPORT.md). Returns None if either side produced no usable
+    attention (e.g. a layer's forward hook fired but the attention
+    implementation still returned None for some reason)."""
+    layer_map = _map_student_layer_to_teacher(len(student_attentions), len(teacher_attentions))
+    losses = []
+    for student_idx, teacher_idx in enumerate(layer_map):
+        student_raw = student_attentions[student_idx] if student_idx < len(student_attentions) else None
+        teacher_raw = teacher_attentions[teacher_idx] if teacher_idx < len(teacher_attentions) else None
+        student_map = _audio_self_attention(student_raw, student_audio_start)
+        teacher_map = _audio_self_attention(teacher_raw, teacher_audio_start)
+        if student_map is None or teacher_map is None:
+            # Should not normally fire (student's hook recomputes attention
+            # directly rather than trusting either side's own returned value --
+            # see MicroDiT.forward and docs/PROJECT_REPORT.md's attention-
+            # distillation section for why that was necessary). Kept as a
+            # warning rather than a silent `continue`: if this ever prints, some
+            # layer's tensor came back None/empty for a reason not yet seen, and
+            # loss_attention silently dropping that layer (or degrading to None
+            # entirely if every layer hits this) is exactly the failure mode that
+            # was hard to notice the first time around.
+            print(
+                f"[attn-distill diag] student_layer={student_idx} teacher_layer={teacher_idx} "
+                f"student_raw={'None' if student_raw is None else tuple(student_raw.shape)} "
+                f"teacher_raw={'None' if teacher_raw is None else tuple(teacher_raw.shape)}",
+                flush=True,
+            )
+            continue
+        target_len = student_map.shape[-1]
+        teacher_map_resized = _resize_attention_map(teacher_map, target_len)
+        losses.append(F.mse_loss(student_map, teacher_map_resized.detach()))
+    if not losses:
+        return None
+    return torch.stack(losses).mean()
+
+
 def _build_block_attn_mask(
     batch_size: int,
     text_len: int,
@@ -301,6 +385,7 @@ class KnowledgeDistillationTrainer:
         parse_lyrics_fn=None,
         teacher_mel_dim: int | None = None,
         teacher_block_size: int = 10,
+        beta_attention: float = 0.0,
     ):
         self.teacher = teacher_model.to(device) if teacher_model is not None else None
         self.student = student_model.to(device)
@@ -309,6 +394,12 @@ class KnowledgeDistillationTrainer:
         self.device = device
         self.teacher_block_size = teacher_block_size
         self.parse_lyrics_fn = parse_lyrics_fn
+        # Weight of the TinyBERT-style attention-matrix distillation term (see
+        # docs/PROJECT_REPORT.md) blended additively alongside loss_gt/loss_velocity.
+        # 0.0 (default) disables it entirely -- both the extra teacher/student
+        # forward-hook bookkeeping and the resize/mapping cost are skipped, so
+        # existing runs that don't pass this are unaffected.
+        self.beta_attention = beta_attention
         # If the teacher (or its tokenizer) is unavailable, there is no
         # distillation signal to blend in -- fall back to pure ground-truth CFM.
         self.alpha_feature = 1.0 if (self.teacher is None or parse_lyrics_fn is None) else alpha_feature
@@ -337,9 +428,12 @@ class KnowledgeDistillationTrainer:
     def adapter_parameters(self) -> list[torch.nn.Parameter]:
         return list(self.from_teacher_mel.parameters()) if self.from_teacher_mel is not None else []
 
-    def _teacher_velocity(self, xt: torch.Tensor, x1: torch.Tensor, t: torch.Tensor, texts: list[str], style_prompt: torch.Tensor) -> torch.Tensor | None:
+    def _teacher_velocity(
+        self, xt: torch.Tensor, x1: torch.Tensor, t: torch.Tensor, texts: list[str], style_prompt: torch.Tensor,
+        return_attentions: bool = False,
+    ) -> torch.Tensor | None | tuple[torch.Tensor | None, list[torch.Tensor | None], int]:
         if self.teacher is None or self.parse_lyrics_fn is None:
-            return None
+            return (None, [], 0) if return_attentions else None
         batch_size, seq_len = xt.shape[0], xt.shape[1]
 
         token_ids, token_valid = _tokenize_lyrics_batch(self.parse_lyrics_fn, texts, self.device)
@@ -387,6 +481,12 @@ class KnowledgeDistillationTrainer:
                 token_valid=token_valid
             )
 
+            # output_attentions is only passed when actually needed (not just
+            # `output_attentions=False` unconditionally) so any teacher stand-in
+            # that predates this parameter -- e.g. tests/test_self_diffusion.py's
+            # FakeTeacher, which has no **kwargs catch-all -- keeps working
+            # unchanged on the (unaffected) beta_attention=0.0 path.
+            teacher_kwargs = {"output_attentions": True} if return_attentions else {}
             outputs = self.teacher(
                 x=x,
                 time=time,
@@ -395,8 +495,10 @@ class KnowledgeDistillationTrainer:
                 attn_mask=attn_mask,
                 use_cache=False,
                 past_key_value=None,
+                **teacher_kwargs,
             )
             pred = outputs[0] if isinstance(outputs, tuple) else outputs
+            teacher_attentions = outputs[1] if return_attentions and isinstance(outputs, tuple) and len(outputs) > 1 else []
             teacher_velocity = pred[:, text_len + teacher_seq_len:].detach()  # (B, teacher_seq_len, 64)
 
         # 3. Map the channel dimension from 64 to 100 using trainable adapter
@@ -405,6 +507,12 @@ class KnowledgeDistillationTrainer:
 
         # 4. Upsample the teacher's predicted velocity back to student's original sequence length
         teacher_velocity = _resample_time_dimension(teacher_velocity, seq_len)  # (B, seq_len, 100)
+        if return_attentions:
+            # Teacher's sequence layout is [Text, Clean latent, Noisy latent] (§4.20) --
+            # the noisy-latent self-attention block starts after text_len + T_teacher
+            # (skipping over the clean-latent stream, which the student has no
+            # counterpart for at all).
+            return teacher_velocity, [a.detach() if a is not None else None for a in teacher_attentions], text_len + teacher_seq_len
         return teacher_velocity
 
     def train_epoch(self, dataloader) -> list[dict[str, float | None]]:
@@ -444,12 +552,21 @@ class KnowledgeDistillationTrainer:
 
             self.optimizer.zero_grad(set_to_none=True)
 
+            want_attentions = self.beta_attention > 0.0
+
             # Not wrapped in torch.no_grad() here -- from_teacher_mel (inside
             # _teacher_velocity) is a real trainable adapter and needs gradient
             # tracking; only the frozen teacher's own forward pass is no_grad-scoped.
-            v_teacher = self._teacher_velocity(xt, x1, t, texts, style_anchor)
-
-            v_student = self.student(x=xt, texts=texts, timestep=t, style_prompt=style_anchor)
+            if want_attentions:
+                v_teacher, teacher_attentions, teacher_audio_start = self._teacher_velocity(
+                    xt, x1, t, texts, style_anchor, return_attentions=True,
+                )
+                v_student, student_attentions, student_text_len = self.student(
+                    x=xt, texts=texts, timestep=t, style_prompt=style_anchor, return_attentions=True,
+                )
+            else:
+                v_teacher = self._teacher_velocity(xt, x1, t, texts, style_anchor)
+                v_student = self.student(x=xt, texts=texts, timestep=t, style_prompt=style_anchor)
 
             target_velocity = x1 - x0
             # loss_gt: same frame-weighted-MSE + reconstruction + time/frequency-delta
@@ -488,6 +605,14 @@ class KnowledgeDistillationTrainer:
             else:
                 loss = loss_gt
 
+            loss_attention = None
+            if want_attentions:
+                loss_attention = _attention_distillation_loss(
+                    teacher_attentions, teacher_audio_start, student_attentions, student_text_len,
+                )
+                if loss_attention is not None:
+                    loss = loss + self.beta_attention * loss_attention
+
             loss.backward()
             torch.nn.utils.clip_grad_norm_(list(self.student.parameters()) + self.adapter_parameters(), 1.0)
             self.optimizer.step()
@@ -496,6 +621,7 @@ class KnowledgeDistillationTrainer:
                 "loss": float(loss.detach().cpu()),
                 "loss_gt": float(loss_gt.detach().cpu()),
                 "loss_velocity": float(loss_velocity.detach().cpu()) if loss_velocity is not None else None,
+                "loss_attention": float(loss_attention.detach().cpu()) if loss_attention is not None else None,
             })
 
         return epoch_losses
@@ -517,6 +643,8 @@ def run_distillation_training(
     heads: int = 4,
     ff_mult: int = 4,
     roberta_model: str = "vinai/xphonebert-base",
+    beta_attention: float = 0.0,
+    max_records: int | None = None,
 ) -> dict[str, Any]:
     torch, _, _, DataLoaderClass = _torch()
 
@@ -532,7 +660,8 @@ def run_distillation_training(
     # matters here: it was one of the changes that fixed a measured low-variance
     # ("regression to the mean") output on the train-self side.
     usable_records = _filter_training_records(_read_records(root))
-    mel_mean, mel_std = estimate_vocal_mel_stats(root, usable_records)
+    records_for_stats = usable_records[:max_records] if max_records is not None else usable_records
+    mel_mean, mel_std = estimate_vocal_mel_stats(root, records_for_stats)
     config = replace(config, mel_mean=mel_mean, mel_std=mel_std)
 
     teacher_backbone, teacher_config, teacher_status = _load_teacher(repo_id, teacher_checkpoint_path, selected_device)
@@ -560,7 +689,7 @@ def run_distillation_training(
         config, roberta_model=roberta_model, dim=dim, depth=depth, heads=heads, ff_mult=ff_mult, style_dim=TEACHER_COND_DIM,
     ).to(selected_device)
 
-    dataset = MusicDiffusionDataset(root, config)
+    dataset = MusicDiffusionDataset(root, config, max_records=max_records)
 
     def collate_fn(batch):
         vocal_mels = torch.stack([item["vocal_mel"] for item in batch])
@@ -581,6 +710,7 @@ def run_distillation_training(
         teacher_mel_dim=teacher_mel_dim,
         parse_lyrics_fn=parse_lyrics_fn,
         teacher_block_size=teacher_config.get("block_size", 10) if teacher_config else 10,
+        beta_attention=beta_attention,
     )
     trainable_params = [p for p in model_student.parameters() if p.requires_grad] + trainer.adapter_parameters()
     trainer.optimizer = torch.optim.AdamW(trainable_params, lr=learning_rate)
@@ -604,10 +734,15 @@ def run_distillation_training(
         avg_loss_gt = sum(d["loss_gt"] for d in epoch_losses) / len(epoch_losses)
         velocity_values = [d["loss_velocity"] for d in epoch_losses if d["loss_velocity"] is not None]
         avg_loss_velocity = sum(velocity_values) / len(velocity_values) if velocity_values else None
-        loss_curve.append({"epoch": epoch + 1, "loss": avg_loss, "loss_gt": avg_loss_gt, "loss_velocity": avg_loss_velocity})
+        attention_values = [d["loss_attention"] for d in epoch_losses if d["loss_attention"] is not None]
+        avg_loss_attention = sum(attention_values) / len(attention_values) if attention_values else None
+        loss_curve.append({
+            "epoch": epoch + 1, "loss": avg_loss, "loss_gt": avg_loss_gt,
+            "loss_velocity": avg_loss_velocity, "loss_attention": avg_loss_attention,
+        })
         print(
             f"Epoch [{epoch+1}/{epochs}] complete. Average Loss: {avg_loss:.6f} "
-            f"(loss_gt={avg_loss_gt:.6f}, loss_velocity={avg_loss_velocity})",
+            f"(loss_gt={avg_loss_gt:.6f}, loss_velocity={avg_loss_velocity}, loss_attention={avg_loss_attention})",
             flush=True,
         )
 
@@ -639,6 +774,8 @@ def run_distillation_training(
         "loss_curve": loss_curve,
         "elapsed_seconds": round(time.perf_counter() - start_time, 3),
         "alpha_feature": alpha_feature,
+        "beta_attention": beta_attention,
+        "max_records": max_records,
         "dim": dim,
         "depth": depth,
         "heads": heads,
