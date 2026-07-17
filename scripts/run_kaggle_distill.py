@@ -68,6 +68,11 @@ try:
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", str(source_root / "DiffRhythm2-main/requirements.txt")], check=True)
     # Then install additional dependencies
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "muq"], check=True)
+    # The student's text encoder defaults to XPhoneBERT + text2phonemesequence
+    # (see src/models/dit_transformer.py) -- not covered by DiffRhythm2's
+    # requirements.txt, so train-distill fails with ModuleNotFoundError without
+    # this explicit install.
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "text2phonemesequence"], check=True)
 
     # Add source code and DiffRhythm2-main to PYTHONPATH
     os.environ["PYTHONPATH"] = str(source_root) + os.pathsep + str(source_root / "DiffRhythm2-main") + os.pathsep + os.environ.get("PYTHONPATH", "")
