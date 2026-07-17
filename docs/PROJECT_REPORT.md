@@ -15,10 +15,11 @@ distill), đánh giá chất lượng khách quan (đa-bài, N=6), và làm lạ
 thấy cấu hình từng được chọn là tối ưu (`dim=256`, 25 epoch) thực ra đơn điệu nhất trong 4
 cấu hình đã thử. Trong lúc đó, đồng nghiệp đổi kiến trúc (sequence-concat + XPhoneBERT,
 §4.17) — lần đo đầu tiên trên kiến trúc mới ban đầu tưởng là "đột phá" nhưng hoá ra do BUG
-đo lường (load sai frozen text encoder, đã fix tận gốc, §4.18); đo lại đúng cho kết quả kém
-hơn exp06. Trạng thái hiện tại: chưa có cấu hình nào trên kiến trúc mới vượt được exp06,
-cần một lần chạy cô lập biến kiến trúc (giữ `dim=256/25ep`) để biết kiến trúc mới có thật sự
-tốt hơn không.
+đo lường (load sai frozen text encoder, đã fix tận gốc, §4.18). So sánh cô lập đúng biến
+kiến trúc (§4.19, `dim=256/25ep` khớp exp06): kiến trúc mới không cải thiện loss_gt, **chậm
+hơn 4.4 lần**, và đổi đặc tính output (voiced_ratio thấp hơn, pitch_std/flatness gần thật
+hơn) theo hướng chưa rõ là tốt hơn hay chỉ khác — cần nghe thật để quyết định có đáng chi phí
+4.4x đó không trước khi tiếp tục scale trên kiến trúc mới.
 
 ---
 
@@ -626,6 +627,8 @@ Thứ mục không nằm trong git (`outputs/` được gitignore) — chỉ có
 | `exp11_distill_newloss_alpha08_50ep.wav` | §4.15 — + 50 epoch (thay 25) | 77.0% (1 bài); 85.1% (TB 6 bài) | 0.046 | loss_gt tốt hơn (0.447 vs 0.605) nhưng voiced_ratio thấp hơn exp06 — **CHƯA nghe thử để xác nhận cái nào tự nhiên hơn** |
 | `exp12_distill_alpha08_dim384.wav` | §4.15 — model to hơn (dim=384) | 87.0% (1 bài); 66.0% (TB 6 bài) | 0.037 | loss_gt tốt hơn (0.411) nhưng voiced_ratio TB 6 bài thấp nhất trong nhóm mới — **CHƯA nghe thử** |
 | `exp13_distill_alpha08_dim512.wav` | §4.15 — model to hơn nữa (dim=512) | 81.7% (1 bài); 79.2% (TB 6 bài) | 0.058 | flatness gần vocal thật nhất (0.058 vs 0.056) trong toàn bộ report — **CHƯA nghe thử** |
+| `exp14_distill_seqconcat_dim384_alpha08_40ep.wav` | §4.18 — kiến trúc mới, dim=384/40ep | 2.1% (1 bài, đo ĐÚNG encoder) | 0.062 | Kiến trúc mới scale lớn — kém hơn hẳn exp06, gần như mất pitch (4/6 bài N=6 không có voiced frame) — **CHƯA nghe thử** |
+| `exp15_distill_seqconcat_dim256_alpha08_25ep.wav` | §4.19 — kiến trúc mới, cùng size exp06 | 43.8% (1 bài); 53.5% (TB 6 bài) | 0.033 | So sánh cô lập đúng biến kiến trúc — pitch_std/flatness gần thật hơn exp06 nhưng voiced_ratio thấp hơn, chậm hơn 4.4x — **CHƯA nghe thử** |
 
 *(§4.10 — 75 epoch code cũ — không có file nghe vì chỉ tải log/report lúc đó, không tải
 checkpoint, để tiết kiệm băng thông.)*
@@ -978,6 +981,52 @@ biến nào (kiến trúc/size/epoch/encoder đều đổi cùng lúc, §4.17) l
 một lần chạy nữa giữ `dim=256/25ep` (khớp exp06) trên kiến trúc mới, đo đúng encoder ngay từ
 đầu, mới tách được hiệu ứng kiến trúc khỏi hiệu ứng size/epoch.
 
+### 4.19 So sánh cô lập đúng biến kiến trúc: `dim=256/25ep/alpha=0.8` trên kiến trúc mới vs exp06
+
+Chạy **exp15** (`ddvnam05/genmusic-distill-1784277292`) giữ chính xác cấu hình exp06
+(`dim=256, depth=4, heads=4, alpha=0.8, 25 epoch, batch=4`, cùng dataset 250 bài) nhưng trên
+kiến trúc MỚI (sequence-concatenation + XPhoneBERT + additive conditioning) — lần này đo
+đúng encoder ngay từ đầu (checkpoint tự khai báo `roberta_model` qua fix ở §4.18, xác nhận
+qua log: `arch used: {..., 'roberta_model': 'vinai/xphonebert-base'}`, không cần can thiệp
+tay). Đây là lần so sánh đầu tiên chỉ đổi đúng 1 biến (kiến trúc) giữa hai đường code.
+
+| Chỉ số | exp06 (kiến trúc cũ, mốc §4.14) | exp15 (kiến trúc mới, cùng size/epoch/alpha) | Vocal thật |
+|---|---|---|---|
+| loss_gt cuối | 0.605 | **0.600** (gần như không đổi) | — |
+| wall-clock | ~1240s | **5481s (+342%)** | — |
+| voiced_ratio (TB 6 bài) | 92.4% | **53.5%** (44-60%, đều trên cả 6 bài) | 74.3% |
+| pitch_std_semitones (TB 6 bài) | 0.91 | **1.49** (1.39-1.70, đều — cả 6/6 bài đều có voiced frame, khác hẳn exp14's 2/6) | 6.39 |
+| spectral flatness (TB 6 bài) | 0.011 | **0.034** | 0.056 |
+
+**Kết luận cô lập được (khác hẳn exp14 — lần này sạch, đáng tin)**: ở đúng cùng ngân sách
+step, kiến trúc mới không cải thiện `loss_gt` (gần như y hệt, 0.605→0.600) nhưng **đổi hẳn
+đặc tính output** theo đúng hướng đã thấy ở §4.15-4.16 khi tăng size/epoch trên kiến trúc cũ:
+`voiced_ratio` giảm (92.4%→53.5%) trong khi `pitch_std`/`flatness` đều tiến gần vocal thật
+hơn (0.91→1.49 semitone, 0.011→0.034 flatness) — và **nhất quán trên cả 6/6 bài** (khác
+exp14, nơi 4/6 bài không có voiced frame nào — dấu hiệu exp15 ổn định hơn exp14 nhiều, có
+thể vì giữ đúng size nhỏ/epoch thấp thay vì scale nhiều biến cùng lúc).
+
+**Chi phí thật đáng kể phải tính vào quyết định**: kiến trúc mới chậm hơn cũ **4.4 lần** ở
+cùng cấu hình (5481s vs 1240s) — khả năng do sequence-concatenation làm attention chạy trên
+chuỗi dài hơn (text + mel ghép chung thay vì cộng riêng), cộng thêm chi phí G2P
+(`text2phonemesequence`) chạy trên CPU mỗi batch. Đây là đánh đổi thật cần cân nhắc: cùng một
+lượng epoch giờ tốn gần gấp 5 lần thời gian GPU.
+
+**Tổng hợp 2 điểm dữ liệu trên kiến trúc mới (exp14, exp15) cho tới giờ**: cả hai đều cho
+`voiced_ratio` thấp hơn hẳn kiến trúc cũ ở cùng alpha=0.8, nhưng exp15 (cùng size/epoch với
+exp06) ổn định và có pitch_std/flatness gần thật hơn rõ rệt, còn exp14 (size/epoch lớn hơn
+nhiều, 40ep/dim=384) lại tệ hơn (4/6 bài mất hết voiced frame) — **gợi ý kiến trúc mới có
+thể nhạy với size/epoch theo cách khác kiến trúc cũ**, không đơn giản là "cứ scale lên sẽ tốt
+hơn" như đã quan sát ở §4.15-4.16 cho kiến trúc cũ. Chưa đủ dữ liệu để kết luận chắc — mới có
+2 lần chạy, chưa lặp lại lần nào để loại trừ nhiễu ngẫu nhiên giữa các lần train (đúng bài
+học N=1 đã nêu ở §4.14).
+
+**Vẫn cần nghe thật để đưa ra khuyến nghị cuối cùng**: file
+`outputs/listening_guide/exp15_distill_seqconcat_dim256_alpha08_25ep.wav` đã sẵn sàng, cùng
+điều kiện chuẩn với mọi file khác trong bộ nghe thử — nên nghe cùng lúc với `exp06` và `exp14`
+để so sánh cả 3 hướng (kiến trúc cũ tốt nhất đã biết, kiến trúc mới cùng size, kiến trúc mới
+scale lớn hơn).
+
 ---
 
 ## 5. Kết luận và hướng phát triển
@@ -1031,17 +1080,19 @@ một lần chạy nữa giữ `dim=256/25ep` (khớp exp06) trên kiến trúc 
 
 ### 5.2 Hướng phát triển
 
-- **Ưu tiên cao nhất ngay lúc này (§4.18, ĐÃ ĐÍNH CHÍNH): chạy lại một job trên kiến trúc
-  mới (sequence-concat + XPhoneBERT) giữ đúng `dim=256/25ep` để so trực tiếp với exp06, ĐO
-  ĐÚNG ENCODER ngay từ đầu.** Lần đo đầu tiên của job `dim=384/40ep` báo cáo (sai)
-  `pitch_std_semitones=6.04` (94.5% vocal thật) — hoá ra do dùng nhầm frozen text encoder
-  cũ (`xlm-roberta-base`) để load lại một checkpoint train với encoder mới
-  (`vinai/xphonebert-base`), một lỗi không crash vì encoder đông cứng không lưu trong
-  checkpoint. Đã fix tận gốc (checkpoint giờ tự khai báo `roberta_model` đã train, §4.18).
-  Đo lại đúng encoder cho thấy checkpoint đó thực ra **kém exp06** (voiced_ratio 2.4% vs
-  92.4%, pitch_std 1.58 vs 0.91 — chỉ tính được trên 2/6 bài có voiced frame). Vẫn CHƯA biết
-  kiến trúc mới có tốt hơn không vì size/epoch/encoder đều đổi cùng lúc trong lần chạy đó —
-  cần một lần chạy cô lập (chỉ đổi kiến trúc, giữ mọi thứ khác như exp06) mới trả lời được.
+- **Ưu tiên cao nhất ngay lúc này (§4.19): nghe thử 3 file `exp06`/`exp14`/`exp15`** để
+  quyết định có tiếp tục kiến trúc mới (sequence-concat + XPhoneBERT) hay không. So sánh cô
+  lập đúng biến (exp15, `dim=256/25ep` khớp exp06) cho thấy kiến trúc mới: (a) không cải
+  thiện loss_gt ở cùng ngân sách step (0.605→0.600), (b) **chậm hơn 4.4 lần** cùng cấu hình
+  (5481s vs 1240s — chi phí thật lớn, không miễn phí), (c) giảm voiced_ratio (92.4%→53.5%)
+  nhưng tăng pitch_std/flatness gần vocal thật hơn (0.91→1.49 semitone, 0.011→0.034) — cùng
+  dạng đánh đổi đã thấy khi tăng size/epoch trên kiến trúc cũ (§4.15-4.16), không rõ là cải
+  thiện thật hay chỉ dịch chuyển cùng kiểu thoái hoá sang trục khác. Lần đo đầu (§4.18, đã
+  đính chính) từng nghĩ nhầm là "đột phá" do bug đo lường (load sai frozen text encoder) —
+  bài học: **luôn in ra và kiểm tra tên model encoder thật đang load** sau bất kỳ thay đổi
+  kiến trúc nào liên quan tới encoder/tokenizer trước khi tin số liệu. Chỉ có 2 điểm dữ liệu
+  trên kiến trúc mới (N=1 run/cấu hình) — chưa đủ để kết luận chắc, và chi phí 4.4x khiến
+  việc lặp lại để kiểm chứng cũng tốn quota hơn hẳn trước.
 - **Ưu tiên cao nhất (§4.16): dùng `dim=384` hoặc `dim=512` (không phải `dim=256`) làm mặc
   định tiếp theo, cùng `alpha_feature=0.8`, và tăng epoch khi quota cho phép.** §4.14 từng
   chọn `dim=256/25ep` (exp06) làm "tối ưu" hoàn toàn dựa vào voiced_ratio (92.4%) — nhưng
