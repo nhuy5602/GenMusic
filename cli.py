@@ -49,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     local.add_argument("--device", default=None)
     local.add_argument("--out", required=True)
     local.add_argument("--vocoder", default="vocos", choices=["vocos", "griffinlim"], help="Chọn bộ giải mã spectrogram thành âm thanh.")
-    local.add_argument("--roberta-model", default="xlm-roberta-base", help="Tên model RoBERTa dùng làm Text Encoder.")
+    local.add_argument("--roberta-model", default="vinai/xphonebert-base", help="Tên model RoBERTa dùng làm Text Encoder.")
     local.add_argument("--reference-dataset", default=None, help="Thư mục dataset đã preprocess -- lấy backing_mel + style_anchor thật từ một record để sinh nhạc có điều kiện đúng như lúc train, thay vì mặc định zero-conditioned.")
     local.add_argument("--reference-id", default=None, help="ID record cụ thể trong --reference-dataset (mặc định lấy record đầu tiên).")
 
@@ -93,7 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--checkpoint-every-steps", type=int, default=0)
     train.add_argument("--log-every-steps", type=int, default=10)
     train.add_argument("--progress-file", default=None)
-    train.add_argument("--roberta-model", default="xlm-roberta-base", help="Tên model RoBERTa dùng làm Text Encoder.")
+    train.add_argument("--roberta-model", default="vinai/xphonebert-base", help="Tên model RoBERTa dùng làm Text Encoder.")
     train.add_argument("--dim", type=int, default=256, help="Hidden dim của MicroDiT.")
     train.add_argument("--depth", type=int, default=4, help="Số lớp transformer block.")
     train.add_argument("--heads", type=int, default=4, help="Số attention head.")
@@ -114,6 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     distill.add_argument("--depth", type=int, default=4, help="Số lớp transformer block.")
     distill.add_argument("--heads", type=int, default=4, help="Số attention head.")
     distill.add_argument("--ff-mult", type=int, default=4, help="Hệ số feed-forward.")
+    distill.add_argument("--roberta-model", default="vinai/xphonebert-base", help="Tên model RoBERTa dùng làm Text Encoder.")
 
     normalize = sub.add_parser("normalize-lyrics", help="Chuẩn hóa lyric tiếng Việt.")
     normalize.add_argument("--input", required=True)
@@ -213,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
         report = train_model(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, roberta_model=args.roberta_model, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, frames_per_chunk=args.frames_per_chunk, resume=args.resume, save_every_epoch=args.save_every_epoch, checkpoint_every_steps=args.checkpoint_every_steps, log_every_steps=args.log_every_steps, progress_path=args.progress_file)
     elif args.command == "train-distill":
         from src.training.distill_training import run_distillation_training
-        report = run_distillation_training(args.dataset, args.student_checkpoint, args.teacher_checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, alpha_feature=args.alpha_feature, repo_id=args.repo_id, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult)
+        report = run_distillation_training(args.dataset, args.student_checkpoint, args.teacher_checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, alpha_feature=args.alpha_feature, repo_id=args.repo_id, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, roberta_model=args.roberta_model)
     elif args.command == "normalize-lyrics":
         output = Path(args.out)
         output.parent.mkdir(parents=True, exist_ok=True)

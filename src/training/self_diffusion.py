@@ -449,7 +449,7 @@ def train_model(
     device: str | None = None,
     max_records: int | None = None,
     additional_records: list[dict[str, Any]] | None = None,
-    roberta_model: str = "xlm-roberta-base",
+    roberta_model: str = "vinai/xphonebert-base",
     dim: int = 256,
     depth: int = 4,
     heads: int = 4,
