@@ -52,7 +52,7 @@
 }
 \lstset{style=mystyle}
 
-\def\TITLE{Sinh nhạc từ văn bản}
+\def\TITLE{Xây dựng mô hình sinh ca khúc tiếng Việt từ lời bài hát và gợi ý phong cách}
 \def\AUTHOR{Đàm Việt Anh, Vũ Thùy Linh, Nguyễn Lê Hùng, Vũ Hồng Quang, Đặng Ngọc Huy}
 
 \hypersetup{
@@ -107,41 +107,53 @@
 \hypersetup{pageanchor=false}
 
 % =============================================================
-% TRANG BÌA -- thay các trường trong ngoặc vuông trước khi nộp
+% TRANG BÌA ĐÃ TỐI ƯU -- ĐẠI HỌC BÁCH KHOA HÀ NỘI
 % =============================================================
 \begin{titlepage}
 \thispagestyle{empty}
 \begin{center}
 
-{\textbf{\large{ĐẠI HỌC BÁCH KHOA HÀ NỘI}}}\\[3cm]
-{\textbf{\huge{BÁO CÁO BÀI TẬP LỚN}}}\\[1cm]
-{\textbf{\Large{Sinh nhạc từ văn bản}}}\\[1cm]
+{\textbf{\large{ĐẠI HỌC BÁCH KHOA HÀ NỘI}}}\\[0.2cm]
+{\textbf{\large{TRƯỜNG CÔNG NGHỆ THÔNG TIN VÀ TRUYỀN THÔNG}}}\\[0.5cm]
+% \includegraphics[width=0.15\textwidth]{logo_hust.png}\\[0.5cm]
+\vfill
 
-{\textbf{\large{ĐÀM VIỆT ANH}}}\\
-{\large{20252015M}}\\[0.3cm]
-{\textbf{\large{VŨ THÙY LINH}}}\\
-{\large{20252035M}}\\[0.3cm]
-{\textbf{\large{NGUYỄN LÊ HÙNG}}}\\
-{\large{20252036M}}\\[0.3cm]
-{\textbf{\large{VŨ HỒNG QUANG}}}\\
-{\large{20261114M}}\\[0.3cm]
-{\textbf{\large{ĐẶNG NGỌC HUY}}}\\
-{\large{20261112M}}\\[0.3cm]
+{\textbf{\huge{BÁO CÁO BÀI TẬP LỚN}}}\\[0.3cm]
+{\textbf{\Large{NỀN TẢNG AI TẠO SINH}}}\\[1cm]
 
-{\textbf{\large{Chương trình đào tạo: Thạc sĩ kỹ thuật}}}\\
+{\textbf{\Large{ĐỀ TÀI:}}}\\[0.2cm]
+{\textbf{\Large{Xây dựng mô hình sinh ca khúc tiếng Việt\\ từ lời bài hát và gợi ý phong cách}}}\\[1.5cm]
 
-\vspace{1cm}
-\begin{table}[H]
-\centering
-\resizebox{\textwidth}{!}{%
-\begin{tabular}{ll}
- \multicolumn{1}{c}{\textbf{Giảng viên hướng dẫn:}} & TS. Dương Quang Huy \hspace{0.5cm} \\[0.5cm]
- \multicolumn{1}{l}{\textbf{Trường:}} & Công nghệ thông tin và Truyền thông \hspace{0.5cm} \\ [3cm]
-\multicolumn{2}{c}{\textbf{HÀ NỘI, 07/2026}}
-\end{tabular}%
-}
-\end{table}
 \end{center}
+
+\vfill
+
+% Phần trình bày thông tin Học viên và Giảng viên (chia 2 cột đẹp mắt)
+\noindent
+\begin{minipage}[t]{0.45\textwidth}
+    \textbf{Giảng viên hướng dẫn:}\\
+    TS. Dương Quang Huy\\[1cm]
+    \textbf{Chương trình đào tạo:}\\
+    Thạc sĩ kỹ thuật
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.5\textwidth}
+    \raggedleft
+    \textbf{Học viên thực hiện:}\\
+    Đàm Việt Anh -- 20252015M\\
+    Vũ Thùy Linh -- 20252035M\\
+    Nguyễn Lê Hùng -- 20252036M\\
+    Vũ Hồng Quang -- 20261114M\\
+    Đặng Ngọc Huy -- 20261112M
+\end{minipage}
+
+\vfill
+\vfill
+
+\begin{center}
+{\textbf{\large{HÀ NỘI, 07/2026}}}
+\end{center}
+
 \end{titlepage}
 
 \hypersetup{pageanchor=true}
@@ -153,7 +165,11 @@
 \chapter*{TÓM TẮT}
 \addcontentsline{toc}{chapter}{TÓM TẮT}
 
-Đề tài \textbf{Sinh nhạc từ văn bản} nghiên cứu và phát triển hệ thống trí tuệ nhân tạo tạo sinh bài hát tiếng Việt từ các tín hiệu điều kiện lời ca (văn bản) và phong cách âm nhạc (âm thanh). Hệ thống áp dụng phương pháp chưng cất tri thức (Knowledge Distillation) từ mô hình gốc DiffRhythm2 (Teacher) sang mô hình học sinh MicroDiT (Student) nhỏ gọn hơn, sử dụng cơ chế khớp dòng điều kiện (Conditional Flow Matching - CFM) làm cốt lõi để biến đổi nhiễu Gaussian thành phổ log-mel của giọng hát. Trong quy trình tiền xử lý tự động, đề tài sử dụng Demucs để phân tách giọng hát và nhạc đệm, Whisper để nhận dạng ca từ tiếng Việt kèm mốc thời gian chi tiết, và MuQ-MuLan để trích xuất vector phong cách (Audio Style Anchor) 512 chiều. Nhằm khắc phục rào cản ngôn ngữ của mô hình gốc, đề tài tích hợp bộ mã hóa đa ngôn ngữ XLM-RoBERTa-base giúp biểu diễn hiệu quả ngữ nghĩa lời ca tiếng Việt. Kết quả thực nghiệm cho thấy toàn bộ pipeline từ tiền xử lý, huấn luyện đến sinh thử nghiệm đều vận hành đồng bộ và ổn định. Việc đồng nhất trực tiếp cấu hình Mel của mô hình sinh với đầu vào tự nhiên của Vocos là yếu tố then chốt giúp loại bỏ hiện tượng méo âm và nâng cao vượt trội chất lượng giọng hát tái tạo, khẳng định tính khả thi của hướng tiếp cận chưng cất mô hình dòng chảy đối với âm nhạc bản địa.
+Đề tài tập trung nghiên cứu và phát triển mô hình trí tuệ nhân tạo sinh ca khúc tiếng Việt tự động từ các tín hiệu điều kiện đầu vào gồm lời ca (văn bản) và phong cách âm nhạc (âm thanh). Hệ thống áp dụng phương pháp chưng cất tri thức (Knowledge Distillation) từ mô hình giáo viên (Teacher) DiffRhythm2 sang mô hình học sinh (Student) MicroDiT nhỏ gọn hơn, sử dụng cơ chế khớp dòng điều kiện (Conditional Flow Matching - CFM) làm cốt lõi để biến đổi nhiễu Gaussian thành phổ log-mel của giọng hát.
+
+Trong quy trình tiền xử lý tự động, đề tài tích hợp Demucs để phân tách giọng hát và nhạc đệm, Whisper để nhận dạng và căn lề ca từ tiếng Việt kèm mốc thời gian chi tiết, cùng MuQ-MuLan nhằm trích xuất vector phong cách (Audio Style Anchor) 512 chiều. Nhằm khắc phục rào cản ngôn ngữ và đặc trưng thanh điệu phức tạp của tiếng Việt, đề tài tích hợp bộ mã hóa chuyên dụng XPhoneBERT để trích xuất các vector nhúng âm vị (phoneme embeddings). Giải pháp này giúp mô hình nắm bắt chính xác cấu trúc âm tiết, từ đó tối ưu hóa khả năng phát âm rõ chữ và giữ nguyên nhạc tính tự nhiên của ca từ bản địa.
+
+Kết quả thực nghiệm cho thấy toàn bộ pipeline từ tiền xử lý, huấn luyện đến suy luận đều vận hành đồng bộ và ổn định. Đặc biệt, việc đồng nhất trực tiếp cấu hình Mel của mô hình sinh với đầu vào tự nhiên của Vocos là yếu tố then chốt giúp loại bỏ hiện tượng méo âm, nâng cao vượt trội chất lượng giọng hát tái tạo, đồng thời khẳng định tính khả thi của hướng tiếp cận chưng cất mô hình dòng chảy (flow-based) đối với dữ liệu âm nhạc Việt Nam.
 
 \newpage
 \renewcommand*\contentsname{MỤC LỤC}
@@ -174,8 +190,9 @@
 \fancyhead[R]{\leftmark}
 \fancyfoot[R]{\thepage}
 
+
 % =============================================================
-% CHƯƠNG 1
+% CHƯƠNG 1: GIỚI THIỆU
 % =============================================================
 \chapter{GIỚI THIỆU}
 \label{chapter:introduction}
@@ -183,236 +200,176 @@
 \section{Đặt vấn đề}
 \label{section:problem}
 
-Sự phát triển của Generative AI đang mở rộng hoạt động sáng tạo nội dung từ văn
-bản và hình ảnh sang âm thanh, âm nhạc. Trong bối cảnh đó, sinh nhạc từ văn bản
-được quan tâm vì cho phép chuyển lời mô tả, ca từ hoặc tín hiệu tham chiếu thành
-một kết quả âm thanh mới, qua đó hỗ trợ quá trình phác thảo ý tưởng và sản xuất
-nội dung. Tuy nhiên, âm nhạc không phải là một đối tượng tĩnh mà là sự kết hợp
-của nhiều thành phần diễn tiến đồng thời theo thời gian. Một mô hình sinh giọng
-hát phải nắm bắt nội dung lời, cách phát âm và trường độ của từng âm tiết, đồng
-thời tổ chức chúng theo cao độ, nhịp điệu, âm sắc và hòa âm của phần nhạc đệm.
-Bởi vậy, bài toán không dừng ở việc tạo tín hiệu có đặc điểm giống giọng người mà
-còn đòi hỏi mối quan hệ hợp lý giữa ngôn ngữ và cấu trúc âm nhạc.
+Sinh ca khúc tự động (Song Generation) là một nhánh nghiên cứu nổi bật của Trí tuệ nhân tạo tạo sinh, trong đó tổng hợp giọng hát (Singing Voice Synthesis - SVS) đóng vai trò then chốt. Để tạo ra một ca khúc tự nhiên, hệ thống phải kiểm soát đồng thời nội dung lời ca, cách phát âm, trường độ, cao độ và nhịp điệu, đồng thời tổ chức chúng hài hòa với phần nhạc đệm.
 
-Đối với tiếng Việt, yêu cầu trên gắn trực tiếp với đặc trưng thanh điệu. Cao độ
-trong phát âm góp phần quyết định nghĩa của từ, trong khi cao độ trong bài hát
-lại chịu sự chi phối của giai điệu; mô hình phải dung hòa hai nguồn thông tin để
-lời hát vừa bám nhạc vừa giữ được khả năng nhận biết. Khó khăn này còn liên quan
-đến cách tổ chức dữ liệu huấn luyện. Các bài hát thu thập trong thực tế thường là
-bản phối đã trộn chung giọng hát, nhạc cụ và hiệu ứng, còn phần lời không phải lúc
-nào cũng đi kèm mốc thời gian. Muốn học riêng quá trình sinh vocal, hệ thống trước
-hết phải tách được giọng hát và nhạc đệm, xác định nội dung lời, trích xuất đặc
-trưng phong cách và đưa các tín hiệu về một biểu diễn phổ thống nhất. Như vậy,
-chất lượng của mô hình sinh phụ thuộc không chỉ vào kiến trúc mạng mà còn vào tính
-nhất quán của toàn bộ quy trình chuẩn bị dữ liệu.
+Đối với tiếng Việt, bài toán này càng phức tạp do đặc trưng của một ngôn ngữ đơn âm tiết và giàu thanh điệu. Cao độ phát âm hàng ngày quyết định ngữ nghĩa của từ, trong khi cao độ giọng hát lại bị chi phối bởi giai điệu bài hát. Do đó, mô hình sinh cần có khả năng dung hòa hai nguồn thông tin này để lời ca vừa bám sát nhạc đệm, vừa giữ được sự rõ ràng về mặt ngữ nghĩa. 
 
-Các mô hình âm nhạc quy mô lớn có năng lực biểu diễn mạnh nhưng yêu cầu lượng dữ
-liệu và tài nguyên tính toán đáng kể. Phù hợp với phạm vi môn học, đề tài lựa chọn
-xây dựng một student model gọn hơn, tận dụng các mô hình tiền huấn luyện cho từng
-nhiệm vụ và khảo sát khả năng tiếp nhận tri thức từ DiffRhythm2. Hệ thống được
-định hướng sinh giọng hát tiếng Việt từ ba nguồn điều kiện gồm lời bài hát, phần
-nhạc đệm và embedding phong cách; MicroDiT đảm nhiệm mô hình hóa chuỗi mel, còn
-Conditional Flow Matching cung cấp mục tiêu học quá trình biến đổi từ nhiễu sang
-dữ liệu vocal.
-\section{Mục tiêu và phạm vi đề tài}
-\label{section:objective-scope}
+Bên cạnh rào cản ngôn ngữ, việc tổ chức dữ liệu huấn luyện cũng là một thách thức thực tế. Các bản thu âm thông thường là sản phẩm đã hòa âm phối khí trộn lẫn giọng hát và nhạc cụ, đồng thời phần lời ca hiếm khi đi kèm mốc thời gian chi tiết. Quy trình huấn luyện độc lập bắt buộc phải trải qua các bước tiền xử lý phức tạp: phân tách nguồn âm thanh, căn lề ca từ, trích xuất đặc trưng phong cách và chuẩn hóa tín hiệu. Ngoài ra, việc vận hành các mô hình sinh âm nhạc quy mô lớn đòi hỏi tài nguyên tính toán khổng lồ. Để giải quyết các hạn chế này, đề tài hướng tới giải pháp chưng cất tri thức (Knowledge Distillation) nhằm xây dựng một mô hình nhỏ gọn, kế thừa hiệu quả tri thức từ mô hình nền tảng tiền huấn luyện.
 
-Đề tài hướng tới xây dựng một hệ thống Generative AI tạo biểu diễn giọng hát
-tiếng Việt từ điều kiện văn bản và âm nhạc, được triển khai thành quy trình liên
-tục từ dữ liệu bài hát thô, qua tiền xử lý và huấn luyện, đến mel-spectrogram và
-tín hiệu âm thanh đầu ra.
+\section{Mục tiêu đề tài}
+\label{section:objective}
 
-\subsection{Mục tiêu đề tài}
+Mục tiêu cốt lõi của đề tài là xây dựng hệ thống có khả năng sinh phổ âm thanh giọng hát chất lượng cao từ các khung điều kiện đầu vào gồm: ca từ tiếng Việt, phần nhạc đệm và đặc trưng phong cách âm nhạc. Hệ thống cần giải quyết tốt sự hòa hợp giữa phát âm thanh điệu bản địa và cấu trúc giai điệu của nhạc đệm.
 
-Mục tiêu cốt lõi là thiết kế MicroDiT có khả năng sinh vocal mel-spectrogram từ
-nhiễu Gaussian dưới điều kiện của lời bài hát, backing mel-spectrogram và
-embedding phong cách. XLM-RoBERTa được sử dụng để mã hóa nội dung lời; backing
-mel cung cấp ngữ cảnh nhịp điệu và hòa âm; MuQ-MuLan cung cấp đặc trưng phong
-cách của bản nhạc. Trên cơ sở các điều kiện này, mô hình được huấn luyện bằng
-Conditional Flow Matching để học trường vận tốc đưa phân phối nhiễu tới phân
-phối vocal mel.
+Đồng thời, đề tài hướng tới tối ưu hóa hiệu năng mô hình sinh thông qua phương pháp chưng cất tri thức. Bằng cách thiết kế cơ chế ánh xạ không gian đặc trưng phù hợp, mô hình học sinh nhỏ gọn có thể tiếp nhận hiệu quả các hướng dẫn từ mô hình giáo viên quy mô lớn, từ đó tăng tốc độ suy luận nhưng vẫn bảo toàn chất lượng âm thanh tự nhiên.
 
-Để cung cấp dữ liệu cho mô hình, hệ thống tiếp nhận tệp WAV hoặc MP3, tách giọng
-hát và nhạc đệm bằng Demucs, nhận dạng lời bằng Whisper, trích xuất style
-embedding bằng MuQ-MuLan và lưu các đặc trưng mel theo một cấu trúc thống nhất.
-Vocal, backing, lời và style anchor của cùng một bài hát được liên kết trong từng
-bản ghi để có thể nạp trực tiếp khi huấn luyện. Bên cạnh nhánh học từ dữ liệu
-thật, DiffRhythm2 được tích hợp làm teacher thông qua cầu nối giữa không gian 64
-mel bins và 100 mel bins của student; kết quả sinh cuối cùng được Vocos giải mã
-thành waveform để kiểm tra toàn bộ pipeline.
+\section{Đóng góp đề tài}
+\label{section:scope}
 
-\subsection{Phạm vi đề tài}
+Nghiên cứu tập trung trọng tâm vào thành phần giọng hát tiếng Việt, lấy biểu diễn phổ âm thanh giọng hát làm đầu ra trực tiếp của mô hình sinh. Các đóng góp chính của đề tài bao gồm:
+\begin{itemize}
+    \item Xây dựng hệ thống quy trình tự động tiền xử lý dữ liệu âm thanh thô.
+    \item Triển khai và huấn luyện mạng nơ-ron để dự đoán biểu diễn phổ giọng hát dựa trên kỹ thuật chưng cất tri thức.
+    \item Đánh giá thực nghiệm hiệu năng hệ thống qua các chỉ số kỹ thuật và chất lượng cảm tính.
+\end{itemize}
 
-Nghiên cứu tập trung vào thành phần giọng hát tiếng Việt, với vocal
-mel-spectrogram là đầu ra trực tiếp và phần nhạc đệm được sử dụng làm điều kiện
-tham chiếu. Các mô hình tiền huấn luyện đảm nhiệm những tác vụ chuyên biệt như
-tách nguồn âm thanh, nhận dạng lời, biểu diễn phong cách, mã hóa văn bản và tái
-tạo waveform; phần triển khai chính của đề tài nằm ở việc tổ chức pipeline dữ
-liệu, xây dựng MicroDiT, huấn luyện CFM, tích hợp distillation và thực hiện suy
-luận có điều kiện. Khả năng vận hành của hệ thống được xem xét thông qua hàm mất
-mát huấn luyện, chỉ số kỹ thuật của đường giải mã và các tệp âm thanh tạo ra.
-\section{Định hướng giải pháp}
-\label{section:solution-direction}
-
-Giải pháp được tổ chức thành ba giai đoạn liên kết: chuẩn bị dữ liệu, huấn luyện
-mô hình sinh và tái tạo âm thanh. Ở giai đoạn đầu, HTDemucs tách bản phối thành
-vocal và backing \cite{htdemucs}, Whisper nhận dạng lời tiếng Việt cùng các mốc
-thời gian \cite{whisper}, còn MuQ-MuLan tạo embedding phong cách 512 chiều từ âm
-thanh gốc \cite{muq}. Hai stem được chuyển sang log-mel spectrogram ở 24
-kHz, 100 mel bins, FFT 1024 và hop length 256; mỗi bản ghi sau tiền xử lý liên kết
-phần lời với vocal mel, backing mel và style embedding tương ứng. Việc sử dụng
-chung cấu hình mel ngay từ bước này giúp duy trì sự nhất quán giữa dữ liệu huấn
-luyện, đầu ra của mô hình và đầu vào của vocoder.
-
-Trong giai đoạn huấn luyện, XLM-RoBERTa mã hóa lời bài hát \cite{xlmr}, còn
-MicroDiT tiếp nhận tensor mel đang biến đổi cùng backing mel, đặc trưng lời,
-timestep và style embedding. Các nguồn điều kiện được chiếu về không gian ẩn,
-kết hợp và xử lý qua các Llama decoder blocks để dự đoán trường vận tốc theo thời
-gian. Với Conditional Flow Matching \cite{flowmatching}, từ vocal mel sạch
-$x_1$, hệ thống sinh nhiễu Gaussian $x_0$, lấy $t\in[0,1]$ và tạo mẫu trung gian
-$x_t=(1-t)x_0+tx_1$; vận tốc đích là $x_1-x_0$. Sai số bình phương trung bình giữa
-vận tốc dự đoán và vận tốc đích được dùng để cập nhật mô hình, trong khi quá trình
-suy luận tích phân trường vận tốc theo phương pháp Euler để biến nhiễu ban đầu
-thành vocal mel.
-
-Nhánh chưng cất sử dụng DiffRhythm2 làm teacher với trọng số đóng băng
-\cite{diffrhythm2}. Do teacher làm việc trong không gian 64 mel bins còn student
-sử dụng 100 mel bins, chiều student sang teacher được chuyển bằng nội suy cố định
-$100\rightarrow64$, còn vận tốc teacher được ánh xạ trở lại bằng adapter có học
-$64\rightarrow100$. Khi lấy mẫu, backing mel và style anchor có thể được đọc từ
-một bản ghi tham chiếu đã tiền xử lý để điều kiện suy luận có cùng dạng như lúc
-huấn luyện. Vocal mel đầu ra sau đó được đưa trực tiếp vào Vocos \cite{vocos} và
-lưu thành tệp âm thanh mà không phải nội suy lại trục mel.
-\clearpage
 \section{Bố cục báo cáo}
 \label{section:report-structure}
 
-Phần còn lại của báo cáo được tổ chức như sau:
+Nội dung báo cáo được cấu trúc thành các chương như sau:
+\begin{itemize}
+    \item \textbf{Chương 2 -- Cơ sở lý thuyết:} Trình bày tổng quan các nghiên cứu tiền đề và nền tảng lý thuyết cốt lõi về mô hình sinh âm thanh, cơ chế khớp dòng chảy, kiến trúc mạng nơ-ron, phương pháp chưng cất tri thức và bộ giải mã âm thanh.
+    \item \textbf{Chương 3 -- Thiết kế và xây dựng hệ thống:} Mô tả chi tiết kiến trúc tổng quan của hệ thống đường ống dữ liệu, quy trình tiền xử lý, thiết kế mạng sinh giọng hát, cơ chế huấn luyện và giải pháp chưng cất đặc trưng thích ứng.
+    \item \textbf{Chương 4 -- Thực nghiệm và đánh giá kết quả:} Trình bày thiết lập môi trường, nguồn dữ liệu, các chỉ số đánh giá kỹ thuật, kết quả thử nghiệm tích hợp bộ giải mã âm thanh, đánh giá hệ thống đầu-cuối và hiệu quả của phương pháp chưng cất tri thức.
+    \item \textbf{Chương 5 -- Kết luận và hướng phát triển:} Tổng kết các kết quả đạt được và đề xuất định hướng nghiên cứu tiếp theo nhằm nâng cao chất lượng hệ thống.
+\end{itemize}
 
-\textbf{Chương 2} trình bày các công trình và nền tảng liên quan đến đề tài, bao
-gồm DiffRhythm2, MuQ-MuLan, Conditional Flow Matching, Diffusion Transformer,
-knowledge distillation và neural vocoder Vocos. Những nội dung này tạo cơ sở lý
-thuyết cho việc lựa chọn kiến trúc và các thành phần của hệ thống.
-
-\textbf{Chương 3} trình bày kiến trúc và quá trình xây dựng hệ thống. Nội dung bao
-gồm tổng quan pipeline, chuẩn bị dữ liệu, kiến trúc MicroDiT, huấn luyện
-Conditional Flow Matching, chưng cất tri thức từ DiffRhythm2, quá trình suy luận
-và tái tạo âm thanh.
-
-\textbf{Chương 4} trình bày thiết lập thực nghiệm và kết quả thu được. Báo cáo mô
-tả nguồn số liệu, môi trường thực thi, chỉ số đánh giá, thí nghiệm tương thích
-Vocos, kiểm thử end-to-end, kết quả distillation, tối ưu checkpoint và những vấn
-đề cần tiếp tục hoàn thiện.
-
-\textbf{Chương 5} tổng kết những nội dung đã thực hiện, đánh giá kết quả của hệ
-thống và đề xuất các hướng phát triển tiếp theo cho mô hình sinh bài hát tiếng
-Việt.
-
-Tóm lại, Chương 1 đã trình bày bài toán sinh giọng hát tiếng Việt, mục tiêu và
-phạm vi nghiên cứu, đồng thời giới thiệu định hướng giải pháp dựa trên MicroDiT,
-Conditional Flow Matching và DiffRhythm2. Các chương tiếp theo sẽ lần lượt phân
-tích nền tảng lý thuyết, phương pháp triển khai, kết quả thực nghiệm và hướng
-phát triển của đề tài.
 
 % =============================================================
 % CHƯƠNG 2
 % =============================================================
-\chapter{CÁC NGHIÊN CỨU LIÊN QUAN}
+\chapter{CƠ SỞ LÝ THUYẾT}
 \label{chapter:related}
-
 
 Sinh âm nhạc từ văn bản là bài toán ánh xạ một mô tả ngôn ngữ tự nhiên sang tín hiệu âm thanh có cấu trúc. Khác với sinh một âm thanh sự kiện ngắn, một bài hát phải duy trì đồng thời nội dung ca từ, giai điệu, nhịp, hòa âm, màu sắc nhạc cụ và cấu trúc theo thời gian. Mô hình vì vậy không chỉ tạo tín hiệu hợp lệ, mà còn phải bảo đảm quan hệ giữa câu hát và vùng thời gian tương ứng, đồng thời giữ tính nhất quán trên chuỗi dài.
 
-Các hệ thống hiện đại thường không học trực tiếp trên từng mẫu waveform. Một đoạn 10 giây ở 24~kHz đã chứa 240.000 mẫu, gây chi phí rất lớn cho transformer. Âm thanh do đó được đổi sang biểu diễn nén hơn như token neural codec, latent hoặc mel-spectrogram; mô hình sinh học phân phối của biểu diễn trung gian, sau đó vocoder khôi phục waveform. MusicGen đại diện cho hướng tự hồi quy trên mã codec rời rạc \cite{musicgen}. AudioLDM sử dụng latent diffusion cùng biểu diễn âm thanh--văn bản tương phản \cite{audioldm}. DiffRhythm hướng tới bài hát có lời, kết hợp lyric, phong cách và latent diffusion để sinh đồng thời giọng hát cùng phần đệm \cite{diffrhythm}. Đề tài kế thừa hướng liên tục của DiffRhythm nhưng xây dựng một student nhỏ, huấn luyện bằng Conditional Flow Matching (CFM) và tiếp nhận tri thức từ DiffRhythm2.
+Các hệ thống hiện đại thường không học trực tiếp trên từng mẫu waveform. Một đoạn 10 giây ở 24~kHz đã chứa 240.000 mẫu, gây chi phí rất lớn cho transformer. Âm thanh do đó được đổi sang biểu diễn nén hơn như token neural codec, latent hoặc mel-spectrogram; mô hình sinh học phân phối của biểu diễn trung gian, sau đó vocoder khôi phục waveform. MusicGen đại diện cho hướng tự hồi quy trên mã codec rời rạc \cite{musicgen}. AudioLDM sử dụng latent diffusion cùng biểu diễn âm thanh - văn bản tương phản \cite{audioldm}. DiffRhythm hướng tới bài hát có lời, kết hợp lyric, phong cách và latent diffusion để sinh đồng thời giọng hát cùng phần đệm \cite{diffrhythm}. Đề tài kế thừa hướng liên tục của DiffRhythm nhưng xây dựng một student nhỏ, huấn luyện bằng Conditional Flow Matching (CFM) và tiếp nhận tri thức từ DiffRhythm2.
 
 
-\section{Biểu diễn tần số của tín hiệu với mel-spectrogram}
+\section{Biểu diễn mel-spectrogram của tín hiệu âm thanh}
 
-Mel-spectrogram là biểu diễn tín hiệu trong miền tần số theo thời gian, được sử dụng rộng rãi trong xử lý tiếng nói và âm nhạc vì nó nén waveform thành ma trận hai chiều nhưng vẫn giữ được cấu trúc phổ biến thiên theo thời gian. Thay vì làm việc trực tiếp trên chuỗi mẫu âm thanh, tín hiệu được chia thành các khung ngắn, nhân với cửa sổ phân tích và biến đổi Fourier (STFT). Với tín hiệu rời rạc $x[n]$, STFT tại khung $t$ và tần số $k$ có thể viết dưới dạng:
+Mel-spectrogram là biểu diễn tần số-thời gian phổ biến trong xử lý âm thanh, giúp nén sóng âm (waveform) thành ma trận hai chiều mà vẫn bảo toàn cấu trúc phổ biến thiên theo thời gian. 
+
+Quá trình trích xuất bắt đầu bằng việc chia tín hiệu rời rạc $x[n]$ thành các khung ngắn và áp dụng phép biến biến đổi Fourier thời gian ngắn (STFT) tại khung $t$, tần số $k$:
 \begin{equation}
  X(t,k)=\sum_{n=0}^{N-1} x[n+tH]w[n]\exp\left(-j\frac{2\pi kn}{N}\right),
 \end{equation}
-trong đó $N$ là kích thước FFT, $H$ là hop length và $w[n]$ là cửa sổ phân tích. Phổ công suất $|X(t,k)|^2$ sau đó được chiếu qua một ngân hàng bộ lọc tam giác trên thang mel. Thang mel xuất phát từ nghiên cứu tâm sinh âm học về cảm nhận cao độ của con người, trong đó khoảng cách cảm nhận không tuyến tính theo tần số vật lý \cite{mel}. Cách dùng ngân hàng lọc mel cũng là nền tảng của các đặc trưng MFCC kinh điển trong nhận dạng tiếng nói \cite{mfcc}.
+với $N$ là kích thước FFT, $H$ là hop length và $w[n]$ là cửa sổ phân tích. Phổ công suất $|X(t,k)|^2$ sau đó được chiếu qua ngân hàng bộ lọc tam giác trên thang đo Mel. 
 
-Về mặt tính toán, nếu $A_{r,k}$ là trọng số của bộ lọc mel thứ $r$ tại tần số $k$, mel-spectrogram được xác định bởi:
+Thang đo Mel là một mô hình tâm sinh vật lý đã được kiểm chứng thực nghiệm, phản ánh chính xác cơ chế cảm nhận cao độ phi tuyến tính của tai người \cite{mel}. Nghiên cứu sinh lý học chỉ ra rằng hệ thống thính giác của con người nhạy bén hơn với các thay đổi ở dải tần số thấp và kém nhạy dần ở dải tần số cao. Do đó, việc áp dụng ngân hàng bộ lọc Mel giúp phân bổ độ phân giải tần số một cách tối ưu - dày đặc ở dải âm trầm và thưa dần ở dải âm cao - đồng thời làm nổi bật các đặc trưng âm sắc tiệm cận với nhận thức thực tế của con người \cite{mfcc}. Phổ log-mel tương ứng được tính bởi:
 \begin{equation}
  M(t,r)=\log\left(\epsilon+\sum_k A_{r,k}|X(t,k)|^2\right),
 \end{equation}
-trong đó $\epsilon$ là hằng số nhỏ để tránh log của 0. Phép chiếu mel làm giảm số chiều tần số, nhấn mạnh dải tần mà tai người nhạy hơn và tạo ra miền đặc trưng ổn định hơn cho mô hình học sâu, giữ lại diễn tiến nhịp, cao độ tương đối, âm sắc và cường độ.
+trong đó $A_{r,k}$ là trọng số bộ lọc Mel thứ $r$ tại tần số $k$, và $\epsilon$ là hằng số nhỏ để tránh lỗi logarit của $0$.
 
-\section{Giải mã mel-spectrogram thành dạng sóng với Vocos}
+Mặc dù là đặc trưng tối ưu cho học sâu nhờ tính tương thích sinh học này, việc khôi phục trực tiếp dạng sóng từ mel-spectrogram là một bài toán xấp xỉ ước lượng do sự hao hụt thông tin không thể đảo ngược: (1) loại bỏ hoàn toàn thông tin pha và (2) phép chiếu Mel làm gộp nhiều tần số tuyến tính ở dải cao. 
 
-Trong xử lý tín hiệu âm thanh, quá trình khôi phục hoàn chỉnh và chính xác dạng sóng từ mel-spectrogram là bất khả thi về mặt toán học vì hai lý do nén hao hụt thông tin (lossy compression) cốt lõi: (1) Mel-spectrogram chỉ ghi lại thông tin biên độ và loại bỏ hoàn toàn thông tin pha, khiến tín hiệu không thể tự tái tạo lại một cách chính xác trong miền thời gian. (2) Phép chiếu phổ tuyến tính sang dải bộ lọc Mel là một phép biến đổi phi tuyến tính, gộp nhiều tần số tuyến tính lại với nhau (đặc biệt ở dải tần số cao), khiến ma trận chuyển đổi không thể đảo ngược một cách trực tiếp và duy nhất.  Do đó, quá trình giải mã mel-spectrogram thực chất là một bài toán xấp xỉ ước lượng. Để giải quyết bài toán này, Vocos \cite{vocos} được thiết kế như một kiến trúc neural vocoder dựa trên mạng đối nghịch tạo sinh (GAN) hiệu năng cao. Khác với các thế hệ vocoder truyền thống (như HiFi-GAN hay BigVGAN) phụ thuộc vào chuỗi lớp tích chập chuyển vị để nâng bậc mẫu tín hiệu thô theo cấp số nhân, Vocos giữ nguyên độ phân giải thời gian xuyên suốt các lớp mạng (isotropic architecture). Quá trình chuyển đổi từ đặc trưng ẩn sang dạng sóng âm thanh dạng nén được thực hiện hoàn toàn thông qua phép biến đổi Fourier ngược (iSTFT) với hiệu năng tính toán vượt trội.
+Để giải quyết, Vocos \cite{vocos} được lựa chọn làm neural vocoder thế hệ mới dựa trên mạng GAN. Khác với các kiến trúc truyền thống (như HiFi-GAN hay BigVGAN) sử dụng chuỗi lớp tích chập chuyển vị để nâng bậc mẫu tuần tự, Vocos giữ nguyên độ phân giải thời gian xuyên suốt (isotropic) và tái tạo dạng sóng hiệu quả thông qua phép biến đổi Fourier ngược (iSTFT).
+
+\section{Biểu diễn lời ca bằng XPhoneBERT}
+\label{sec:bieu-dien-loi-ca-xphonebert}
+
+Để tổng hợp giọng hát tự nhiên, hệ thống cần biểu diễn chính xác thông tin ngữ âm từ ca từ. Trong ngôn ngữ học, chữ viết thô được cấu thành từ các \textbf{âm tự} (grapheme - đơn vị chữ viết nhỏ nhất như ``a'', ``b'', hoặc tổ hợp ``ngh''), trong khi cách phát âm thực tế lại được quyết định bởi các \textbf{âm vị} (phoneme - đơn vị âm thanh nhỏ nhất giúp phân biệt nghĩa). 
+
+Đối với tiếng Việt, việc sử dụng trực tiếp chuỗi âm tự bộc lộ nhiều hạn chế do quan hệ bất đối xứng giữa chữ viết và phát âm thực tế. Bảng \ref{tab:vietnamese_consonants} minh họa sự không đồng nhất này thông qua hệ thống phụ âm tiếng Việt, nơi nhiều âm tự khác nhau có thể biểu diễn chung một âm vị ngữ âm học (ví dụ: các âm tự ``c'', ``k'', ``q'' đều phát âm chung âm vị $/k/$, hoặc ``ng'', ``ngh'' đều phát âm chung âm vị $/\eta/$).
+
+Ngoài ra, tiếng Việt là ngôn ngữ giàu thanh điệu; các dấu thanh đóng vai trò là các âm vị siêu đoạn tính điều khiển trực tiếp tần số cơ bản ($F_0$) và đường cong cao độ, nhưng lại chỉ được biểu thị tối giản trên văn bản viết. Do đó, để loại bỏ sự phụ thuộc vào các biến thể chính tả và đưa không gian biểu diễn về gần hơn với miền âm học, ca từ thô $y$ bắt buộc phải được chuyển đổi thành chuỗi âm vị thông qua bộ chuyển đổi tự vị -- âm vị (G2P):
+\begin{equation}
+ p = \operatorname{G2P}(y) = (p_1, p_2, \ldots, p_L),
+ \label{eq:lyric_g2p}
+\end{equation}
+trong đó $p_i$ đại diện cho một đơn vị âm vị và $L$ là độ dài chuỗi kết quả.
+
+\begin{table}[H]
+\centering
+\caption{Ví dụ minh họa sự bất đối xứng giữa âm vị và âm tự trong hệ thống phụ âm tiếng Việt}
+\label{tab:vietnamese_consonants}
+\small
+\renewcommand{\arraystretch}{0.92}
+\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{|c|c|c|l|}
+\hline
+\textbf{STT} & \textbf{Âm vị (Ký hiệu phiên âm)} & \textbf{Âm tự (Chữ viết thể hiện)} & \textbf{Cách phát âm minh họa} \\ \hline
+1  & $/b/$ & b & bờ \\ \hline
+2  & $/k/$ & c, k hoặc q & cờ, ca hoặc quờ \\ \hline
+3  & $/d/$ & đ & đờ \\ \hline
+4  & $/y/$ & g hoặc gh & gờ hoặc ghờ \\ \hline
+5  & $/h/$ & h & hờ \\ \hline
+6  & $/l/$ & l & lờ \\ \hline
+7  & $/m/$ & m & mờ \\ \hline
+8  & $/n/$ & n & nờ \\ \hline
+9  & $/p/$ & p & pờ \\ \hline
+10 & $/z/$ & r & rờ \\ \hline
+11 & $/s/$ & s & sờ \\ \hline
+12 & $/t/$ & t & tờ \\ \hline
+13 & $/v/$ & v & vờ \\ \hline
+14 & $/s/$ & x & xờ \\ \hline
+15 & $/c/$ hoặc $/t/$ & ch & chờ \\ \hline
+16 & $/z/$ & d hoặc gi & dờ \\ \hline
+17 & $/x/$ hoặc $/k^h/$ & kh & khờ \\ \hline
+18 & $/n/$ & ng hoặc ngh & ngờ hoặc nghờ \\ \hline
+19 & $/n/$ & nh & nhờ \\ \hline
+20 & $/f/$ & ph & phờ \\ \hline
+21 & $/t'/ $ hoặc $/t^h/$ & th & thờ \\ \hline
+22 & $/t/$ hoặc $/t\int/$ & tr & trò \\ \hline
+\end{tabular}
+\end{table}
+
+
+
+Tuy nhiên, các âm vị đơn lẻ trong chuỗi mới chỉ là các đặc trưng tĩnh, chưa thể hiện được sự biến thiên liên tục và ảnh hưởng lẫn nhau của các âm tiết đứng cạnh nhau khi hát. Để giải quyết vấn đề này, đề tài sử dụng mô hình ngôn ngữ tiền huấn luyện quy mô lớn \texttt{XPhoneBERT} \cite{xphonebert}. Là một mô hình Masked Language Model hoạt động ở cấp độ âm vị và được tối ưu hóa cho các ngôn ngữ đơn âm tiết, đa thanh điệu như tiếng Việt, mô hình mã hóa đầu vào thành trạng thái ẩn, tích hợp chặt chẽ đặc trưng phát âm ngữ cảnh của toàn bộ câu hát, cung cấp ràng buộc về phát âm để mô hình sinh ở các giai đoạn sau thực hiện căn chỉnh thời gian và tái tạo tiếng hát tròn vành rõ chữ.
 
 \section{Biểu diễn phong cách âm nhạc với MuQ-MuLan}
 
-Mô tả như “pop nhẹ”, “giọng nữ” hay “tempo chậm” không chỉ ra trực tiếp giá trị phổ ở từng thời điểm. MuLan thu hẹp khoảng cách này bằng hai encoder âm thanh và văn bản, được huấn luyện tương phản để đưa các cặp phù hợp tới gần nhau trong một không gian embedding chung \cite{mulan}. Không gian này hỗ trợ truy hồi chéo phương thức, gắn nhãn zero-shot và cung cấp tín hiệu điều kiện giàu ngữ nghĩa hơn danh sách nhãn thể loại cố định.
+Mô hình MuLan \cite{mulan} giải quyết khoảng cách ngữ nghĩa giữa mô tả văn bản (như thể loại, nhịp điệu, tốc độ) và tín hiệu âm thanh thông qua việc huấn luyện tương phản song song hai bộ mã hóa (audio/text encoder) trên cùng một không gian biểu diễn chung. Kế thừa nguyên lý đó, MuQ-MuLan \cite{muq} kết hợp bộ mã hóa âm nhạc tự giám sát MuQ với cơ chế học tương phản đa phương thức để trích xuất vector phong cách toàn cục (style embedding). Trong đề tài này, vector biểu diễn đóng vai trò là "neo phong cách", tóm tắt các đặc trưng phi ngôn ngữ cốt lõi như màu sắc âm thanh, cấu trúc phối khí và nhịp điệu từ bản nhạc tham chiếu.
 
-MuQ là mô hình biểu diễn âm nhạc tự giám sát, học từ dữ liệu không gán nhãn thông qua mục tiêu lượng tử hóa đặc trưng mel \cite{muq}. MuQ-MuLan kết hợp audio encoder MuQ với học tương phản âm nhạc--văn bản để tạo embedding phong cách cho âm nhạc. Trong đề tài, embedding 512 chiều này là neo phong cách toàn cục, tóm tắt màu âm, phối khí và nhịp điệu của bản tham chiếu.
+Để tối ưu hóa quá trình sinh giọng hát, hệ thống phân tách thông tin điều kiện thành hai nhánh độc lập: ngôn ngữ (cục bộ) và phong cách (toàn cục). Bộ mã hóa văn bản chịu trách nhiệm kiểm soát nội dung âm vị học chi tiết theo trục thời gian, trong khi MuQ-MuLan cung cấp định hướng thẩm mỹ âm nhạc tổng thể. Cấu trúc hai nhánh song hành này giải quyết triệt để giới hạn của các phương pháp đơn lẻ: nhánh ngôn ngữ đảm bảo lời ca được phát âm rõ ràng, chính xác; còn nhánh phong cách đảm bảo giọng hát được đặt trong một không gian hòa âm phối khí đồng nhất và tự nhiên.
 
-Ca từ và phong cách được tách thành hai điều kiện. XLM-R giữ thông tin ngôn ngữ theo token, còn MuQ-MuLan mô tả đặc tính âm nhạc toàn cục. Chỉ dùng text encoder sẽ khó phân biệt các câu cùng nội dung nhưng yêu cầu phối khí khác nhau; chỉ dùng embedding âm thanh lại không xác định được câu hát nào tương ứng với thời điểm nào. Cấu trúc hai nhánh phù hợp với bản chất vừa ngôn ngữ vừa âm nhạc của bài toán.
+\section{Mô hình khuếch tán DDPM và Conditional Flow Matching}
+\label{sec:ddpm_cfm}
 
-\section{Mô hình sinh dựa trên DiT và Flow Matching}
+Mô hình khuếch tán và mô hình khớp dòng đều hướng tới việc biến đổi một phân phối nguồn đơn giản (thường là Gaussian) thành phân phối dữ liệu đích, nhưng khác nhau về cách tham số hóa quá trình biến đổi. Trong khi DDPM mô hình hóa quá trình khử nhiễu ngược qua một chuỗi Markov rời rạc \cite{ddpm}, Flow Matching hồi quy trực tiếp trường vector của một dòng chuẩn hóa liên tục (CNF) \cite{flowmatching}. Rectified Flow có liên hệ mật thiết với Flow Matching nhưng nhấn mạnh việc làm thẳng quỹ đạo vận chuyển giữa hai đầu mút \cite{rectifiedflow}.
 
-DiffRhythm được xây dựng cho sinh bài hát đầy đủ từ lời và mô tả phong cách. Công trình dùng latent diffusion để tạo đồng thời giọng hát và nhạc đệm, tránh ghép hai nguồn được sinh độc lập \cite{diffrhythm}. Điều quan trọng đối với đề tài là hợp đồng biểu diễn: lyric token được đặt cùng chuỗi với latent âm thanh, trong khi embedding MuQ-MuLan cung cấp điều kiện phong cách chung.
-
-DiffRhythm2 đề xuất sinh bài hát hiệu quả và có độ trung thực cao bằng Block Flow Matching \cite{diffrhythm2}. Trong đề tài, DiffRhythm2 được dùng làm teacher: student phải khớp không chỉ kích thước tensor mà cả hợp đồng điều kiện gồm lyric token, latent âm thanh, timestep và style embedding. Vì teacher và student dùng số mel bins khác nhau, phần phương pháp xây dựng adapter để chuyển tri thức giữa hai không gian biểu diễn.
-
-Teacher thực tế làm việc trong không gian 64 mel bins, còn student dùng 100 mel bins để tương thích trực tiếp với Vocos 24~kHz. Hai velocity vì thế không thể so sánh bằng phép trừ trực tiếp. Phương pháp tại Chương~\ref{chapter:method} xây dựng ánh xạ có thể học từ 64 sang 100 mel bins, qua đó hình thành quy trình chưng cất có gradient thay vì chỉ dùng teacher như nguồn tham khảo.
-
-\subsection{Diffusion Transformer}
-
-DiT thay backbone U-Net của mô hình khuếch tán bằng transformer hoạt động trên chuỗi latent \cite{dit}. Self-attention cho phép mỗi vị trí quan sát ngữ cảnh xa, phù hợp với âm nhạc vì một frame có thể phụ thuộc vào nhịp, câu nhạc hoặc hợp âm xuất hiện trước đó. Độ rộng, số lớp và số attention heads cũng có thể giảm trực tiếp để tạo student nhỏ mà không thiết kế lại nhiều tầng convolution.
-
-Với $H\in\mathbb{R}^{B\times T\times D}$, self-attention được biểu diễn:
+Trong DDPM, quá trình khuếch tán thuận biến dữ liệu sạch $Z$ thành nhiễu qua $K$ bước. Trạng thái tại bước $k$ bất kỳ được lấy mẫu trực tiếp qua công thức tái tham số hóa \cite{ddpm}:
 \begin{equation}
- \operatorname{Attn}(H)=\operatorname{softmax}\!\left(
- \frac{QK^{\top}}{\sqrt{d_h}}+M\right)V,
+ Z_k = \sqrt{\bar{\alpha}_k} Z + \sqrt{1-\bar{\alpha}_k} \epsilon, \quad \epsilon \sim \mathcal{N}(0, \mathbf{I}),
+ \label{eq:ddpm_reparam}
 \end{equation}
-trong đó $Q=HW_Q$, $K=HW_K$, $V=HW_V$, $d_h$ là kích thước mỗi head và $M$ là attention mask. Student dùng rotary positional embedding cho trục thời gian; timestep flow và style embedding được chiếu về hidden dimension rồi hợp nhất với đặc trưng mel. Đầu ra là velocity có cùng kích thước với mel đầu vào.
-
-\subsection{Conditional Flow Matching}
-
-Flow Matching xây dựng Continuous Normalizing Flow bằng cách hồi quy trường vector trên các đường xác suất đã biết, không cần mô phỏng chuỗi ngẫu nhiên trong từng bước huấn luyện \cite{flowmatching}. Gọi $x_0\sim p_0$ là nhiễu Gaussian và $x_1\sim p_{\mathrm{data}}$ là mel-spectrogram thật. Đề tài chọn đường thẳng:
+trong đó $\bar{\alpha}_k$ là hệ số nhiễu tích lũy. Mạng nơ-ron $\epsilon_\theta$ được huấn luyện để dự đoán nhiễu $\epsilon$ từ trạng thái nhiễu $Z_k$ và điều kiện $c$ bằng cách tối ưu hóa hàm mất mát:
 \begin{equation}
- x_t=(1-t)x_0+t x_1,\qquad t\sim\mathcal{U}(0,1).
- \label{eq:related_path}
+ \mathcal{L}_{\mathrm{DDPM}} = \mathbb{E}_{Z,\epsilon,k} \left[ \left\| \epsilon - \epsilon_\theta(Z_k, k, c) \right\|_2^2 \right].
+ \label{eq:ddpm_loss}
 \end{equation}
-Velocity đích là:
-\begin{equation}
- u_t=\frac{\mathrm{d}x_t}{\mathrm{d}t}=x_1-x_0.
- \label{eq:related_velocity}
-\end{equation}
-Mạng $v_\theta$ được tối ưu bằng:
-\begin{equation}
- \mathcal{L}_{\mathrm{CFM}}=
- \mathbb{E}\left[\left\|v_\theta(x_t,t,c)-(x_1-x_0)\right\|_2^2\right],
- \label{eq:related_cfm}
-\end{equation}
-với $c$ gồm ca từ, backing track và style embedding.
+Hạn chế lớn nhất của DDPM là quá trình suy luận mang tính tuần tự qua $K$ bước rời rạc, gây tốn kém chi phí tính toán khi số bước lấy mẫu lớn \cite{ddpm}.
 
-Khi suy luận, bắt đầu từ $x(0)\sim p_0$ và giải $\mathrm{d}x/\mathrm{d}t=v_\theta(x(t),t,c)$. Mã nguồn dùng Euler solver:
+Để khắc phục nhược điểm này, Flow Matching định nghĩa một dòng liên tục $\{p_t\}_{t\in[0,1]}$ được sinh bởi phương trình vi phân thường (ODE):
 \begin{equation}
- x_{k+1}=x_k+\Delta t\,v_\theta(x_k,t_k,c).
+ \frac{\mathrm{d}Z_t}{\mathrm{d}t} = u_t(Z_t,c), \quad Z_0 \sim p_0, \quad Z_1 \sim p_{\mathrm{data}}(\cdot \mid c).
+ \label{eq:fm_ode}
 \end{equation}
-Solver bậc một dễ kiểm soát và phù hợp nguyên mẫu; số bước tích phân tạo ra đánh đổi giữa thời gian suy luận và độ chính xác quỹ đạo.
-
-\subsection{Chưng cất tri thức cho mô hình flow}
-
-Knowledge distillation truyền thông tin từ teacher lớn sang student nhỏ bằng mục tiêu bắt chước \cite{distillation}. Với mô hình flow, đại lượng tự nhiên để chưng cất là trường velocity: tại cùng trạng thái, timestep và điều kiện, student được yêu cầu tạo hướng dịch chuyển gần teacher.
-
-Gọi $v_T$ là velocity teacher và $A_\phi$ là adapter số mel bins. Mục tiêu teacher-matching là:
+Do việc tính toán trực tiếp trường vector biên $u_t$ là bất khả thi, Conditional Flow Matching (CFM) sử dụng đường nội suy thẳng nối giữa hai đầu mút $Z_0 \sim \mathcal{N}(0, \mathbf{I})$ và $Z_1 \sim p_{\mathrm{data}}$ \cite{flowmatching}. Tại thời điểm $t \sim \mathcal{U}(0,1)$, trạng thái trung gian và vận tốc có điều kiện tương ứng được xác định đơn giản bởi:
 \begin{equation}
- \mathcal{L}_{\mathrm{KD}}=
- \left\|v_\theta(x_t,t,c)-A_\phi(v_T(\tilde{x}_t,t,c))\right\|_2^2.
+ Z_t = (1-t)Z_0 + tZ_1 \quad \Rightarrow \quad \frac{\mathrm{d}Z_t}{\mathrm{d}t} = Z_1 - Z_0.
+ \label{eq:cfm_interpolation}
 \end{equation}
-Mục tiêu cuối trộn tín hiệu teacher với CFM ground truth:
+Mạng $v_\theta$ (nhận điều kiện $c$ gồm lời ca, phong cách và nhạc đệm) được huấn luyện để dự đoán trường vận tốc này thông qua hàm mất mát CFM \cite{flowmatching}:
 \begin{equation}
- \mathcal{L}=(1-\alpha)\mathcal{L}_{\mathrm{KD}}
- +\alpha\mathcal{L}_{\mathrm{CFM}},\quad 0\leq\alpha\leq1.
- \label{eq:related_distill}
+ \mathcal{L}_{\mathrm{CFM}} = \mathbb{E}_{c,Z_1,Z_0,t} \left[ \left\| v_\theta(Z_t, t, c) - (Z_1 - Z_0) \right\|_2^2 \right].
+ \label{eq:cfm_loss}
 \end{equation}
-Ground truth giữ student gắn với dữ liệu, còn teacher cung cấp trường vector của mô hình lớn. Teacher được đóng băng; gradient chỉ cập nhật student và adapter. Hiệu quả chất lượng không thể suy ra chỉ từ việc loss chạy được mà cần thí nghiệm có đối chứng.
+Nghiệm tối ưu của mạng chính là kỳ vọng có điều kiện $v^*(z,t,c) = \mathbb{E}[Z_1 - Z_0 \mid Z_t = z, t, c]$. Khi suy luận, ta chỉ cần giải ODE dọc theo trường vận tốc đã học từ $t=0$ đến $t=1$ bằng các bộ giải như Euler \cite{flowmatching}. Nhờ quỹ đạo vận chuyển gần như thẳng, CFM cho phép giảm tối đa số bước tích phân mà vẫn đảm bảo chất lượng mẫu vượt trội so với các mô hình khuếch tán truyền thống.
+
+\section{Mô hình sinh nhạc DiffRhythm 2}
+\label{sec:diffrhythm2_framework}
+
+\texttt{DiffRhythm 2} là hệ thống end-to-end sinh bài hát đầy đủ cấu trúc (gồm cả giọng hát và nhạc đệm) có độ dài lên tới 210 giây từ ca từ và mô tả phong cách \cite{diffrhythm2}. Hệ thống áp dụng kiến trúc bán tự hồi quy dựa trên cơ chế khớp dòng khối (\textbf{Block Flow Matching - BFM}) \cite{diffrhythm2}. Chuỗi biểu diễn ẩn (latent) được chia thành các khối có độ dài cố định $b=10$ (tương đương 2 giây âm thanh ở tần số latent 5~Hz). Trong nội bộ từng khối, các vị trí được sinh song song không tự hồi quy (NAR) bằng Flow Matching; giữa các khối, mối quan hệ nhân quả được bảo toàn qua attention mask, kết hợp tối ưu khả năng xử lý song song với việc duy trì ngữ cảnh dài hạn \cite{flowmatching, diffrhythm2}.
+
+Để giảm chiều dài chuỗi đầu vào cho Diffusion Transformer, \texttt{DiffRhythm 2} sử dụng một bộ Music VAE hoạt động ở tần số latent cực thấp (5~Hz) \cite{diffrhythm2}. Bộ mã hóa nhận âm thanh đầu vào 24~kHz và bộ giải mã tái tạo âm thanh ở tần số 48~kHz, đạt tỷ lệ nén lần lượt là 4.800 và 9.600 lần \cite{diffrhythm2}. Bộ giải mã tích hợp một khối Transformer bổ trợ cùng backbone BigVGAN \cite{bigvgan}. Toàn bộ Music VAE được tối ưu hóa bằng tổ hợp mel loss đa thang đo và STFT loss đa độ phân giải nhằm giữ nguyên vẹn thông tin của cả giọng hát lẫn nhạc đệm \cite{diffrhythm2}.
+
+Mô hình sinh chính của hệ thống là một Diffusion Transformer xấp xỉ 1 tỷ tham số \cite{dit, diffrhythm2}. Khi dự đoán khối thứ $i$, đầu vào bao gồm latent nhiễu của khối hiện tại $z_t^i$ ($t \sim \mathcal{U}(0,1)$), các khối sạch lịch sử $z^{<i}$ (được gán timestep cố định $1.0$ để phân biệt), cùng chuỗi ca từ và đặc trưng phong cách từ MuQ-MuLan \cite{muq, diffrhythm2}. Công trình cũng giới thiệu hàm mất mát **Stochastic Block REPA** nhằm căn chỉnh biểu diễn ẩn của mô hình sinh với đặc trưng tự giám sát (SSL) toàn cục từ một tập con các khối được lấy mẫu ngẫu nhiên \cite{diffrhythm2}. Sau giai đoạn tiền huấn luyện, mô hình được tinh chỉnh bằng kỹ thuật tối ưu hóa ưu tiên cặp chéo (\textbf{Cross-Pair Preference Optimization - CPPO}) để cân bằng đa mục tiêu giữa tính nhạc, độ khớp lời và chất lượng âm thanh \cite{dpo, diffrhythm2}. Khi suy luận, cấu trúc khối cho phép áp dụng KV cache và FlexAttention, đạt hệ số thời gian thực (RTF) khoảng 0.213 trên cấu hình thử nghiệm của tác giả \cite{diffrhythm2}.
+
+Trong khuôn khổ đề tài này, \texttt{DiffRhythm 2} đóng vai trò là một mô hình Teacher đã được đóng băng tham số. Một mô hình con sẽ được học tín hiệu chuyển giao là trường vận tốc (velocity), bắt chước hướng di chuyển tương tự như trường vector của mô hình Teacher.
+
 
 % =============================================================
 % CHƯƠNG 3
@@ -1086,9 +1043,22 @@ H. Zhu, Y. Zhou, H. Chen, J. Yu, Z. Ma, R. Gu, et al.,
 ``MuQ: Self-Supervised Music Representation Learning with Mel Residual Vector
 Quantization,''
 \textit{IEEE Transactions on Audio, Speech and Language Processing}, 2025.
+
+\bibitem{ddpm}
+J. Ho, A. Jain, and P. Abbeel,
+``Denoising Diffusion Probabilistic Models,''
+\textit{Advances in Neural Information Processing Systems}, vol. 33,
+pp. 6840--6851, 2020.
+
 \bibitem{flowmatching}
 Y. Lipman, R. T. Q. Chen, H. Ben-Hamu, M. Nickel, and M. Le,
 ``Flow Matching for Generative Modeling,''
+\textit{International Conference on Learning Representations}, 2023.
+
+\bibitem{rectifiedflow}
+X. Liu, C. Gong, and Q. Liu,
+``Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified
+Flow,''
 \textit{International Conference on Learning Representations}, 2023.
 
 \bibitem{dit}
@@ -1109,10 +1079,27 @@ for High-Quality Audio Synthesis,''
 \textit{International Conference on Learning Representations}, vol. 2024,
 pp. 25719--25733, 2024.
 
+\bibitem{bigvgan}
+S.-g. Lee, W. Ping, B. Ginsburg, B. Catanzaro, and S. Yoon,
+``BigVGAN: A Universal Neural Vocoder with Large-Scale Training,''
+\textit{International Conference on Learning Representations}, 2023.
+
+\bibitem{dpo}
+R. Rafailov, A. Sharma, E. Mitchell, S. Ermon, C. D. Manning, and C. Finn,
+``Direct Preference Optimization: Your Language Model Is Secretly a Reward
+Model,''
+\textit{Advances in Neural Information Processing Systems}, vol. 36, 2023.
+
 \bibitem{xlmr}
 A. Conneau et al.,
 ``Unsupervised Cross-lingual Representation Learning at Scale,''
 \textit{Proceedings of ACL}, pp. 8440--8451, 2020.
+
+\bibitem{xphonebert}
+L. T. Nguyen, T. Pham, and D. Q. Nguyen,
+``XPhoneBERT: A Pre-trained Multilingual Model for Phoneme Representations for
+Text-to-Speech,''
+arXiv preprint arXiv:2305.19709, 2023.
 
 \bibitem{whisper}
 A. Radford et al.,
