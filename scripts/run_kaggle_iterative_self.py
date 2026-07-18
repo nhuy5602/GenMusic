@@ -25,6 +25,7 @@ from src.integrations.kaggle_auto import (
     kaggle_access_token,
     kaggle_auth_available,
     kaggle_auth_environment,
+    kaggle_kernel_complete,
     load_kaggle_api_tokens,
     resolve_kaggle_username,
     write_source_zip,
@@ -626,9 +627,7 @@ def main() -> None:
     if args.resume_kernel_ref:
         refs_to_check.append(args.resume_kernel_ref)
     for ref in refs_to_check:
-        status_result = _run_cli(cli, ["kernels", "status", ref], kaggle_env, timeout=120)
-        status = (status_result.stdout + status_result.stderr).lower()
-        if status_result.returncode != 0 or "complete" not in status:
+        if not kaggle_kernel_complete(ref):
             raise RuntimeError(f"Required kernel is not complete: {ref}")
 
     resume_dataset_ref = args.resume_dataset_ref.strip()

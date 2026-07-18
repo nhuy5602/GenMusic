@@ -348,10 +348,10 @@ def stage_text_to_music_job(*, text: str, output_root: str | Path, duration_seco
         config.checkpoint_kernel_ref,
         config.username,
     )
-    backing_kernel_ref = resolve_backing_kernel_ref(
-        config.backing_kernel_ref,
-        config.username,
-    )
+    # The upgraded checkpoint predicts the full mix directly. Attaching a
+    # backing kernel here is both redundant and misleading because the web
+    # generation script intentionally does not perform a second backing mix.
+    backing_kernel_ref = None
     kernel_ref = f"{username}/{kernel_slug}"
     request_dataset_url = _dataset_url(request_dataset_ref)
     kernel_url = f"https://www.kaggle.com/code/{kernel_ref}" if username != "YOUR_KAGGLE_USERNAME" else ""
@@ -386,7 +386,7 @@ def stage_text_to_music_job(*, text: str, output_root: str | Path, duration_seco
     _write_source_zip(dataset_dir / "genmusic_vn_source.zip")
     (dataset_dir / "dataset-metadata.json").write_text(json.dumps({"title": request_dataset_slug, "id": request_dataset_ref, "licenses": [{"name": "other"}], "subtitle": "Request cho model GenMusic.", "description": "Private request dataset for the GenMusic conditional diffusion model."}, ensure_ascii=False, indent=2), encoding="utf-8")
     (kernel_dir / "run_genmusic.py").write_text(_kernel_script(request_dataset_slug), encoding="utf-8")
-    (kernel_dir / "kernel-metadata.json").write_text(json.dumps({"id": kernel_ref, "title": kernel_slug, "code_file": "run_genmusic.py", "language": "python", "kernel_type": "script", "is_private": "true", "enable_gpu": "true", "enable_internet": "true", "machine_shape": config.machine_shape, "dataset_sources": [request_dataset_ref], "competition_sources": [], "kernel_sources": [checkpoint_kernel_ref, backing_kernel_ref], "model_sources": []}, ensure_ascii=False, indent=2), encoding="utf-8")
+    (kernel_dir / "kernel-metadata.json").write_text(json.dumps({"id": kernel_ref, "title": kernel_slug, "code_file": "run_genmusic.py", "language": "python", "kernel_type": "script", "is_private": "true", "enable_gpu": "true", "enable_internet": "true", "machine_shape": config.machine_shape, "dataset_sources": [request_dataset_ref], "competition_sources": [], "kernel_sources": [checkpoint_kernel_ref], "model_sources": []}, ensure_ascii=False, indent=2), encoding="utf-8")
     commands = _commands(dataset_dir, kernel_dir, download_dir, kernel_ref)
     (job_dir / "run_commands.ps1").write_text("\n".join(commands) + "\n", encoding="utf-8")
     state = {
@@ -420,8 +420,8 @@ def stage_text_to_music_job(*, text: str, output_root: str | Path, duration_seco
         "commands": commands,
         "messages": [
             f"Checkpoint cố định: {checkpoint_kernel_ref}.",
-            f"Backing stem: {backing_kernel_ref}.",
-            "Job chỉ generate và mix; không train lại theo từng request.",
+            "Checkpoint sinh full-mix trực tiếp; không cộng backing lần hai.",
+            "Job chỉ generate; không train lại theo từng request.",
         ],
         "history": [],
         "generation_backend": "genmusic-vn-self-diffusion",
@@ -446,10 +446,7 @@ def submit_text_to_music_job(*, text: str, output_root: str | Path = "outputs", 
         state["status"] = "needs_setup"
         _write_state(state)
         return state
-    for label, ref in (
-        ("checkpoint", state["checkpoint_kernel_ref"]),
-        ("backing", state["backing_kernel_ref"]),
-    ):
+    for label, ref in (("checkpoint", state["checkpoint_kernel_ref"]),):
         if not kaggle_kernel_complete(ref):
             return _fail(
                 state,
@@ -662,7 +659,12 @@ def kaggle_kernel_complete(kernel_ref: str) -> bool:
     cli = kaggle_cli_command()
     if cli is None or kernel_ref.startswith("YOUR_KAGGLE_USERNAME/"):
         return False
-    result = _run(cli + ["kernels", "status", kernel_ref], timeout=120)
+    access_token = kaggle_access_token()
+    result = (
+        _modern_kernel_status(kernel_ref, access_token)
+        if access_token
+        else _run(cli + ["kernels", "status", kernel_ref], timeout=120)
+    )
     status_text = f"{result['stdout']}\n{result['stderr']}".lower()
     return result["returncode"] == 0 and "complete" in status_text
 
@@ -900,7 +902,9 @@ def _dataset_url(dataset_ref: str) -> str:
     return f"https://www.kaggle.com/datasets/{dataset_ref}" if not dataset_ref.startswith("YOUR_KAGGLE_USERNAME/") else ""
 
 
-def _kernel_url(kernel_ref: str) -> str:
+def _kernel_url(kernel_ref: str | None) -> str:
+    if not kernel_ref:
+        return ""
     return (
         f"https://www.kaggle.com/code/{kernel_ref}"
         if not kernel_ref.startswith("YOUR_KAGGLE_USERNAME/")
@@ -946,19 +950,6 @@ if not checkpoint_candidates:
     raise RuntimeError("Checkpoint kernel is missing self_all_parts.pt.")
 checkpoint = max(checkpoint_candidates, key=lambda path: path.stat().st_size)
 
-backing_dataset = None
-for records_path in Path("/kaggle/input").rglob("records.jsonl"):
-    try:
-        record = json.loads(next(line for line in records_path.read_text(encoding="utf-8").splitlines() if line.strip()))
-    except (OSError, StopIteration, json.JSONDecodeError):
-        continue
-    backing_path = record.get("backing_mel_path")
-    if backing_path and (records_path.parent / backing_path).exists():
-        backing_dataset = records_path.parent
-        break
-if backing_dataset is None:
-    raise RuntimeError("Backing kernel is missing a usable records.jsonl/backing_mel_path.")
-
 source_root = Path("/kaggle/working/GenMusic")
 source_zip = next(input_root.rglob("genmusic_vn_source.zip"), None)
 source_dir = next(input_root.rglob("genmusic_vn_source"), None)
@@ -983,15 +974,12 @@ command = [
     "--steps", str(request["diffusion_steps"]),
     "--guidance-scale", str(request["guidance_scale"]),
     "--pronunciation-prior-strength", str(request["pronunciation_prior_strength"]),
-    "--reference-dataset", str(backing_dataset),
     "--no-reference-style",
-    "--mix-backing",
-    "--backing-to-vocal-rms", str(request["backing_to_vocal_rms"]),
     "--vocoder", "vocos",
     "--device", "cuda",
     "--out", str(output),
 ]
-print("Generation-only web job:", " ".join(command), flush=True)
+print("Generation-only full-mix web job:", " ".join(command), flush=True)
 subprocess.run(command, cwd=source_root, check=True)
 output.joinpath("request.json").write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
 '''

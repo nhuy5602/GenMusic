@@ -12,12 +12,16 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from src.integrations.kaggle_auto import DEFAULT_MODEL, KaggleJobConfig, refresh_kaggle_job, submit_text_to_music_job
 from src.evaluation.project_metrics import build_project_report
+from src.models.text_to_music_diffusion import estimate_minimum_lyric_duration
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 WEB_ROOT = PROJECT_ROOT / "web"
 OUTPUT_ROOT = PROJECT_ROOT / "outputs"
 SUBMISSION_LOCK = threading.Lock()
+MAX_REQUEST_BYTES = 64 * 1024
+MAX_LYRIC_CHARACTERS = 8_000
+MAX_GENRE_CHARACTERS = 512
 
 
 class GenMusicHandler(BaseHTTPRequestHandler):
@@ -83,19 +87,32 @@ class GenMusicHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            length = int(self.headers.get("content-length", "0"))
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            payload = self._read_json_payload()
+            text = _required_string(payload, "text", max_length=MAX_LYRIC_CHARACTERS)
+            if estimate_minimum_lyric_duration(text) > 120:
+                raise ValueError(
+                    "Lời bài hát quá dài cho giới hạn 120 giây. Vui lòng rút gọn nội dung."
+                )
+            duration_seconds = _duration_seconds(payload.get("duration_seconds", 30))
+            genre = _optional_string(
+                payload, "genre", max_length=MAX_GENRE_CHARACTERS
+            )
+            model = _optional_string(payload, "model", max_length=256) or DEFAULT_MODEL
+            checkpoint_ref = _optional_string(
+                payload, "checkpoint_ref", max_length=256
+            )
+            backing_ref = _optional_string(payload, "backing_ref", max_length=256)
             job = submit_text_to_music_job(
-                text=payload.get("text", ""),
+                text=text,
                 output_root=OUTPUT_ROOT,
-                duration_seconds=int(payload.get("duration_seconds", 30)),
-                genre=payload.get("genre") or None,
+                duration_seconds=duration_seconds,
+                genre=genre,
                 config=KaggleJobConfig(
-                    model=payload.get("model") or DEFAULT_MODEL,
+                    model=model,
                     submit=True,
                     wait=False,
-                    checkpoint_kernel_ref=payload.get("checkpoint_ref") or None,
-                    backing_kernel_ref=payload.get("backing_ref") or None,
+                    checkpoint_kernel_ref=checkpoint_ref,
+                    backing_kernel_ref=backing_ref,
                 ),
             )
             self._send_json(job)
@@ -103,6 +120,26 @@ class GenMusicHandler(BaseHTTPRequestHandler):
             self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         finally:
             SUBMISSION_LOCK.release()
+
+    def _read_json_payload(self) -> dict:
+        raw_length = self.headers.get("content-length")
+        if raw_length is None:
+            raise ValueError("Thiếu Content-Length cho request JSON.")
+        try:
+            length = int(raw_length)
+        except ValueError as exc:
+            raise ValueError("Content-Length không hợp lệ.") from exc
+        if length <= 0:
+            raise ValueError("Request JSON đang trống.")
+        if length > MAX_REQUEST_BYTES:
+            raise ValueError("Request JSON vượt quá dung lượng cho phép.")
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("Request JSON không hợp lệ.") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("Payload JSON phải là một object.")
+        return payload
 
     def log_message(self, format: str, *args) -> None:
         print(f"{self.address_string()} - {format % args}")
@@ -134,6 +171,43 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _required_string(payload: dict, key: str, *, max_length: int) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str):
+        raise ValueError(f"{key} phải là chuỗi.")
+    value = value.strip()
+    if not value:
+        raise ValueError("Văn bản input đang trống.")
+    if len(value) > max_length:
+        raise ValueError(f"{key} vượt quá {max_length} ký tự.")
+    return value
+
+
+def _optional_string(
+    payload: dict, key: str, *, max_length: int
+) -> str | None:
+    value = payload.get(key)
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{key} phải là chuỗi.")
+    value = value.strip()
+    if len(value) > max_length:
+        raise ValueError(f"{key} vượt quá {max_length} ký tự.")
+    return value or None
+
+
+def _duration_seconds(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("duration_seconds phải là số nguyên từ 4 đến 120.")
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError("duration_seconds phải là số nguyên từ 4 đến 120.")
+    duration = int(value)
+    if not 4 <= duration <= 120:
+        raise ValueError("duration_seconds phải nằm trong khoảng 4 đến 120.")
+    return duration
 
 
 def main(argv: list[str] | None = None) -> int:

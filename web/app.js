@@ -50,6 +50,11 @@ form.addEventListener("submit", async (event) => {
   } catch (error) {
     statusPill.textContent = "Lỗi";
     jobBox.textContent = error.message;
+    audioSlot.textContent = "Không có audio vì request chưa được gửi.";
+    lyricsOutput.textContent = "Không thể tạo LRC từ input hiện tại.";
+    warningSlot.textContent = error.message;
+    warningSlot.hidden = false;
+    drawWave("failed");
     setGenerating(false);
   }
 });
@@ -69,7 +74,6 @@ function renderJob(job) {
     "Model: " + (job.model || MODEL),
     "Thời lượng: " + (job.duration_seconds || "-") + " giây",
     "Checkpoint: " + (job.checkpoint_kernel_ref || "-"),
-    "Backing: " + (job.backing_kernel_ref || "-"),
     "Kernel: " + (job.kernel_ref || "-"),
     "",
     ...(job.messages || []),
@@ -90,7 +94,6 @@ function renderKaggleLinks(job) {
   kaggleLinks.innerHTML = "";
   const links = [
     ["Mở checkpoint Kaggle", job.checkpoint_url],
-    ["Mở backing Kaggle", job.backing_url],
     ["Mở kernel Kaggle", job.kernel_url],
   ];
   for (const [label, url] of links) {
@@ -106,19 +109,37 @@ function renderKaggleLinks(job) {
 
 function renderAudio(job) {
   const audioUrl = job.mp3_url || job.wav_url;
-  audioSlot.innerHTML = audioUrl ? '<audio controls src="' + audioUrl + '"></audio>' : "Audio sẽ xuất hiện sau khi job hoàn tất.";
+  audioSlot.replaceChildren();
+  if (!audioUrl) {
+    audioSlot.textContent = "Audio sẽ xuất hiện sau khi job hoàn tất.";
+    return;
+  }
+  const audio = document.createElement("audio");
+  audio.controls = true;
+  audio.src = audioUrl;
+  audioSlot.appendChild(audio);
 }
 
 function renderDownloads(job) {
-  const links = [];
-  if (job.mp3_url) links.push('<a href="' + job.mp3_url + '" download>Tải MP3</a>');
-  if (job.wav_url) links.push('<a href="' + job.wav_url + '" download>Tải WAV</a>');
-  if (job.lrc_url) links.push('<a href="' + job.lrc_url + '" download>Tải LRC</a>');
-  downloads.innerHTML = links.join("");
+  downloads.replaceChildren();
+  const links = [
+    ["Tải MP3", job.mp3_url],
+    ["Tải WAV", job.wav_url],
+    ["Tải LRC", job.lrc_url],
+  ];
+  for (const [label, url] of links) {
+    if (!url) continue;
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "";
+    anchor.textContent = label;
+    downloads.appendChild(anchor);
+  }
 }
 
 async function pollKaggle(runId) {
   const pollId = ++activePollId;
+  let consecutiveErrors = 0;
   setGenerating(true, "Đang tạo và mix...");
   for (let index = 0; index < 120; index += 1) {
     await new Promise((resolve) => setTimeout(resolve, 15000));
@@ -127,16 +148,24 @@ async function pollKaggle(runId) {
       const response = await fetch("/api/kaggle/status?run_id=" + encodeURIComponent(runId));
       const job = await response.json();
       if (!response.ok || job.error) throw new Error(job.error || "Không đọc được trạng thái job");
+      consecutiveErrors = 0;
+      warningSlot.hidden = true;
       renderJob(job);
       if (["complete", "failed", "needs_setup"].includes(job.status)) {
         setGenerating(false);
         return;
       }
     } catch (error) {
-      statusPill.textContent = "Lỗi";
-      jobBox.textContent = error.message;
-      setGenerating(false);
-      return;
+      consecutiveErrors += 1;
+      warningSlot.textContent = `Mất kết nối tạm thời (${consecutiveErrors}/3): ${error.message}`;
+      warningSlot.hidden = false;
+      statusPill.textContent = consecutiveErrors < 3 ? "Đang thử lại" : "Lỗi";
+      if (consecutiveErrors >= 3) {
+        jobBox.textContent = error.message;
+        setGenerating(false);
+        drawWave("failed");
+        return;
+      }
     }
   }
   setGenerating(false);

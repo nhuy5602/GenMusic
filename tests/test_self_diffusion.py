@@ -208,7 +208,7 @@ class SelfDiffusionTests(unittest.TestCase):
             self.assertEqual(state["backend"], "genmusic-vn-self-diffusion")
             self.assertEqual(state["model"], DEFAULT_MODEL)
             self.assertEqual(state["checkpoint_kernel_ref"], "alice/checkpoint")
-            self.assertEqual(state["backing_kernel_ref"], "alice/backing")
+            self.assertIsNone(state["backing_kernel_ref"])
             self.assertIn("request_dataset_ref", state)
             self.assertIn("checkpoint_url", state)
             self.assertIn("backing_url", state)
@@ -226,10 +226,10 @@ class SelfDiffusionTests(unittest.TestCase):
             self.assertIn("genmusic_vn_source.zip", script)
             self.assertNotIn("train-self", script)
             self.assertIn("--pronunciation-prior-strength", script)
-            self.assertIn("--mix-backing", script)
+            self.assertNotIn("--mix-backing", script)
             self.assertIn("self_all_parts.pt", script)
             self.assertIn('rglob("request.json")', script)
-            self.assertIn("records.jsonl", script)
+            self.assertNotIn("records.jsonl", script)
             self.assertIn("copytree", script)
             self.assertNotIn("make-random-dataset", script)
             self.assertNotIn("git clone", script.lower())
@@ -237,7 +237,7 @@ class SelfDiffusionTests(unittest.TestCase):
             self.assertEqual(metadata["dataset_sources"], [state["request_dataset_ref"]])
             self.assertEqual(
                 metadata["kernel_sources"],
-                ["alice/checkpoint", "alice/backing"],
+                ["alice/checkpoint"],
             )
 
     def test_rms_backing_mix_keeps_vocal_forward_and_prevents_clipping(self) -> None:
