@@ -13,6 +13,11 @@ try:
 except ImportError:  # Optional for the fast full-mix preprocessing mode (--skip-asr).
     whisper = None
 
+try:
+    from transformers import pipeline as hf_asr_pipeline
+except ImportError:  # Only needed for --whisper-model <huggingface-repo-id> (see _is_hf_model_ref).
+    hf_asr_pipeline = None
+
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from src.models.text_to_music_diffusion import MusicDiffusionConfig, compute_mel_spectrogram
 
@@ -155,6 +160,16 @@ def run_demucs_batch(audio_paths: list[Path], output_dir: Path, device: str = "a
     return False
 
 
+def _is_hf_model_ref(whisper_model_name: str) -> bool:
+    """A HuggingFace hub repo id ("owner/name") vs. an openai-whisper builtin
+    size name ("base", "small", ...). Lets a Vietnamese-lyrics-specialized
+    fine-tune (e.g. xyzDivergence/whisper-small-vietnamese-lyrics-transcription,
+    fine-tuned on ~550h of zingmp3.vn songs, WER 30.7%) be selected via the
+    same --whisper-model flag with no new CLI surface.
+    """
+    return "/" in whisper_model_name
+
+
 def process_file(
     audio_path: Path,
     output_dir: Path,
@@ -165,6 +180,7 @@ def process_file(
     transcribe: bool = True,
     demucs_device: str = "auto",
     device: str = "cpu",
+    whisper_backend: str = "openai",
 ) -> dict:
     sample_id = audio_path.stem
     print(f"\n==================== PROCESSING {sample_id} ====================", flush=True)
@@ -230,31 +246,54 @@ def process_file(
 
         if transcribe and whisper_model is not None:
             print("-> Transcribing lyrics using Whisper ASR...", flush=True)
-            asr_res = whisper_model.transcribe(
-                str(vocals_wav),
-                language="vi",
-                word_timestamps=True,
-                fp16=(str(next(whisper_model.parameters()).device).startswith("cuda")),
-            )
-            lyrics = asr_res["text"].strip()
-            lyric_segments = [
-                {
-                    "start": round(float(segment.get("start", 0.0)), 3),
-                    "end": round(float(segment.get("end", 0.0)), 3),
-                    "text": str(segment.get("text", "")).strip(),
-                    "words": [
-                        {
-                            "start": round(float(word.get("start", segment.get("start", 0.0))), 3),
-                            "end": round(float(word.get("end", segment.get("end", 0.0))), 3),
-                            "word": str(word.get("word", "")).strip(),
-                        }
-                        for word in segment.get("words", [])
-                        if str(word.get("word", "")).strip()
-                    ],
-                }
-                for segment in asr_res.get("segments", [])
-                if str(segment.get("text", "")).strip()
-            ]
+            if whisper_backend == "hf":
+                asr_res = whisper_model(str(vocals_wav), return_timestamps="word")
+                lyrics = str(asr_res.get("text", "")).strip()
+                words = []
+                previous_end = 0.0
+                for chunk in asr_res.get("chunks", []):
+                    word_text = str(chunk.get("text", "")).strip()
+                    if not word_text:
+                        continue
+                    timestamp = chunk.get("timestamp") or (None, None)
+                    start = float(timestamp[0]) if timestamp[0] is not None else previous_end
+                    end = float(timestamp[1]) if timestamp[1] is not None else start
+                    words.append({"start": round(start, 3), "end": round(end, 3), "word": word_text})
+                    previous_end = end
+                lyric_segments = [
+                    {
+                        "start": words[0]["start"],
+                        "end": words[-1]["end"],
+                        "text": lyrics,
+                        "words": words,
+                    }
+                ] if words else []
+            else:
+                asr_res = whisper_model.transcribe(
+                    str(vocals_wav),
+                    language="vi",
+                    word_timestamps=True,
+                    fp16=(str(next(whisper_model.parameters()).device).startswith("cuda")),
+                )
+                lyrics = asr_res["text"].strip()
+                lyric_segments = [
+                    {
+                        "start": round(float(segment.get("start", 0.0)), 3),
+                        "end": round(float(segment.get("end", 0.0)), 3),
+                        "text": str(segment.get("text", "")).strip(),
+                        "words": [
+                            {
+                                "start": round(float(word.get("start", segment.get("start", 0.0))), 3),
+                                "end": round(float(word.get("end", segment.get("end", 0.0))), 3),
+                                "word": str(word.get("word", "")).strip(),
+                            }
+                            for word in segment.get("words", [])
+                            if str(word.get("word", "")).strip()
+                        ],
+                    }
+                    for segment in asr_res.get("segments", [])
+                    if str(segment.get("text", "")).strip()
+                ]
 
         vocal_tensor = compute_mel_spectrogram(y_vocal[: frames * HOP_LENGTH], _MEL_CONFIG)
         vocal_tensor = vocal_tensor[:, :frames]
@@ -319,20 +358,34 @@ def preprocess_raw_audio(
     style_device = "cuda" if torch.cuda.is_available() else "cpu"
 
     whisper_model = None
+    whisper_backend = "hf" if _is_hf_model_ref(whisper_model_name) else "openai"
     if transcribe:
-        if whisper is None:
-            raise RuntimeError("Cần cài openai-whisper hoặc dùng --skip-asr.")
-        print(f"Loading Whisper model ({whisper_model_name})...", flush=True)
-        requested_device = (whisper_device or "auto").lower()
-        whisper_devices = [requested_device] if requested_device != "auto" else (["cuda", "cpu"] if torch.cuda.is_available() else ["cpu"])
-        for selected_device in whisper_devices:
-            try:
-                whisper_model = whisper.load_model(whisper_model_name, device=selected_device)
-                break
-            except Exception as exc:
-                if selected_device == whisper_devices[-1]:
-                    raise
-                print(f"[WARNING] Whisper {selected_device} failed; retrying on {whisper_devices[-1]}: {exc}", flush=True)
+        if whisper_backend == "hf":
+            if hf_asr_pipeline is None:
+                raise RuntimeError("Cần cài transformers để dùng model ASR HuggingFace (--whisper-model owner/name).")
+            print(f"Loading HuggingFace ASR pipeline ({whisper_model_name})...", flush=True)
+            requested_device = (whisper_device or "auto").lower()
+            use_cuda = requested_device == "cuda" or (requested_device == "auto" and torch.cuda.is_available())
+            whisper_model = hf_asr_pipeline(
+                "automatic-speech-recognition",
+                model=whisper_model_name,
+                chunk_length_s=30,
+                device=0 if use_cuda else -1,
+            )
+        else:
+            if whisper is None:
+                raise RuntimeError("Cần cài openai-whisper hoặc dùng --skip-asr.")
+            print(f"Loading Whisper model ({whisper_model_name})...", flush=True)
+            requested_device = (whisper_device or "auto").lower()
+            whisper_devices = [requested_device] if requested_device != "auto" else (["cuda", "cpu"] if torch.cuda.is_available() else ["cpu"])
+            for selected_device in whisper_devices:
+                try:
+                    whisper_model = whisper.load_model(whisper_model_name, device=selected_device)
+                    break
+                except Exception as exc:
+                    if selected_device == whisper_devices[-1]:
+                        raise
+                    print(f"[WARNING] Whisper {selected_device} failed; retrying on {whisper_devices[-1]}: {exc}", flush=True)
 
     records = []
     failures = []
@@ -351,6 +404,7 @@ def preprocess_raw_audio(
                 record = process_file(
                     f, output_dir, whisper_model, keep_separated=(idx <= keep_separated_count),
                     use_demucs=use_demucs, transcribe=transcribe, demucs_device=demucs_device, device=style_device,
+                    whisper_backend=whisper_backend,
                 )
                 records.append(record)
             except Exception as e:
@@ -404,7 +458,7 @@ def main():
     parser = argparse.ArgumentParser(description="Dataset preprocessing and auto-labeling for DiffRhythm-style models.")
     parser.add_argument("--input", default="dataset/vietnamese_songs", help="Path to raw audio folder.")
     parser.add_argument("--output", default="dataset/diff_rhythm_dataset", help="Output dataset path.")
-    parser.add_argument("--whisper-model", default="base", help="Size of Whisper model to use.")
+    parser.add_argument("--whisper-model", default="base", help="Openai-whisper size (base, small, ...) or a HuggingFace repo id (owner/name) for a fine-tuned ASR model, e.g. xyzDivergence/whisper-small-vietnamese-lyrics-transcription.")
     parser.add_argument("--skip-demucs", action="store_true", help="Bỏ tách vocal, dùng bản phối thật làm mục tiêu nhanh.")
     parser.add_argument("--skip-asr", action="store_true", help="Bỏ Whisper ASR và dùng nhãn text mặc định.")
     parser.add_argument("--demucs-device", default="auto", choices=("auto", "cuda", "cpu"))

@@ -314,7 +314,7 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--max-files", type=int, default=None, help="Limit how many raw files to preprocess.")
-    parser.add_argument("--whisper-model", type=str, default="tiny", help="Whisper model size for lyric transcription (tiny/base/small/...).")
+    parser.add_argument("--whisper-model", type=str, default="tiny", help="Openai-whisper size (tiny/base/small/...) or a HuggingFace repo id (owner/name) for a fine-tuned ASR model, e.g. xyzDivergence/whisper-small-vietnamese-lyrics-transcription.")
     args = parser.parse_args()
 
     # Resolved parent because it is located inside the scripts/ directory
