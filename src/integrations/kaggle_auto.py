@@ -35,7 +35,7 @@ KAGGLE_AUTH_ENV_KEYS = (KAGGLE_API_TOKEN_ENV, KAGGLE_ACCESS_TOKEN_ALIAS_ENV, "KA
 # cache (the real DiffRhythm2 teacher checkpoint, ~4.3GB) that _load_teacher() recreates
 # locally on demand -- previously missing here, this once ballooned a "source code"
 # upload to ~4GB with no functional benefit (the preprocess/train kernels never read it).
-SOURCE_ZIP_EXCLUDED_DIRS = {".git", "outputs", "__pycache__", ".pytest_cache", ".venv", ".kaggle", "dataset", "datasets", "scratch", "ckpt"}
+SOURCE_ZIP_EXCLUDED_DIRS = {".git", "outputs", "__pycache__", ".pytest_cache", ".venv", ".kaggle", "dataset", "datasets", "scratch", "ckpt", "DiffRhythm2-main"}
 
 
 def write_source_zip(project_root: Path, destination: Path) -> None:

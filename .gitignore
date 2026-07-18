@@ -1,4 +1,5 @@
 src/diffrythm2/
+DiffRhythm2-main/
 .venv/
 __pycache__/
 *.py[cod]
