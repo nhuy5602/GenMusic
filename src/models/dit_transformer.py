@@ -155,7 +155,14 @@ class CrossAttentionDecoderLayer(nn.Module):
         # so no attention mask is needed here -- fully bidirectional).
         residual = hidden_states
         normed = self.input_layernorm(hidden_states)
-        attn_out, _ = self.self_attn(hidden_states=normed, position_embeddings=position_embeddings)
+        # LlamaAttention.forward()'s return tuple length varies across
+        # transformers versions (2-tuple vs 3-tuple with past_key_value) --
+        # train-distill's kernel installs DiffRhythm2's requirements.txt, which
+        # pins a different transformers version than train-self's kernel, so a
+        # rigid `a, b = ...` unpack breaks on one of the two. Only the first
+        # element (the attention output) is ever needed here.
+        self_attn_result = self.self_attn(hidden_states=normed, position_embeddings=position_embeddings)
+        attn_out = self_attn_result[0] if isinstance(self_attn_result, tuple) else self_attn_result
         hidden_states = residual + attn_out
 
         # 2. Cross-attention: mel queries attend to lyric/text keys+values.

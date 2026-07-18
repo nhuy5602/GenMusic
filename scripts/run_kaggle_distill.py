@@ -89,7 +89,9 @@ try:
 
     print("--- STEP 4: Running Knowledge Distillation training ---")
     # Execute the train-distill command. By default it downloads the ASLP-lab/DiffRhythm2 teacher from HF
-    subprocess.run([
+    # stdout/stderr are captured and persisted to disk because the Kaggle log
+    # download is unreliable (often 0 bytes despite real content on the web UI).
+    train_result = subprocess.run([
         sys.executable, str(source_root / "cli.py"), "train-distill",
         "--dataset", str(processed_dataset),
         "--student-checkpoint", "/kaggle/working/distilled_student.pt",
@@ -103,7 +105,10 @@ try:
         "--heads", "{heads}",
         "--ff-mult", "{ff_mult}",
         "--lambda-vocal", "{lambda_vocal}",
-{max_records_line}    ], env=os.environ, check=True)
+{max_records_line}    ], env=os.environ, capture_output=True, text=True)
+    Path("/kaggle/working/train_distill_stdout.txt").write_text(train_result.stdout, encoding="utf-8")
+    Path("/kaggle/working/train_distill_stderr.txt").write_text(train_result.stderr, encoding="utf-8")
+    train_result.check_returncode()
 
     print("DISTILLATION TRAINING COMPLETED SUCCESSFULLY!")
     print("Output model checkpoint saved at: /kaggle/working/distilled_student.pt")
@@ -111,6 +116,7 @@ except Exception as e:
     import traceback
     print("ERROR OCCURRED DURING KERNEL EXECUTION:")
     traceback.print_exc()
+    Path("/kaggle/working/error.txt").write_text(traceback.format_exc(), encoding="utf-8")
     sys.exit(1)
 '''
 
