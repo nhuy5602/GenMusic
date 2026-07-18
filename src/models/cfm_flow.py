@@ -3,6 +3,30 @@ import torch.nn.functional as F
 from .text_to_music_diffusion import MusicDiffusionConfig, reconstruct_full_mix
 
 
+def build_mismatched_texts(texts: list[str]) -> tuple[list[str], list[bool]]:
+    """Rotate each non-empty lyric to a different lyric in the same batch.
+
+    Empty-text comparison only proves that the model reacts to *some* text. It
+    does not prove that "em yeu anh" produces different phonemes from "mua roi".
+    This helper supplies content-negative prompts while marking samples for
+    which a genuinely different non-empty prompt exists.
+    """
+    normalized = [str(text).strip() for text in texts]
+    mismatched = ["" for _ in normalized]
+    valid = [False for _ in normalized]
+    for index, text in enumerate(normalized):
+        if not text:
+            continue
+        folded = text.casefold()
+        for offset in range(1, len(normalized)):
+            candidate = normalized[(index + offset) % len(normalized)]
+            if candidate and candidate.casefold() != folded:
+                mismatched[index] = candidate
+                valid[index] = True
+                break
+    return mismatched, valid
+
+
 def _prepare_style_condition(
     style_prompt: torch.Tensor | None,
     *,
@@ -36,24 +60,18 @@ def cfm_loss(
     *,
     lambda_vocal: float = 1.0,
     condition_dropout_prob: float = 0.1,
+    style_dropout_prob: float | None = None,
+    text_dropout_prob: float | None = None,
+    text_contrastive_weight: float = 0.0,
+    text_contrastive_margin: float = 0.03,
+    text_contrastive_prob: float = 0.5,
+    text_sensitivity_weight: float = 0.0,
+    text_sensitivity_target: float = 0.20,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
-    """Computes the Conditional Flow Matching (CFM) velocity prediction loss.
-
-    Primary target is the full song (vocal + accompaniment, see
-    reconstruct_full_mix's docstring) -- matches DiffRhythm2's own scope and
-    this project's, not an isolated a cappella vocal track. An auxiliary
-    vocal-only prediction loss ("Mixed Pro", MicroDiT.vocal_proj_out) keeps the
-    model explicitly tracking the harder vocal component instead of only
-    learning the easier, louder joint mix; set lambda_vocal=0 to disable it.
-
-    Returns (total_loss, loss_gt, loss_vocal_aux) so callers can log the
-    components separately (loss_vocal_aux is None when lambda_vocal <= 0).
-    """
+    """Compute full-mix CFM plus vocal and lyric-content auxiliary losses."""
     device = vocal_mel.device
     batch_size = vocal_mel.shape[0]
-
     x1 = reconstruct_full_mix(vocal_mel, backing_mel, config)
-
     # 1. Sample t uniformly in [0, 1]
     t = torch.rand(batch_size, device=device)
     t_unsqueezed = t.view(-1, 1, 1) # Alignment for mel channels/frames
@@ -71,10 +89,15 @@ def cfm_loss(
     # real reference conditions, missing style, and an empty lyric prompt.
     normalized_style = style_anchor
     model_texts = list(texts)
-    dropout = max(0.0, min(1.0, float(condition_dropout_prob)))
-    if dropout > 0.0:
-        style_drop = torch.rand(batch_size, device=device) < dropout
-        text_drop = torch.rand(batch_size, device=device) < dropout
+    default_dropout = max(0.0, min(1.0, float(condition_dropout_prob)))
+    style_dropout = default_dropout if style_dropout_prob is None else max(0.0, min(1.0, float(style_dropout_prob)))
+    text_dropout = default_dropout if text_dropout_prob is None else max(0.0, min(1.0, float(text_dropout_prob)))
+    if style_dropout > 0.0 or text_dropout > 0.0:
+        # Most user generation has no reference MuQ anchor, while text is
+        # always supplied. Train the zero-style path substantially more often
+        # without also erasing the Vietnamese lyric at the same high rate.
+        style_drop = torch.rand(batch_size, device=device) < style_dropout
+        text_drop = torch.rand(batch_size, device=device) < text_dropout
         normalized_style = normalized_style.masked_fill(style_drop[:, None], 0.0)
         text_drop_flags = text_drop.detach().cpu().tolist()
         model_texts = ["" if text_drop_flags[index] else text for index, text in enumerate(model_texts)]
@@ -95,34 +118,142 @@ def cfm_loss(
     activity = torch.sigmoid((frame_energy - activity_threshold) * 2.0)
     frame_weights = (1.0 + 2.0 * activity).unsqueeze(-1)
     frame_weights = frame_weights / frame_weights.mean(dim=(1, 2), keepdim=True).clamp_min(1e-6)
-    velocity_loss = ((predicted_velocity - target_velocity).square() * frame_weights).mean()
+    # Keep all loss arithmetic in FP32 even when the denoiser forward uses
+    # autocast FP16. Squaring two FP16 velocity predictions can overflow above
+    # 255 and turn a recoverable large response into inf/inf -> NaN.
+    predicted_velocity_fp32 = predicted_velocity.float()
+    target_velocity_fp32 = target_velocity.float()
+    frame_weights_fp32 = frame_weights.float()
+    velocity_loss = (
+        (predicted_velocity_fp32 - target_velocity_fp32).square()
+        * frame_weights_fp32
+    ).mean()
 
     # Reconstruct x1 from the predicted velocity and explicitly preserve its
     # time/frequency contours. These inexpensive auxiliary terms sharpen vocal
     # onsets and formant movement without changing the CFM sampling equation.
-    predicted_clean = xt + (1.0 - t_unsqueezed) * predicted_velocity
-    reconstruction_loss = ((predicted_clean - x1).abs() * frame_weights).mean()
-    time_delta_loss = F.l1_loss(torch.diff(predicted_clean, dim=1), torch.diff(x1, dim=1))
-    frequency_delta_loss = F.l1_loss(torch.diff(predicted_clean, dim=2), torch.diff(x1, dim=2))
+    predicted_clean = xt.float() + (1.0 - t_unsqueezed.float()) * predicted_velocity_fp32
+    x1_fp32 = x1.float()
+    reconstruction_loss = (
+        (predicted_clean - x1_fp32).abs() * frame_weights_fp32
+    ).mean()
+    time_delta_loss = F.l1_loss(
+        torch.diff(predicted_clean, dim=1),
+        torch.diff(x1_fp32, dim=1),
+    )
+    frequency_delta_loss = F.l1_loss(
+        torch.diff(predicted_clean, dim=2),
+        torch.diff(x1_fp32, dim=2),
+    )
     loss_gt = velocity_loss + 0.15 * reconstruction_loss + 0.05 * (time_delta_loss + frequency_delta_loss)
+    total_loss = loss_gt
 
     loss_vocal_aux = None
-    total_loss = loss_gt
     if want_vocal_aux:
-        vocal_target_velocity = vocal_mel - x0
-        vocal_frame_energy = vocal_mel.mean(dim=-1)
-        vocal_activity_threshold = torch.quantile(vocal_frame_energy.detach(), 0.55, dim=1, keepdim=True)
-        vocal_activity = torch.sigmoid((vocal_frame_energy - vocal_activity_threshold) * 2.0)
+        vocal_target_velocity = vocal_mel.float() - x0.float()
+        vocal_frame_energy = vocal_mel.float().mean(dim=-1)
+        vocal_activity_threshold = torch.quantile(
+            vocal_frame_energy.detach(), 0.55, dim=1, keepdim=True
+        )
+        vocal_activity = torch.sigmoid(
+            (vocal_frame_energy - vocal_activity_threshold) * 2.0
+        )
         vocal_frame_weights = (1.0 + 2.0 * vocal_activity).unsqueeze(-1)
-        vocal_frame_weights = vocal_frame_weights / vocal_frame_weights.mean(dim=(1, 2), keepdim=True).clamp_min(1e-6)
-        loss_vocal_aux = ((vocal_aux - vocal_target_velocity).square() * vocal_frame_weights).mean()
-        total_loss = total_loss + lambda_vocal * loss_vocal_aux
+        vocal_frame_weights = vocal_frame_weights / vocal_frame_weights.mean(
+            dim=(1, 2), keepdim=True
+        ).clamp_min(1e-6)
+        loss_vocal_aux = (
+            (vocal_aux.float() - vocal_target_velocity).square()
+            * vocal_frame_weights
+        ).mean()
+        total_loss = total_loss + max(0.0, float(lambda_vocal)) * loss_vocal_aux
 
+    # Conditional flow matching can minimize its marginal audio loss while
+    # reacting only to "text present" rather than to the requested phonemes.
+    # Compare each correct lyric against a different lyric from the same batch.
+    # Text dropout already trains the empty classifier-free branch; this extra
+    # forward is reserved for the missing content-specific supervision.
+    contrastive_weight = max(0.0, float(text_contrastive_weight))
+    sensitivity_weight = max(0.0, float(text_sensitivity_weight))
+    contrastive_probability = max(0.0, min(1.0, float(text_contrastive_prob)))
+    mismatched_texts, content_mask_flags = build_mismatched_texts(model_texts)
+    content_mask = torch.tensor(content_mask_flags, dtype=torch.bool, device=device)
+    if (
+        (contrastive_weight > 0.0 or sensitivity_weight > 0.0)
+        and bool(content_mask.any())
+        and torch.rand((), device=device) < contrastive_probability
+    ):
+        mismatched_velocity = model(
+            x=xt,
+            texts=mismatched_texts,
+            timestep=t,
+            style_prompt=normalized_style,
+        )
+        mismatched_velocity_fp32 = mismatched_velocity.float()
+        matched_error = (
+            (predicted_velocity_fp32 - target_velocity_fp32).square()
+            * frame_weights_fp32
+        ).mean(dim=(1, 2))[content_mask]
+        mismatched_error = (
+            (mismatched_velocity_fp32 - target_velocity_fp32).square()
+            * frame_weights_fp32
+        ).mean(dim=(1, 2))[content_mask]
+        contrastive_loss = F.relu(
+            max(0.0, float(text_contrastive_margin))
+            + matched_error
+            - mismatched_error
+        ).mean()
+        total_loss = total_loss + contrastive_weight * contrastive_loss
+
+        # Error ranking alone has a weak gradient when two different lyrics
+        # produce the same velocity. This response floor now measures lyric A
+        # versus lyric B, not lyric versus empty, so a generic "text on" signal
+        # can no longer satisfy the gate.
+        response_rms = (
+            (predicted_velocity_fp32 - mismatched_velocity_fp32)
+            .square()
+            .mean(dim=(1, 2))
+            # When the model ignores lyrics, matched and mismatched outputs can
+            # be exactly equal. sqrt'(0) is singular and previously produced
+            # non-finite gradients even though the forward loss was finite.
+            .clamp_min(1e-12)
+            .sqrt()[content_mask]
+        )
+        response_scale = 0.5 * (
+            predicted_velocity_fp32.square().mean(dim=(1, 2)).clamp_min(1e-12).sqrt()
+            + target_velocity_fp32.square().mean(dim=(1, 2)).clamp_min(1e-12).sqrt()
+        ).detach().clamp_min(1e-6)[content_mask]
+        relative_response = response_rms / response_scale
+        response_shortfall = F.relu(
+            max(0.0, float(text_sensitivity_target)) - relative_response
+        )
+        # A plain squared hinge became nearly inert just below the target
+        # (0.168 vs 0.20 in a real run). A one-sided Huber penalty retains a
+        # useful gradient near the boundary while staying bounded and smooth.
+        huber_beta = 0.05
+        sensitivity_loss = torch.where(
+            response_shortfall < huber_beta,
+            0.5 * response_shortfall.square() / huber_beta,
+            response_shortfall - 0.5 * huber_beta,
+        ).mean()
+        total_loss = total_loss + sensitivity_weight * sensitivity_loss
     return total_loss, loss_gt, loss_vocal_aux
 
 
 @torch.no_grad()
-def sample_cfm(model, texts: list[str], frames: int, config: MusicDiffusionConfig, device, steps: int = 32, seed: int | None = None, style_prompt: torch.Tensor | None = None, guidance_scale: float = 1.0) -> torch.Tensor:
+def sample_cfm(
+    model,
+    texts: list[str],
+    frames: int,
+    config: MusicDiffusionConfig,
+    device,
+    steps: int = 32,
+    seed: int | None = None,
+    style_prompt: torch.Tensor | None = None,
+    guidance_scale: float = 1.0,
+    initial_mel: torch.Tensor | None = None,
+    pronunciation_prior_strength: float = 0.0,
+) -> torch.Tensor:
     """Sample a vocal mel, optionally using the style inputs from training."""
     model.eval()
     
@@ -136,8 +267,29 @@ def sample_cfm(model, texts: list[str], frames: int, config: MusicDiffusionConfi
         
     batch_size = len(texts)
     
-    # 1. Start with Gaussian noise x0 at t = 0
-    xt = torch.randn((batch_size, frames, config.n_mels), device=device)
+    # 1. Normally start with Gaussian noise x0 at t=0.  When a Vietnamese
+    # pronunciation prior is supplied, start at an intermediate point on the
+    # same CFM path.  Values near 1 preserve more intelligible TTS articulation;
+    # lower values let the learned singing-vocal distribution refine more.
+    noise = torch.randn((batch_size, frames, config.n_mels), device=device)
+    prior_strength = max(0.0, min(1.0, float(pronunciation_prior_strength)))
+    if initial_mel is None or prior_strength <= 0.0:
+        xt = noise
+        start_time = 0.0
+    else:
+        prior = torch.as_tensor(initial_mel, dtype=noise.dtype, device=device)
+        if prior.dim() == 2:
+            prior = prior.unsqueeze(0)
+        if prior.shape == (batch_size, config.n_mels, frames):
+            prior = prior.transpose(1, 2)
+        expected_shape = (batch_size, frames, config.n_mels)
+        if tuple(prior.shape) != expected_shape:
+            raise ValueError(
+                f"initial_mel must have shape {expected_shape} or "
+                f"{(batch_size, config.n_mels, frames)}, got {tuple(prior.shape)}"
+            )
+        xt = (1.0 - prior_strength) * noise + prior_strength * prior
+        start_time = prior_strength
     
     normalized_style = _prepare_style_condition(
         style_prompt,
@@ -146,11 +298,13 @@ def sample_cfm(model, texts: list[str], frames: int, config: MusicDiffusionConfi
         device=device,
     )
     
-    dt = 1.0 / steps
+    step_count = max(1, int(steps))
+    dt = (1.0 - start_time) / step_count
+    integration_steps = 0 if start_time >= 1.0 else step_count
     
     # 2. Euler integration loop from t = 0 to t = 1
-    for step in range(steps):
-        t_val = step / steps
+    for step in range(integration_steps):
+        t_val = start_time + step * dt
         t = torch.full((batch_size,), t_val, device=device, dtype=torch.float32)
         
         # Predict velocity field (no cond passed)

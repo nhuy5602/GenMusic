@@ -1,4 +1,6 @@
 import torch
+import os
+
 from torch import nn
 from torch.nn import functional as F
 from transformers import AutoTokenizer, AutoModel
@@ -11,9 +13,10 @@ class PretrainedPhonemeEncoder(nn.Module):
     """Frozen pretrained XPhoneBERT text encoder to extract rich semantic phoneme-level sequence embeddings."""
     def __init__(self, model_name: str = "vinai/xphonebert-base", out_dim: int = 256):
         super().__init__()
-        print(f"Loading pretrained XPhoneBERT phoneme encoder: {model_name}...", flush=True)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.roberta = AutoModel.from_pretrained(model_name)
+        resolved_model_name = os.getenv("GENMUSIC_XPHONEBERT_PATH") or model_name
+        print(f"Loading pretrained XPhoneBERT phoneme encoder: {resolved_model_name}...", flush=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(resolved_model_name)
+        self.roberta = AutoModel.from_pretrained(resolved_model_name)
         
         # Freeze all XPhoneBERT parameters
         for param in self.roberta.parameters():
@@ -24,6 +27,11 @@ class PretrainedPhonemeEncoder(nn.Module):
             nn.SiLU(),
             nn.Linear(out_dim, out_dim)
         )
+        # Neural Vietnamese G2P is much more expensive than the frozen
+        # XPhoneBERT forward pass when the same four-second lyric crop is seen
+        # over many epochs. Keep the phoneme string on CPU and reuse it; this
+        # does not cache trainable tensors or detach the projection path.
+        self._phoneme_cache: dict[str, str] = {}
 
     def train(self, mode: bool = True):
         # The projection remains trainable, but the frozen backbone must stay in
@@ -38,15 +46,34 @@ class PretrainedPhonemeEncoder(nn.Module):
         if not hasattr(self, "text2phone_model"):
             from text2phonemesequence import Text2PhonemeSequence
             is_cuda = "cuda" in str(device)
-            self.text2phone_model = Text2PhonemeSequence(language='vie', is_cuda=is_cuda)
+            # Charsiu publishes three explicit Vietnamese frontends. ``vie``
+            # is not one of them and silently falls back to an unknown language
+            # tag; ``vie-c`` is the package default and the best general-purpose
+            # choice when the dataset mixes regional singers.
+            self.text2phone_model = Text2PhonemeSequence(
+                pretrained_g2p_model=(
+                    os.getenv("GENMUSIC_CHARSIU_G2P_PATH")
+                    or "charsiu/g2p_multilingual_byT5_small_100"
+                ),
+                tokenizer=os.getenv("GENMUSIC_BYT5_PATH") or "google/byt5-small",
+                language="vie-c",
+                is_cuda=is_cuda,
+            )
 
         # Convert texts to phoneme sequences
         phoneme_texts = []
         for text in texts:
-            try:
-                phonemes = self.text2phone_model.infer_sentence(text)
-            except Exception:
-                phonemes = text
+            cache_key = str(text)
+            phonemes = self._phoneme_cache.get(cache_key)
+            if phonemes is None:
+                try:
+                    phonemes = self.text2phone_model.infer_sentence(cache_key)
+                except Exception:
+                    # Preserve a deterministic conditioning path if one rare
+                    # token cannot be phonemized; XPhoneBERT still receives the
+                    # original Vietnamese text instead of dropping the lyric.
+                    phonemes = cache_key
+                self._phoneme_cache[cache_key] = phonemes
             phoneme_texts.append(phonemes)
 
         # Tokenize inputs
@@ -94,23 +121,67 @@ class TimestepEmbedding(nn.Module):
 
 
 class InputEmbedding(nn.Module):
-    """Mel projection block with additive timestep/style conditioning.
+    """Mel projection with additive conditions and monotonic lyric alignment.
 
-    Lyric conditioning is no longer folded in here: the previous scheme
-    concatenated text and mel tokens into one self-attention sequence
-    ("prepend"-style). SongGen (arXiv:2502.13128) found cross-attention lyric
-    conditioning clearly beats that (FAD 1.73 vs 3.56, PER 43.34 vs 56.21), so
-    lyric conditioning now happens via a dedicated cross-attention sublayer in
-    each transformer block instead (see CrossAttentionDecoderLayer below) --
-    this embedding only ever sees the mel sequence.
+    Transformer blocks still use dedicated lyric cross-attention. The aligned
+    input is a lightweight positional prior that prevents content conditioning
+    from collapsing while keeping the mel sequence separate from text tokens.
     """
-    def __init__(self, mel_dim: int, out_dim: int):
+    def __init__(self, mel_dim: int, out_dim: int, text_dim: int | None = None):
         super().__init__()
         self.proj_x = nn.Linear(mel_dim, out_dim)
+        self.proj_text = (
+            nn.Linear(text_dim, out_dim)
+            if text_dim is not None and text_dim != out_dim
+            else nn.Identity()
+        )
         self.proj_final = nn.Linear(out_dim, out_dim)
+        # The previous token-concatenation-only path let the denoiser ignore
+        # lyrics (<1% response when the prompt changed).  A bounded learnable
+        # gate injects the ordered phoneme sequence directly into every audio
+        # frame.  Its non-zero floor is intentional: validation showed that an
+        # unconstrained gate was driven toward zero even as acoustic loss fell.
+        # Keeping the same parameter name also preserves checkpoint upgrades.
+        self.text_frame_gate = nn.Parameter(torch.tensor(0.25))
 
-    def forward(self, x: torch.Tensor, time_emb: torch.Tensor, style_emb: torch.Tensor) -> torch.Tensor:
+    def text_frame_strength(self) -> torch.Tensor:
+        """Return a stable 0.20..0.50 strength for frame-aligned lyric input."""
+        return 0.20 + 0.30 * torch.sigmoid(self.text_frame_gate)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        time_emb: torch.Tensor,
+        style_emb: torch.Tensor,
+        text_embed: torch.Tensor | None = None,
+        text_mask: torch.Tensor | None = None,
+        text_present: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         x_proj = self.proj_x(x)
+
+        if text_embed is not None and text_mask is not None:
+            text_embed = self.proj_text(text_embed)
+            aligned_text = []
+            frame_count = x_proj.shape[1]
+            for batch_index in range(text_embed.shape[0]):
+                valid = text_embed[batch_index][text_mask[batch_index]]
+                is_present = (
+                    bool(text_present[batch_index])
+                    if text_present is not None
+                    else valid.shape[0] > 0
+                )
+                if valid.shape[0] == 0 or not is_present:
+                    aligned = torch.zeros_like(x_proj[batch_index])
+                else:
+                    aligned = F.interpolate(
+                        valid.transpose(0, 1).unsqueeze(0),
+                        size=frame_count,
+                        mode="linear",
+                        align_corners=False,
+                    ).squeeze(0).transpose(0, 1)
+                aligned_text.append(aligned)
+            x_proj = x_proj + self.text_frame_strength() * torch.stack(aligned_text)
+
         seq_len = x_proj.shape[1]
         style_emb_expanded = style_emb.unsqueeze(1).repeat(1, seq_len, 1)
         time_emb_expanded = time_emb.unsqueeze(1).repeat(1, seq_len, 1)
@@ -324,9 +395,21 @@ class MicroDiT(nn.Module):
         s_emb = self.style_embed(style_vector) # (batch_size, cond_dim)
         c = t_emb_scalar + s_emb
 
-        # 3. Project and embed the mel sequence only (lyric conditioning now
-        # happens via cross-attention inside each block, not concatenation).
-        x = self.input_embed(x, t_emb_scalar, s_emb)
+        # 3. Keep text and mel as separate cross-attention sequences while a
+        # monotonic frame-aligned prior makes lyric order explicit at input.
+        text_present = torch.tensor(
+            [bool(str(text).strip()) for text in texts],
+            dtype=torch.bool,
+            device=device,
+        )
+        x = self.input_embed(
+            x,
+            t_emb_scalar,
+            s_emb,
+            text_embed=text_embeds,
+            text_mask=text_mask,
+            text_present=text_present,
+        )
 
         # 4. Rotary position IDs over the mel sequence only
         pos_ids = torch.arange(seq_len, device=device).unsqueeze(0).repeat(batch_size, 1)

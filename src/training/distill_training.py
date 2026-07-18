@@ -22,6 +22,7 @@ always means a real teacher was actually used, no exceptions.
 """
 
 import json
+import math
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -39,6 +40,7 @@ from src.training.self_diffusion import (
     _read_records,
     _torch,
     estimate_vocal_mel_stats,
+    split_training_records,
 )
 
 TEACHER_COND_DIM = 512
@@ -304,12 +306,16 @@ class KnowledgeDistillationTrainer:
         beta_repa: float = 0.0,
         repa_layer_idx: int = 2,
         lambda_vocal: float = 1.0,
+        scheduler=None,
+        ema_decay: float = 0.999,
     ):
         self.teacher = teacher_model.to(device) if teacher_model is not None else None
         self.student = student_model.to(device)
         self.config = config
         self.optimizer = optimizer
+        self.scheduler = scheduler
         self.device = device
+        self.ema_decay = float(ema_decay)
         self.teacher_block_size = teacher_block_size
         self.parse_lyrics_fn = parse_lyrics_fn
         # Weight of the REPA-style representation-alignment auxiliary loss (see
@@ -343,6 +349,11 @@ class KnowledgeDistillationTrainer:
         self.teacher_mel_dim = teacher_mel_dim
         self.needs_mel_resize = self.teacher is not None and teacher_mel_dim is not None and teacher_mel_dim != config.n_mels
         self.from_teacher_mel = nn.Linear(teacher_mel_dim, config.n_mels).to(device) if self.needs_mel_resize else None
+        self.ema_parameters = {
+            name: parameter.detach().clone()
+            for name, parameter in self.student.named_parameters()
+            if parameter.requires_grad
+        }
 
         if self.teacher is not None:
             self.teacher.eval()
@@ -351,6 +362,67 @@ class KnowledgeDistillationTrainer:
 
     def adapter_parameters(self) -> list[torch.nn.Parameter]:
         return list(self.from_teacher_mel.parameters()) if self.from_teacher_mel is not None else []
+
+    def _update_ema(self) -> None:
+        with torch.no_grad():
+            for name, parameter in self.student.named_parameters():
+                if name in self.ema_parameters:
+                    self.ema_parameters[name].lerp_(
+                        parameter.detach(), 1.0 - self.ema_decay
+                    )
+
+    def load_ema_state(self, state: dict[str, Any]) -> None:
+        for name, value in state.items():
+            if name in self.ema_parameters:
+                self.ema_parameters[name] = value.detach().to(self.device).clone()
+
+    def evaluate_ground_truth(self, dataloader, *, seed: int = 5602) -> float:
+        """Measure fixed-noise validation loss with EMA student weights."""
+        from src.models.cfm_flow import cfm_loss
+
+        was_training = self.student.training
+        raw_parameters = {
+            name: parameter.detach().clone()
+            for name, parameter in self.student.named_parameters()
+            if name in self.ema_parameters
+        }
+        cuda_devices = [torch.cuda.current_device()] if str(self.device).startswith("cuda") else []
+        losses: list[float] = []
+        try:
+            with torch.no_grad():
+                for name, parameter in self.student.named_parameters():
+                    if name in self.ema_parameters:
+                        parameter.copy_(self.ema_parameters[name])
+            self.student.eval()
+            with torch.random.fork_rng(devices=cuda_devices):
+                torch.manual_seed(int(seed))
+                if cuda_devices:
+                    torch.cuda.manual_seed_all(int(seed))
+                with torch.no_grad():
+                    for batch in dataloader:
+                        vocal_mel = batch["vocal_mel"].to(self.device).transpose(1, 2)
+                        backing_mel = batch["backing_mel"].to(self.device).transpose(1, 2)
+                        style_anchor = batch["style_anchor"].to(self.device)
+                        loss, _, _ = cfm_loss(
+                            self.student,
+                            vocal_mel,
+                            backing_mel,
+                            style_anchor,
+                            batch["text"],
+                            self.config,
+                            condition_dropout_prob=0.0,
+                            lambda_vocal=self.lambda_vocal,
+                        )
+                        losses.append(float(loss.detach().cpu()))
+        finally:
+            with torch.no_grad():
+                for name, parameter in self.student.named_parameters():
+                    if name in raw_parameters:
+                        parameter.copy_(raw_parameters[name])
+            self.student.train(was_training)
+        if not losses:
+            raise ValueError("Validation dataset produced no batches.")
+        return sum(losses) / len(losses)
 
     def _teacher_velocity(
         self, xt: torch.Tensor, x1: torch.Tensor, t: torch.Tensor, texts: list[str], style_prompt: torch.Tensor,
@@ -565,6 +637,9 @@ class KnowledgeDistillationTrainer:
             loss.backward()
             torch.nn.utils.clip_grad_norm_(list(self.student.parameters()) + self.adapter_parameters(), 1.0)
             self.optimizer.step()
+            if self.scheduler is not None:
+                self.scheduler.step()
+            self._update_ema()
 
             epoch_losses.append({
                 "loss": float(loss.detach().cpu()),
@@ -596,6 +671,13 @@ def run_distillation_training(
     beta_repa: float = 0.0,
     lambda_vocal: float = 1.0,
     max_records: int | None = None,
+    validation_fraction: float = 0.05,
+    validation_max_records: int | None = 128,
+    validation_seed: int = 5602,
+    early_stopping_patience: int = 4,
+    minimum_epochs: int = 6,
+    early_stopping_min_delta: float = 0.001,
+    save_every_epoch: bool = True,
 ) -> dict[str, Any]:
     torch, _, _, DataLoaderClass = _torch()
 
@@ -610,9 +692,18 @@ def run_distillation_training(
     # log-mel targets. See docs/PROJECT_REPORT.md §4.10/§5 for why this specifically
     # matters here: it was one of the changes that fixed a measured low-variance
     # ("regression to the mean") output on the train-self side.
-    usable_records = _filter_training_records(_read_records(root))
-    records_for_stats = usable_records[:max_records] if max_records is not None else usable_records
-    mel_mean, mel_std = estimate_vocal_mel_stats(root, records_for_stats)
+    all_records = _read_records(root)
+    usable_records = _filter_training_records(all_records)
+    selected_records = usable_records[:max_records] if max_records is not None else usable_records
+    training_records, validation_records = split_training_records(
+        selected_records,
+        validation_fraction=validation_fraction,
+        validation_max_records=validation_max_records,
+        seed=validation_seed,
+    )
+    if not training_records:
+        raise ValueError("Dataset has no usable training records after validation split.")
+    mel_mean, mel_std = estimate_vocal_mel_stats(root, training_records)
     config = replace(config, mel_mean=mel_mean, mel_std=mel_std)
 
     teacher_backbone, teacher_config, teacher_status = _load_teacher(repo_id, teacher_checkpoint_path, selected_device)
@@ -640,7 +731,18 @@ def run_distillation_training(
         config, roberta_model=roberta_model, dim=dim, depth=depth, heads=heads, ff_mult=ff_mult, style_dim=TEACHER_COND_DIM,
     ).to(selected_device)
 
-    dataset = MusicDiffusionDataset(root, config, max_records=max_records)
+    dataset = MusicDiffusionDataset(root, config, records=training_records)
+    validation_dataset = (
+        MusicDiffusionDataset(
+            root,
+            config,
+            records=validation_records,
+            deterministic_crop=True,
+            crop_seed=validation_seed,
+        )
+        if validation_records
+        else None
+    )
 
     def collate_fn(batch):
         vocal_mels = torch.stack([item["vocal_mel"] for item in batch])
@@ -649,7 +751,26 @@ def run_distillation_training(
         texts = [item["text"] for item in batch]
         return {"vocal_mel": vocal_mels, "backing_mel": backing_mels, "style_anchor": style_anchors, "text": texts}
 
-    dataloader = DataLoaderClass(dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    batch_size_value = max(1, int(batch_size))
+    generator = torch.Generator()
+    generator.manual_seed(5602)
+    dataloader = DataLoaderClass(
+        dataset,
+        batch_size=batch_size_value,
+        shuffle=True,
+        collate_fn=collate_fn,
+        generator=generator,
+    )
+    validation_dataloader = (
+        DataLoaderClass(
+            validation_dataset,
+            batch_size=batch_size_value,
+            shuffle=False,
+            collate_fn=collate_fn,
+        )
+        if validation_dataset is not None
+        else None
+    )
 
     trainer = KnowledgeDistillationTrainer(
         teacher_model=teacher_backbone,
@@ -666,6 +787,19 @@ def run_distillation_training(
     )
     trainable_params = [p for p in model_student.parameters() if p.requires_grad] + trainer.adapter_parameters()
     trainer.optimizer = torch.optim.AdamW(trainable_params, lr=learning_rate)
+    total_steps = max(1, max(1, int(epochs)) * len(dataloader))
+    warmup_steps = min(max(1, int(total_steps * 0.05)), max(1, total_steps - 1))
+
+    def learning_rate_multiplier(step: int) -> float:
+        if step < warmup_steps:
+            return (step + 1) / warmup_steps
+        progress = min(1.0, (step - warmup_steps) / max(1, total_steps - warmup_steps))
+        return 0.1 + 0.9 * 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    trainer.scheduler = torch.optim.lr_scheduler.LambdaLR(
+        trainer.optimizer,
+        learning_rate_multiplier,
+    )
     # Always true here -- the raises above guarantee a real teacher + tokenizer.
     distillation_active = True
     print(f"Starting distillation training for {epochs} epochs on {selected_device}...", flush=True)
@@ -673,7 +807,26 @@ def run_distillation_training(
     start_time = time.perf_counter()
     losses = []
     loss_curve = []
-    for epoch in range(epochs):
+    best_checkpoint = student_checkpoint.with_name(
+        f"{student_checkpoint.stem}.best{student_checkpoint.suffix}"
+    )
+    best_validation_loss = float("inf")
+    best_epoch = 0
+    epochs_without_improvement = 0
+    stopped_early = False
+    completed_epochs = 0
+    final_validation_loss: float | None = None
+    arch = {
+        "dim": dim,
+        "depth": depth,
+        "heads": heads,
+        "ff_mult": ff_mult,
+        "style_dim": TEACHER_COND_DIM,
+        "roberta_model": roberta_model,
+    }
+    from src.models.text_to_music_diffusion import save_checkpoint
+
+    for epoch in range(max(1, int(epochs))):
         epoch_losses = trainer.train_epoch(dataloader)
         losses.extend(epoch_losses)
         # Variable-length lyric batches make PyTorch's CUDA allocator create many
@@ -690,9 +843,54 @@ def run_distillation_training(
         avg_loss_repa = sum(repa_values) / len(repa_values) if repa_values else None
         vocal_aux_values = [d["loss_vocal_aux"] for d in epoch_losses if d["loss_vocal_aux"] is not None]
         avg_loss_vocal_aux = sum(vocal_aux_values) / len(vocal_aux_values) if vocal_aux_values else None
+        final_validation_loss = (
+            trainer.evaluate_ground_truth(
+                validation_dataloader,
+                seed=validation_seed,
+            )
+            if validation_dataloader is not None
+            else None
+        )
+        completed_epochs = epoch + 1
+        improved = (
+            final_validation_loss is not None
+            and final_validation_loss
+            < best_validation_loss - max(0.0, float(early_stopping_min_delta))
+        )
+        if improved:
+            best_validation_loss = final_validation_loss
+            best_epoch = completed_epochs
+            epochs_without_improvement = 0
+            save_checkpoint(
+                model_student,
+                best_checkpoint,
+                config,
+                ema_state=trainer.ema_parameters,
+                epoch=completed_epochs,
+                loss=avg_loss,
+                arch=arch,
+                training_state={
+                    "status": "best",
+                    "epoch": completed_epochs,
+                    "validation_loss": final_validation_loss,
+                    "best_validation_loss": best_validation_loss,
+                    "best_epoch": best_epoch,
+                },
+            )
+            print(
+                f"Best checkpoint saved at epoch {completed_epochs}: "
+                f"validation_loss={final_validation_loss:.6f}",
+                flush=True,
+            )
+        elif final_validation_loss is not None:
+            epochs_without_improvement += 1
+
         loss_curve.append({
             "epoch": epoch + 1, "loss": avg_loss, "loss_gt": avg_loss_gt,
-            "loss_velocity": avg_loss_velocity, "loss_repa": avg_loss_repa, "loss_vocal_aux": avg_loss_vocal_aux,
+            "loss_velocity": avg_loss_velocity,
+            "loss_repa": avg_loss_repa,
+            "loss_vocal_aux": avg_loss_vocal_aux,
+            "validation_loss": final_validation_loss,
         })
         print(
             f"Epoch [{epoch+1}/{epochs}] complete. Average Loss: {avg_loss:.6f} "
@@ -700,15 +898,66 @@ def run_distillation_training(
             f"loss_vocal_aux={avg_loss_vocal_aux})",
             flush=True,
         )
+        if save_every_epoch:
+            save_checkpoint(
+                model_student,
+                student_checkpoint,
+                config,
+                optimizer=trainer.optimizer,
+                scheduler=trainer.scheduler,
+                ema_state=trainer.ema_parameters,
+                epoch=completed_epochs,
+                loss=avg_loss,
+                arch=arch,
+                training_state={
+                    "status": "training",
+                    "epoch": completed_epochs,
+                    "validation_loss": final_validation_loss,
+                    "best_validation_loss": best_validation_loss
+                    if math.isfinite(best_validation_loss)
+                    else None,
+                    "best_epoch": best_epoch,
+                    "epochs_without_improvement": epochs_without_improvement,
+                },
+            )
+        patience = max(0, int(early_stopping_patience))
+        if (
+            validation_dataloader is not None
+            and patience > 0
+            and completed_epochs >= max(1, int(minimum_epochs))
+            and epochs_without_improvement >= patience
+        ):
+            stopped_early = True
+            print(
+                f"Early stopping at epoch {completed_epochs}; best epoch={best_epoch}",
+                flush=True,
+            )
+            break
 
     final_loss = sum(d["loss"] for d in losses[-10:]) / max(1, len(losses[-10:]))
     final_loss_gt = sum(d["loss_gt"] for d in losses[-10:]) / max(1, len(losses[-10:]))
 
-    from src.models.text_to_music_diffusion import save_checkpoint
-
     save_checkpoint(
-        model_student, student_checkpoint, config, optimizer=trainer.optimizer, epoch=epochs, loss=final_loss,
-        arch={"dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult, "style_dim": TEACHER_COND_DIM, "roberta_model": roberta_model},
+        model_student,
+        student_checkpoint,
+        config,
+        optimizer=trainer.optimizer,
+        scheduler=trainer.scheduler,
+        ema_state=trainer.ema_parameters,
+        epoch=completed_epochs,
+        loss=final_loss,
+        arch=arch,
+        training_state={
+            "status": "complete",
+            "epoch": completed_epochs,
+            "validation_loss": final_validation_loss,
+            "best_validation_loss": best_validation_loss
+            if math.isfinite(best_validation_loss)
+            else None,
+            "best_epoch": best_epoch,
+            "epochs_without_improvement": epochs_without_improvement,
+            "stopped_early": stopped_early,
+        },
     )
 
     report = {
@@ -722,11 +971,28 @@ def run_distillation_training(
         "mel_adapter_used": trainer.needs_mel_resize,
         "mel_adapter_trainable": trainer.from_teacher_mel is not None,
         "student_checkpoint": str(student_checkpoint.resolve()),
-        "epochs": epochs,
+        "best_checkpoint": str(best_checkpoint.resolve())
+        if best_epoch > 0 and best_checkpoint.is_file()
+        else str(student_checkpoint.resolve()),
+        "epochs": completed_epochs,
+        "requested_epochs": max(1, int(epochs)),
+        "stopped_early": stopped_early,
         "step_count": len(losses),
         "final_loss": round(final_loss, 6),
         "final_loss_gt": round(final_loss_gt, 6),
         "loss_curve": loss_curve,
+        "final_validation_loss": round(final_validation_loss, 6)
+        if final_validation_loss is not None
+        else None,
+        "best_validation_loss": round(best_validation_loss, 6)
+        if math.isfinite(best_validation_loss)
+        else None,
+        "best_epoch": best_epoch,
+        "training_record_count": len(training_records),
+        "validation_record_count": len(validation_records),
+        "validation_fraction": float(validation_fraction),
+        "early_stopping_patience": max(0, int(early_stopping_patience)),
+        "minimum_epochs": max(1, int(minimum_epochs)),
         "elapsed_seconds": round(time.perf_counter() - start_time, 3),
         "alpha_feature": alpha_feature,
         "beta_repa": beta_repa,
@@ -736,6 +1002,8 @@ def run_distillation_training(
         "depth": depth,
         "heads": heads,
         "ff_mult": ff_mult,
+        "warmup_steps": warmup_steps,
+        "ema_decay": trainer.ema_decay,
     }
 
     (student_checkpoint.parent / "distillation_report.json").write_text(

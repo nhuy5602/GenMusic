@@ -1,7 +1,7 @@
 # Vietnamese Audio Preprocessing
 
 This package converts Vietnamese WAV/MP3 files into the structured dataset used
-by the self-authored diffusion model.
+by the conditional diffusion model.
 
 ## Workflow
 

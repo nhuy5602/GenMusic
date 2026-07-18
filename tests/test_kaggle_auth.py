@@ -3,9 +3,11 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from src.integrations.kaggle_auto import (
+    _modern_kernel_output,
+    _modern_kernel_status,
     kaggle_access_token,
     kaggle_auth_available,
     load_kaggle_api_tokens,
@@ -154,6 +156,45 @@ class KaggleAuthTests(unittest.TestCase):
 
             self.assertIsNone(kaggle_access_token(values))
             self.assertFalse(kaggle_auth_available(values))
+
+    @patch("src.integrations.kaggle_auto._modern_kaggle_rpc")
+    def test_modern_kernel_status_uses_kgat_rpc(self, rpc: MagicMock) -> None:
+        rpc.return_value = {"status": "COMPLETE"}
+
+        result = _modern_kernel_status("owner/kernel", "KGAT-token")
+
+        self.assertEqual(result, {"returncode": 0, "stdout": "COMPLETE", "stderr": ""})
+        rpc.assert_called_once_with(
+            "GetKernelSessionStatus",
+            {"userName": "owner", "kernelSlug": "kernel"},
+            "KGAT-token",
+        )
+
+    @patch("requests.get")
+    @patch("src.integrations.kaggle_auto._modern_kaggle_rpc")
+    def test_modern_kernel_output_downloads_only_generation_artifacts(
+        self,
+        rpc: MagicMock,
+        get: MagicMock,
+    ) -> None:
+        rpc.return_value = {
+            "files": [
+                {"fileName": "GenMusic/README.md", "url": "https://example/source"},
+                {"fileName": "genmusic_output/final.mp3", "url": "https://example/audio"},
+            ]
+        }
+        response = MagicMock()
+        response.iter_content.return_value = [b"audio"]
+        get.return_value = response
+        with tempfile.TemporaryDirectory() as temp_dir:
+            destination = Path(temp_dir)
+
+            result = _modern_kernel_output("owner/kernel", destination, "KGAT-token")
+
+            self.assertEqual(result["returncode"], 0)
+            self.assertEqual((destination / "genmusic_output" / "final.mp3").read_bytes(), b"audio")
+            self.assertFalse((destination / "GenMusic").exists())
+            get.assert_called_once_with("https://example/audio", stream=True, timeout=300.0)
 
 
 if __name__ == "__main__":

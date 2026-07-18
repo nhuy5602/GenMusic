@@ -1,225 +1,432 @@
-# GenMusic VN: Background Music & Vietnamese Vocal Generator
+# GenMusic VN
 
-GenMusic VN is a semi-autoregressive Conditional Flow Matching (CFM) diffusion transformer model inspired by DiffRhythm 2. It is engineered to generate high-fidelity Vietnamese vocals conditioned on both a text lyric prompt and an **Audio Style Anchor** extracted from the backing track.
+GenMusic VN là pipeline sinh giọng hát tiếng Việt bằng Conditional Flow Matching (CFM) và MicroDiT. Model nhận lyric tiếng Việt, backing mel và MuQ style anchor, sau đó sinh vocal mel và giải mã bằng Vocos.
 
-Detailed technical documentations are located in the `docs/` folder:
+README này là hướng dẫn bắt đầu từ một máy và một tài khoản Kaggle mới. Không cần sửa username hoặc dataset slug trong source code.
 
----
-
-## 📂 Project Directory Structure
+## Luồng khuyến nghị
 
 ```text
-GenMusic/
-├── src/                # Core Python package (data processing, model, training)
-│   ├── data/           # Audio preprocessing, Whisper ASR, Demucs split, Vietnamese G2P
-│   ├── models/         # MicroDiT + Conditional Flow Matching (CFM) diffusion architecture
-│   ├── training/       # PyTorch Dataset, DataLoader, Trainer, and Distillation loop
-│   ├── evaluation/     # Objective evaluation metrics for audio spectrograms
-│   └── integrations/   # Kaggle API cloud integrations and job submitters
-├── scripts/            # Automated automation scripts (Kaggle training, batch prep)
-├── web/                # Interactive Web Client front-end UI (HTML, CSS, JS)
-├── docs/               # System architecture design documentations
-├── dataset/            # Local raw audio input folder (git-ignored)
-├── outputs/            # Model checkpoints and generated audio waveforms
-├── cli.py              # Main CLI entry point
-└── server.py           # API Web backend server
+Clone repo
+  -> tạo .env riêng
+  -> smoke test local
+  -> preprocess toàn bộ các part trên Kaggle
+  -> train 20 epoch
+  -> đánh giá Whisper/CFG/plot
+  -> resume thêm epoch nếu lời chưa rõ
 ```
 
----
+Local chỉ phù hợp để kiểm tra nhanh. Preprocess và train full dataset nên chạy trên Kaggle GPU.
 
-## 🛠️ Installation & Setup
+## 1. Yêu cầu
 
-### 1. Install Dependencies
+- Git.
+- [uv](https://docs.astral.sh/uv/) để quản lý Python và dependency.
+- Python 3.13; `uv` sẽ đọc phiên bản từ `.python-version`.
+- FFmpeg và `espeak-ng` có trong `PATH` nếu preprocess/generate local.
+- Một tài khoản Kaggle đã có quyền dùng GPU.
+- Kaggle access token mới, thường bắt đầu bằng `KGAT_` hoặc `KGAT-`.
 
-* **Using `uv` (Recommended - extremely fast and secure):**
-  ```powershell
-  uv sync
-  ```
+Kiểm tra công cụ hệ thống:
 
-* **Using Standard `pip`:**
-  ```powershell
-  pip install -e .
-  ```
+```powershell
+git --version
+uv --version
+ffmpeg -version
+espeak-ng --version
+```
 
-### 2. Setup Environment Variables (.env)
-Create a `.env` file in the root directory based on the `.env.example` template:
+## 2. Clone và cài dependency
+
+```powershell
+git clone https://github.com/nhuy5602/GenMusic.git
+cd GenMusic
+uv sync --extra dev
+uv run python cli.py --help
+```
+
+Không chạy `pip install` hoặc tự tạo virtual environment. Tất cả lệnh Python trong project dùng `uv run`.
+
+## 3. Tạo `.env`
+
+PowerShell:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Bash:
+
+```bash
+cp .env.example .env
+```
+
+Tối thiểu sửa các dòng sau:
+
 ```env
-# Local Environment variables
-RAW_AUDIO_INPUT_DIR=dataset/vietnamese_songs
-PROCESSED_DATASET_DIR=dataset/diff_rhythm_dataset
-MODEL_CHECKPOINT_PATH=outputs/my_trained_model.pt
+KAGGLE_USERNAME=YOUR_KAGGLE_USERNAME
+KAGGLE_API_TOKEN=KGAT_YOUR_ACCESS_TOKEN
 
-# Kaggle API tokens (For scheduling training tasks to GPU Cloud)
-KAGGLE_USERNAME=your_kaggle_username
-KAGGLE_KEY=your_kaggle_api_key
-KAGGLE_RAW_DATASET_REF=sonlest/vietnamese-music-dataset-version3-part6
-# Set after a preprocess run (scripts/run_kaggle_preprocess_all.py) -- attaches the
-# preprocess kernel's own output to downstream kernels via kernel_sources, so no
-# Kaggle API key is ever embedded in the shared kernel code:
-KAGGLE_PROCESSED_KERNEL_REF=your_kaggle_username/genmusic-prep-1234567890
-# Legacy fallback: a pre-existing published Dataset, used only if the above is unset.
-KAGGLE_PROCESSED_DATASET_REF=your_kaggle_username/vietnamese-music-processed-dataset
-# Fixed training dataset ref used by the `generate` (Kaggle job staging) command:
-GENMUSIC_KAGGLE_DATASET_REF=your_kaggle_username/genmusic-vn-self-diffusion-training
-```
-See `.env.example` for the full list, including optional per-run overrides.
+# Dùng khi preprocess một dataset riêng lẻ.
+KAGGLE_RAW_DATASET_REF=OWNER/vietnamese-music-dataset-version3-part6
 
----
-
-## ⚡ Quick Start: Train & Run Inference
-
-The minimum path from raw audio to a generated song, run locally with `cli.py`. Every command below is copy-pasteable; swap paths as needed.
-
-**1. Preprocess raw songs into a training dataset**
-```powershell
-uv run python cli.py preprocess-raw --input dataset/vietnamese_songs --output dataset/diff_rhythm_dataset --whisper-model tiny
-```
-Splits vocal/backing stems (Demucs), transcribes lyrics (Whisper), computes the Audio Style Anchor (MuQ-MuLan), and writes mel-spectrograms in Vocos-native format. Produces `dataset/diff_rhythm_dataset/{config.json, records.jsonl, mels/}`.
-
-**2. Train the student model (no teacher — fastest way to sanity-check the pipeline)**
-```powershell
-uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/my_dit_model.pt --epochs 30 --batch-size 4 --dim 256 --depth 4 --heads 4
+# Chỉ điền một trong hai dòng sau khi đã có dữ liệu preprocess.
+KAGGLE_PROCESSED_KERNEL_REF=
+KAGGLE_PROCESSED_DATASET_REF=
 ```
 
-**3. (Optional) Knowledge-distill from the real DiffRhythm2 teacher**
-Needs the [DiffRhythm2 repo](https://github.com/ASLP-lab/DiffRhythm2) checked out somewhere with its dependencies installed, and its path on `PYTHONPATH` — this works both on Kaggle (see `scripts/run_kaggle_distill.py`) and locally (clone it yourself, `uv pip install --no-deps <missing deps as they come up>`, `espeak-ng` installed as a system package for the lyric tokenizer). Without it, the command below still runs and trains ground-truth-only, but reports that honestly (`teacher_status`/`distillation_active` in the output) instead of silently faking distillation:
+Quy tắc cấu hình:
+
+- `.env` được ưu tiên trước `~/.kaggle/kaggle.json`.
+- `.env` đã nằm trong `.gitignore`; không commit hoặc gửi token cho người khác.
+- `KAGGLE_PROCESSED_KERNEL_REF` là output của một Kaggle preprocess kernel và là lựa chọn ưu tiên.
+- `KAGGLE_PROCESSED_DATASET_REF` chỉ dùng khi dữ liệu preprocess đã được publish thành Kaggle Dataset.
+- Source code không có dataset ref thuộc tài khoản cá nhân làm fallback.
+
+Kiểm tra token:
+
 ```powershell
-$env:PYTHONPATH = "C:\path\to\DiffRhythm2"
-uv run python cli.py train-distill --dataset dataset/diff_rhythm_dataset --student-checkpoint outputs/distilled_student.pt --epochs 30 --batch-size 4 --dim 256 --depth 4 --heads 4
+uv run kaggle datasets list -s vietnamese-music-dataset-version3-part
 ```
 
-**4. Generate a song (inference)**
+Nếu nhận `401` hoặc `403`, hãy tạo token mới và kiểm tra tài khoản có quyền truy cập dataset/kernel tương ứng.
+
+## 4. Smoke test local
+
+Thêm 1–2 file `.wav`, `.mp3`, `.flac` hoặc `.m4a` vào `dataset/vietnamese_songs/`.
+
+### 4.1. Preprocess
+
 ```powershell
-uv run python cli.py generate-local --text "Đêm nay Hà Nội ngập tràn tiếng mưa rơi." --duration 8.0 --vocoder vocos --checkpoint outputs/my_dit_model.pt --out outputs/my_song
+uv run python cli.py preprocess-raw `
+  --input dataset/vietnamese_songs `
+  --output dataset/diff_rhythm_dataset `
+  --whisper-model base `
+  --max-files 2 `
+  --keep-separated-count 2
 ```
-Loads whichever checkpoint you point it at (from step 2 or 3), samples with CFM, and decodes to `outputs/my_song/final.wav` via the Vocos vocoder.
 
-**5. Evaluate the result**
+Pipeline thực hiện Demucs, Whisper ASR, chuẩn hóa/G2P tiếng Việt, tạo vocal/backing mel và MuQ style anchor.
+
+Kiểm tra dataset:
+
 ```powershell
-uv run python cli.py evaluate-self --generated outputs/my_song/final.wav --out outputs/evaluation_report
+uv run python cli.py validate-dataset --dataset dataset/diff_rhythm_dataset
 ```
 
-For running the same pipeline on Kaggle GPUs instead (recommended for anything past a smoke test — CPU-only teacher forward passes are ~3s/sample), see the automated scripts below and [docs/guides/run_full_pipeline.md](docs/guides/run_full_pipeline.md).
+Dataset hợp lệ có dạng:
 
----
+```text
+dataset/diff_rhythm_dataset/
+  config.json
+  records.jsonl
+  mels/
+    <id>_vocal.pt
+    <id>_backing.pt
+    <id>_style.pt
+```
 
-## 🚀 Usage Guide for Automated Scripts
+### 4.2. Train nhỏ
 
-All key workflows are packaged into automated scripts in the `scripts/` directory:
-
-### 0. Training-only / distillation with no manual environment setup (Kaggle)
-
-These two are the ones to hand to a teammate — both fully automate their own GPU
-environment (cloning DiffRhythm2, installing `espeak-ng` + Python deps, etc.) inside
-the Kaggle kernel, so **no local dependency chasing is needed**:
 ```powershell
-# Training-only (baseline, no teacher):
+uv run python cli.py train-self `
+  --dataset dataset/diff_rhythm_dataset `
+  --checkpoint outputs/local_smoke.pt `
+  --epochs 1 `
+  --batch-size 2 `
+  --dim 128 `
+  --depth 2 `
+  --heads 4 `
+  --frames-per-chunk 192 `
+  --device cpu
+```
+
+### 4.3. Generate và đánh giá
+
+Luôn truyền reference dataset để inference có backing mel và style anchor giống lúc train:
+
+```powershell
+uv run python cli.py generate-local `
+  --text "Đêm nay thành phố lên đèn, em nghe tiếng mưa dịu dàng." `
+  --checkpoint outputs/local_smoke.pt `
+  --reference-dataset dataset/diff_rhythm_dataset `
+  --duration 8 `
+  --steps 32 `
+  --guidance-scale 2 `
+  --vocoder vocos `
+  --out outputs/local_generation
+```
+
+```powershell
+uv run python cli.py evaluate-self `
+  --generated outputs/local_generation/final.wav `
+  --generated-text "Đêm nay thành phố lên đèn, em nghe tiếng mưa dịu dàng." `
+  --out outputs/local_evaluation
+```
+
+Smoke test chỉ xác nhận pipeline chạy đúng; một hoặc hai bài không đủ để tạo giọng hát rõ.
+
+## 5. Full dataset trên Kaggle
+
+### Hai cách nhận dữ liệu preprocess
+
+1. Nhanh nhất: chủ tài khoản cũ chia sẻ hoặc public các preprocess kernel đã `COMPLETE`. Tài khoản mới chỉ cần các ref dạng `OWNER/KERNEL-SLUG`.
+2. Độc lập hoàn toàn: tài khoản mới tự preprocess tất cả part theo phần dưới đây.
+
+Kernel ref phải truy cập được từ tài khoản mới. Chỉ copy source code không tự cấp quyền vào private Kaggle kernel/dataset của tài khoản cũ.
+
+### 5.1. Tự tìm và preprocess mọi `partX`
+
+Script sau tự tìm các dataset có tên chính xác `vietnamese-music-dataset-version3-partX`, đếm toàn bộ file và không giới hạn 1.000 file:
+
+```powershell
+uv run python scripts/run_kaggle_all_parts.py `
+  --max-new-jobs 2 `
+  --whisper-model base
+```
+
+Kaggle thường chỉ cho hai batch GPU sessions đồng thời. Khi hai job đầu hoàn tất, chạy lại và truyền các ref đã xong bằng `--reuse`:
+
+```powershell
+uv run python scripts/run_kaggle_all_parts.py `
+  --reuse 1=YOUR_USERNAME/PART1_KERNEL `
+  --reuse 2=YOUR_USERNAME/PART2_KERNEL `
+  --max-new-jobs 2 `
+  --whisper-model base
+```
+
+Lặp lại với part 3–4 rồi 5–6. Mỗi lần chạy tạo một file:
+
+```text
+outputs/kaggle_all_parts/allparts-<timestamp>/state.json
+```
+
+Giữ lại sáu ref cuối cùng theo mẫu:
+
+```text
+1=YOUR_USERNAME/PART1_KERNEL
+2=YOUR_USERNAME/PART2_KERNEL
+3=YOUR_USERNAME/PART3_KERNEL
+4=YOUR_USERNAME/PART4_KERNEL
+5=YOUR_USERNAME/PART5_KERNEL
+6=YOUR_USERNAME/PART6_KERNEL
+```
+
+Theo dõi job:
+
+```powershell
+uv run kaggle kernels status YOUR_USERNAME/PART1_KERNEL
+uv run python scripts/check_kernel_progress.py YOUR_USERNAME/PART1_KERNEL 8
+```
+
+Từ log, cộng số record của sáu part. Bộ dữ liệu hiện tại từng cho 1.843 record, nhưng phải dùng tổng thực tế nếu dataset nguồn thay đổi.
+
+### 5.2. Train lần đầu
+
+`run_kaggle_iterative_self.py` là launcher khuyến nghị vì nó có validation, text-conditioning sensitivity, CFG sweep, Whisper ASR, MP3 tốt nhất và plot báo cáo.
+
+Thay sáu kernel ref và `--expected-records` trước khi chạy:
+
+```powershell
+uv run python scripts/run_kaggle_iterative_self.py `
+  --kernel 1=YOUR_USERNAME/PART1_KERNEL `
+  --kernel 2=YOUR_USERNAME/PART2_KERNEL `
+  --kernel 3=YOUR_USERNAME/PART3_KERNEL `
+  --kernel 4=YOUR_USERNAME/PART4_KERNEL `
+  --kernel 5=YOUR_USERNAME/PART5_KERNEL `
+  --kernel 6=YOUR_USERNAME/PART6_KERNEL `
+  --expected-records 1843 `
+  --epochs 20 `
+  --batch-size 4 `
+  --frames-per-chunk 384 `
+  --dim 384 `
+  --depth 6 `
+  --heads 6 `
+  --learning-rate 8e-5 `
+  --style-dropout 0.8 `
+  --text-dropout 0.1 `
+  --text-contrastive-weight 0.08 `
+  --text-contrastive-margin 0.03 `
+  --text-contrastive-prob 0.75 `
+  --text-sensitivity-weight 2 `
+  --text-sensitivity-target 0.20 `
+  --minimum-text-sensitivity 0.18 `
+  --dataset-validation-max-records 128 `
+  --validation-fraction 0.05 `
+  --validation-max-records 96 `
+  --early-stopping-patience 4 `
+  --minimum-epochs 18 `
+  --evaluation-records 6 `
+  --guidance-scales "1,2,3,4" `
+  --accelerator NvidiaTeslaT4 `
+  --online-assets `
+  --session-timeout-seconds 36000
+```
+
+Launcher sẽ:
+
+- Xác nhận cả sáu preprocess kernels đã `COMPLETE`.
+- Gộp đúng tổng record mà không copy tensor nhiều lần.
+- Train và lưu checkpoint giữa epoch/mỗi 200 step.
+- Chọn best checkpoint chỉ khi lyric sensitivity đạt ngưỡng.
+- Thử CFG 1, 2, 3, 4 và đánh giá bằng Whisper.
+- Tạo MP3, JSON, CSV và plot cho báo cáo.
+
+State local nằm tại:
+
+```text
+outputs/kaggle_iterative_self/iterative-self-<timestamp>/state.json
+```
+
+Máy local có thể sleep hoặc mất mạng sau khi Kaggle đã nhận job; job chạy trên server Kaggle. Không xóa kernel hoặc revoke quyền dataset khi job còn chạy.
+
+### 5.3. Resume thêm epoch
+
+Nếu job đầu đã `COMPLETE` nhưng lời chưa rõ, dùng chính kernel đó làm checkpoint nguồn. Giữ nguyên sáu `--kernel` và toàn bộ hyperparameter, sau đó đổi/thêm:
+
+```powershell
+  --epochs 28 `
+  --minimum-epochs 26 `
+  --resume-kernel-ref YOUR_USERNAME/INITIAL_TRAIN_KERNEL `
+  --source-dataset-ref YOUR_USERNAME/SOURCE_DATASET_FROM_STATE_JSON `
+  --session-timeout-seconds 14400
+```
+
+Nếu checkpoint của một job timeout đã được tải và upload thành private Kaggle Dataset, dùng:
+
+```powershell
+  --resume-dataset-ref YOUR_USERNAME/RESUME_CHECKPOINT_DATASET
+```
+
+Không truyền đồng thời `--resume-kernel-ref` và `--resume-dataset-ref`.
+
+## 6. Tải và đọc output
+
+Sau khi kernel `COMPLETE`:
+
+```powershell
+uv run kaggle kernels output YOUR_USERNAME/TRAIN_KERNEL `
+  -p outputs/downloaded_training
+```
+
+Các file quan trọng:
+
+```text
+self_all_parts.pt                 checkpoint mới nhất
+self_all_parts.best.pt            checkpoint validation tốt nhất
+training_report.json              loss, validation, sensitivity, epoch
+quality_evaluation/quality_report.json
+iteration_result.json             kết luận vòng train
+best_generated.mp3                mẫu có ASR tốt nhất
+report_plots/                     PNG, CSV và REPORT.md cho báo cáo
+```
+
+Chỉ dừng khi đồng thời đạt các điều kiện:
+
+- `intelligibility_pass=true`.
+- Whisper transcript không rỗng và bám lyric mục tiêu.
+- `text_conditioning_sensitivity >= 0.18`.
+- Nghe trực tiếp `best_generated.mp3` có từ tiếng Việt nhận ra được.
+
+Loss thấp hoặc audio “giống nhạc” chưa đủ chứng minh lời rõ.
+
+## 7. Train nhanh với một nguồn preprocess
+
+Nếu chỉ muốn kiểm tra một processed kernel/dataset, cấu hình `.env`:
+
+```env
+KAGGLE_PROCESSED_KERNEL_REF=YOUR_USERNAME/COMPLETED_PREPROCESS_KERNEL
+# Hoặc:
+KAGGLE_PROCESSED_DATASET_REF=YOUR_USERNAME/PUBLISHED_PROCESSED_DATASET
+```
+
+Sau đó:
+
+```powershell
 uv run python scripts/run_kaggle_training.py --epochs 5 --batch-size 4
-
-# Knowledge distillation from the real DiffRhythm2 teacher:
-uv run python scripts/run_kaggle_distill.py
-```
-Only two things are required in `.env` first — everything else is handled by the script:
-1. `KAGGLE_USERNAME` / `KAGGLE_KEY`.
-2. A processed-dataset reference **your own Kaggle account can access** —
-   `KAGGLE_PROCESSED_KERNEL_REF` (preferred) or `KAGGLE_PROCESSED_DATASET_REF`. The
-   scripts fall back to a hardcoded example ref if unset, but that example belongs to
-   whoever produced it and is not guaranteed to be public/shared with your account —
-   don't rely on it. If you don't have your own processed dataset yet, produce one
-   first with `scripts/run_kaggle_preprocess_all.py`, or ask whoever already has one to
-   make it accessible to you (public, or shared as a Kaggle dataset collaborator).
-
-### 1. Run Complete Local Pipeline Test
-Verify the whole end-to-end flow locally (Data scanning ➔ Prep ➔ Model training ➔ Sampling ➔ Evaluation):
-```powershell
-uv run python scripts/run_pipeline.py
 ```
 
-### 2. Run Kaggle GPU Single-File Smoke Test
-Upload source files to Kaggle, isolate a single audio track, run preprocessing and a 1-epoch training test on Kaggle's T4 GPU, then download the resulting `.pt` model checkpoint automatically:
-```powershell
-uv run python scripts/run_kaggle_training.py
+Luồng này phù hợp với smoke test, không thay thế full six-part training và không tạo bộ báo cáo đầy đủ như iterative launcher.
+
+## 8. Chạy web
+
+Cấu hình một kernel checkpoint đã `COMPLETE` và một preprocess kernel có
+`records.jsonl` cùng backing stems trong `.env`:
+
+```env
+GENMUSIC_KAGGLE_CHECKPOINT_REF=YOUR_USERNAME/GENMUSIC_CHECKPOINT
+GENMUSIC_KAGGLE_BACKING_REF=YOUR_USERNAME/GENMUSIC_PREPROCESS_PART
 ```
 
-### 3. Run Batch Preprocessing on Kaggle
-Perform stem separation (Demucs) and transcription (Whisper) on raw audio tracks on Kaggle. Automatically cleans up intermediate heavy WAV files to prevent Disk OOM.
-```powershell
-uv run python scripts/run_kaggle_preprocess_all.py --max-files 40
-```
+Sau đó chạy:
 
-### 4. Run the Full Pipeline in One Kaggle Kernel (recommended)
-Preprocess → vocoder sanity check → baseline training → distillation attempt → generate → sanity stats, all in a single Kaggle kernel session (matters for GPU quota — see [docs/guides/run_full_pipeline.md](docs/guides/run_full_pipeline.md)):
-```powershell
-uv run python scripts/run_kaggle_full_experiment.py --max-files 40 --whisper-model tiny --baseline-epochs 60 --distill-epochs 30
-```
-
-### 5. Run the Distillation-vs-Baseline Comparison Experiment
-Trains several configs (baseline; distillation at a few `alpha_feature` values; a smaller architecture variant) against one shared preprocessed dataset, for a finer-grained ablation than the direct 250-song comparison already run — see [docs/PROJECT_REPORT.md](docs/PROJECT_REPORT.md) §4.8/§4.9 for the answer to "does distillation actually help":
-```powershell
-uv run python scripts/run_kaggle_experiment_matrix.py --max-files 40 --whisper-model tiny --epochs 60
-```
-
----
-
-## 🎹 Advanced CLI Operations (`cli.py`)
-
-### 1. Local Generation (Inference)
-`vocos` (default, recommended) decodes with the pretrained Vocos neural vocoder; `griffinlim` is a real iterative-phase-estimation fallback if Vocos is unavailable. Both require the mel format to match Vocos's native convention exactly, which this project's default `MusicDiffusionConfig` and `preprocess-raw` output always do (see [docs/experiments/vocoder_fix.md](docs/experiments/vocoder_fix.md) for why this specific detail mattered a lot in practice):
-```powershell
-# Generate audio using the Vocos Vocoder for natural voice reconstruction:
-uv run python cli.py generate-local --text "Đêm nay Hà Nội ngập tràn tiếng mưa rơi." --duration 8.0 --vocoder vocos --out outputs/my_song
-```
-Without `--reference-dataset`, generation conditions on a zero backing-track and falls back to a pooled-text style vector instead of a real MuQ-MuLan style anchor — a real train/inference mismatch, since the model is trained on real backing_mel + style_anchor conditioning. To condition generation the same way training did, extract both from an already-preprocessed dataset record instead of needing new raw audio input:
-```powershell
-uv run python cli.py generate-local --text "Đêm nay Hà Nội ngập tràn tiếng mưa rơi." --duration 8.0 --checkpoint outputs/my_dit_model.pt --reference-dataset dataset/diff_rhythm_dataset --reference-id <record_id> --out outputs/my_song
-```
-`--reference-id` defaults to the dataset's first record if omitted. See `load_reference_conditioning()` in `src/training/self_diffusion.py`.
-
-### 2. Manual Preprocessing
-Preprocess audio files with Demucs stem separation and Whisper lyric transcription. pYIN F0 extraction is removed to dramatically speed up data preparation:
-```powershell
-uv run python cli.py preprocess-raw --input dataset/vietnamese_songs --output dataset/diff_rhythm_dataset --whisper-model small --max-files 100 --keep-separated-count 100
-```
-- `--max-files`: Limits the maximum number of files to process.
-- `--keep-separated-count`: Determines how many separated demuxed WAV files are kept in the final output directory for inspection/evaluation.
-
-### 3. Model Training & Knowledge Distillation
-You can train the diffusion denoiser from scratch or perform knowledge distillation from the pretrained DiffRhythm Teacher to your student MicroDiT model:
-
-* **Train Model from Scratch:**
-  ```powershell
-  uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/my_dit_model.pt --epochs 5 --batch-size 4 --dim 256 --depth 4 --heads 4
-  ```
-  MicroDiT (Transformer-based) with real MuQ-MuLan Audio Style Anchor conditioning is the only architecture. `--dim`/`--depth`/`--heads`/`--ff-mult` control its size (default: ~5.6M trainable params).
-
-* **Knowledge Distillation:**
-  Replicates the real DiffRhythm2 teacher's call contract (see [docs/experiments/distillation_fix.md](docs/experiments/distillation_fix.md)). Needs a clone of the [DiffRhythm2 repo](https://github.com/ASLP-lab/DiffRhythm2) on `PYTHONPATH` with its dependencies installed — done automatically on Kaggle (see `scripts/run_kaggle_distill.py`), or manually locally (see Quick Start step 3 above; verified working on Windows/CPU too, not just Kaggle). Without that clone, or without internet, `train-distill` **raises immediately** rather than silently completing as ground-truth-only training under the distillation name — never a silent fake teacher, and never a silent downgrade either. Use `train-self` if you want ground-truth-only training.
-  - If `--teacher-checkpoint` is omitted, the script automatically downloads the latest model weights (`model.safetensors`) from the Hugging Face repo: `ASLP-lab/DiffRhythm2`.
-  ```powershell
-  uv run python cli.py train-distill --dataset dataset/diff_rhythm_dataset --student-checkpoint outputs/distilled_student.pt --epochs 5 --batch-size 4 --alpha-feature 0.5
-  ```
-  Verified at Kaggle scale (250 real songs, matched epochs/steps against `train-self`): distillation's `loss_gt` came in at roughly a third of the no-teacher baseline's, at ~49x the wall-clock GPU cost — see [docs/PROJECT_REPORT.md](docs/PROJECT_REPORT.md) §4.8/§4.9 and [docs/guides/run_full_pipeline.md](docs/guides/run_full_pipeline.md) for a finer-grained ablation if you want one.
-
-### 4. Audio Quality Evaluation
-```powershell
-uv run python cli.py evaluate-self --generated outputs/my_song/final.wav --out outputs/evaluation_report
-```
-
----
-
-## 🖥️ Interactive Web UI Demo
-
-Start the local standard-library backend server:
 ```powershell
 uv run python server.py
 ```
-Open your browser and navigate to `http://127.0.0.1:8000` to enter custom Vietnamese prompts and listen to generated musical tracks.
 
----
+Mở `http://127.0.0.1:8000`. Mỗi request web chỉ chạy inference từ checkpoint,
+dùng pronunciation prior để giữ lời tiếng Việt rõ rồi mix vocal với backing
+thật. Web không train lại model theo từng lần bấm.
 
-## 🧪 Unit Testing
+## 9. Kiểm thử khi sửa code
 
-Run automated tests to verify model math, audio anchor slicing, and system stability:
 ```powershell
-uv run python -m unittest discover -s tests -v
+uv run python -m pytest -q
+uv run python -m py_compile cli.py scripts/run_kaggle_iterative_self.py
+git diff --check
 ```
+
+Không đưa `.env`, dataset, checkpoint hoặc output lớn vào Git.
+
+## 10. Lỗi thường gặp
+
+### `Maximum batch GPU session count`
+
+Đã có hai Kaggle GPU jobs đang giữ session. Chờ một job kết thúc rồi submit tiếp; không tạo source dataset mới liên tục.
+
+### Kaggle báo hết quota nhưng job vẫn `RUNNING`
+
+Quota có thể đã được reserve khi submit. Job hiện tại thường vẫn tiếp tục; kiểm tra trạng thái/log thay vì submit trùng.
+
+### `Expected ... records, found ...`
+
+`--expected-records` không khớp tổng `records.jsonl` của các preprocess kernel. Đọc log sáu part và sửa đúng tổng.
+
+### `401`, `403` hoặc không mount được kernel/dataset
+
+Ref đang private hoặc thuộc tài khoản khác. Public/chia sẻ tài nguyên hoặc preprocess lại bằng tài khoản mới.
+
+### Tesla P100 báo PyTorch không hỗ trợ `sm_60`
+
+Các launcher có CUDA smoke test và tự sửa Torch khi cần. Không để job rơi xuống CPU mà vẫn tiếp tục train.
+
+### `scipy.signal` không có `hann`
+
+Đây là warning khi ước lượng beat/BPM và fallback về 120 BPM; nó không phải nguyên nhân trực tiếp khiến lyric không rõ.
+
+### Whisper transcript rỗng dù loss giảm
+
+Model chưa hội tụ theo lyric hoặc conditioning đang bị bỏ qua. Kiểm tra sensitivity, CFG sweep và best checkpoint; resume từ checkpoint thay vì train lại từ đầu.
+
+## 11. Cấu trúc project
+
+```text
+GenMusic/
+  cli.py                              CLI chính
+  server.py                           web API local
+  src/data/                           preprocess, lyric/G2P/alignment
+  src/models/                         MicroDiT và CFM
+  src/training/                       dataset, train, resume, validation
+  src/evaluation/                     metric và plot
+  src/integrations/                   Kaggle auth/API
+  scripts/run_kaggle_all_parts.py     preprocess toàn bộ partX
+  scripts/run_kaggle_iterative_self.py full train/evaluate/resume
+  scripts/evaluate_generation_quality.py
+  scripts/create_kaggle_report_plots.py
+  dataset/                            raw/local dataset nhỏ
+  datasets/                           runtime dataset lớn, Git-ignored
+  outputs/                            state/checkpoint/audio, Git-ignored
+  docs/                               thiết kế, thí nghiệm và báo cáo
+```
+
+Tài liệu kỹ thuật chi tiết nằm trong `docs/`. README là nguồn bắt đầu cho người mới; các script `--help` là nguồn chính xác cho toàn bộ tùy chọn hiện hành.

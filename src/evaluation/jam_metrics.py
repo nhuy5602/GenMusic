@@ -1,4 +1,4 @@
-"""Objective and subjective metrics for the self-authored music model."""
+"""Objective and subjective metrics for the GenMusic model."""
 
 from __future__ import annotations
 

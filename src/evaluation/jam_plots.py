@@ -1,4 +1,4 @@
-"""Academic evaluation plots for the self-authored music model."""
+"""Academic evaluation plots for the GenMusic model."""
 
 from __future__ import annotations
 

@@ -34,6 +34,27 @@ class _RecordingFlowModel:
 
 
 class ConditioningParityTests(unittest.TestCase):
+    def test_full_pronunciation_prior_is_returned_without_denoising(self) -> None:
+        class MustNotRun(torch.nn.Module):
+            def forward(self, *args, **kwargs):
+                raise AssertionError("CFM model must not run at prior strength 1")
+
+        config = MusicDiffusionConfig(n_mels=4)
+        prior = torch.randn(1, 4, 12)
+
+        sampled = sample_cfm(
+            MustNotRun(),
+            ["xin chào"],
+            12,
+            config,
+            "cpu",
+            steps=4,
+            initial_mel=prior,
+            pronunciation_prior_strength=1.0,
+        )
+
+        self.assertTrue(torch.equal(sampled, prior))
+
     def test_sample_cfm_forwards_real_style(self) -> None:
         config = MusicDiffusionConfig()
         model = _RecordingFlowModel()

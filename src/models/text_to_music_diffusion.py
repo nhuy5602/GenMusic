@@ -55,7 +55,7 @@ def _torch():
         import torch
         import torch.nn as nn
     except ImportError as exc:  # pragma: no cover - dependency boundary
-        raise RuntimeError("Cần cài torch để chạy model sinh nhạc tự code.") from exc
+        raise RuntimeError("Cần cài torch để chạy model sinh nhạc GenMusic.") from exc
     return torch, nn
 
 
@@ -188,7 +188,22 @@ def render_mel_to_wav(mel, destination: str | Path, config: MusicDiffusionConfig
             try:
                 from vocos import Vocos
 
-                vocos_model = Vocos.from_pretrained("charactr/vocos-mel-24khz")
+                local_vocos = os.getenv("GENMUSIC_VOCOS_PATH")
+                if local_vocos and Path(local_vocos).is_dir():
+                    # Vocos 0.1.0 only accepts a Hub repo ID in
+                    # ``from_pretrained``. Load the same two files directly so
+                    # Kaggle workers with no DNS can decode offline.
+                    vocos_root = Path(local_vocos)
+                    vocos_model = Vocos.from_hparams(vocos_root / "config.yaml")
+                    state_dict = torch.load(
+                        vocos_root / "pytorch_model.bin",
+                        map_location="cpu",
+                        weights_only=True,
+                    )
+                    vocos_model.load_state_dict(state_dict)
+                    vocos_model.eval()
+                else:
+                    vocos_model = Vocos.from_pretrained("charactr/vocos-mel-24khz")
                 with torch.no_grad():
                     audio_tensor = vocos_model.decode(values.unsqueeze(0))
                 audio = audio_tensor.squeeze(0).cpu().numpy()
@@ -328,6 +343,9 @@ def generate_audio(
     backing_mel=None,
     style_anchor=None,
     style_prompt=None,
+    enforce_minimum_duration: bool = True,
+    pronunciation_prior_strength: float = 0.0,
+    pronunciation_prior_model: str = "facebook/mms-tts-vie",
 ) -> dict[str, Any]:
     """Generate audio with the same backing/style inputs used during training.
 
@@ -338,6 +356,9 @@ def generate_audio(
     callers that already passed a MuQ-MuLan anchor directly.
     """
     torch, _ = _torch()
+    prior_strength = float(pronunciation_prior_strength)
+    if prior_strength < 0.0 or prior_strength > 1.0:
+        raise ValueError("pronunciation_prior_strength must be in [0, 1]")
     model.to(device)
 
     if style_anchor is not None and style_prompt is not None:
@@ -354,7 +375,16 @@ def generate_audio(
                 "(style_dim,) or (1, style_dim)"
             )
 
-    duration_seconds = max(float(duration_seconds), estimate_minimum_lyric_duration(text))
+    requested_duration = max(0.1, float(duration_seconds))
+    # User-facing generation should not squeeze a long lyric into an
+    # impossible duration. Evaluation is different: it must be able to render
+    # the exact 4.096 s span used by training, otherwise the generated and real
+    # reference windows are not comparable.
+    duration_seconds = (
+        max(requested_duration, estimate_minimum_lyric_duration(text))
+        if enforce_minimum_duration
+        else requested_duration
+    )
     rendered = []
     lyric_timing = build_lyric_timing(text, duration_seconds)
     section_number = 0
@@ -366,6 +396,19 @@ def generate_audio(
         chunk_frames = max(8, int(chunk_duration * config.sample_rate / config.hop_length))
         from .cfm_flow import sample_cfm
 
+        pronunciation_mel = None
+        if prior_strength > 0.0:
+            from .pronunciation_prior import synthesize_pronunciation_mel
+
+            pronunciation_mel = synthesize_pronunciation_mel(
+                chunk_text,
+                frames=chunk_frames,
+                config=config,
+                device=device,
+                seed=seed + section_number,
+                model_name=pronunciation_prior_model,
+            )
+
         mel = sample_cfm(
             model,
             [chunk_text],
@@ -376,6 +419,8 @@ def generate_audio(
             guidance_scale=guidance_scale,
             seed=seed + section_number,
             style_prompt=normalized_style,
+            initial_mel=pronunciation_mel,
+            pronunciation_prior_strength=prior_strength,
         )
         rendered.append(mel.squeeze(0))
         section_number += 1
@@ -400,6 +445,12 @@ def generate_audio(
         "lyric_timing": lyric_timing,
         "backing_conditioned": False,
         "muq_style_conditioned": normalized_style is not None,
+        "pronunciation_prior_strength": prior_strength,
+        "pronunciation_prior_model": (
+            pronunciation_prior_model
+            if prior_strength > 0.0
+            else None
+        ),
     }
 
 
