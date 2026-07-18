@@ -185,9 +185,12 @@ def main():
     # this fix, or shared manually outside this project's scripts.
     processed_kernel_ref = args.processed_kernel_ref or os.getenv("KAGGLE_PROCESSED_KERNEL_REF") or tokens.get("KAGGLE_PROCESSED_KERNEL_REF")
     processed_dataset_ref = os.getenv("KAGGLE_PROCESSED_DATASET_REF") or tokens.get(
-        "KAGGLE_PROCESSED_DATASET_REF",
-        "ngochuy5602/genmusic-vn-part3-vocal-vocos-smoke" if not processed_kernel_ref else None,
+        "KAGGLE_PROCESSED_DATASET_REF"
     )
+    if not processed_kernel_ref and not processed_dataset_ref:
+        raise RuntimeError(
+            "Set KAGGLE_PROCESSED_KERNEL_REF or KAGGLE_PROCESSED_DATASET_REF in .env"
+        )
     processed_dataset_slug = (processed_kernel_ref or processed_dataset_ref).split("/")[-1]
     epochs = args.epochs
     batch_size = args.batch_size

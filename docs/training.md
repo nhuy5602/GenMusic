@@ -24,7 +24,7 @@ uv run python cli.py validate-dataset --dataset dataset/random_self_diffusion_tr
 The synthetic dataset validates software behavior only; it is not a substitute
 for real singing data.
 
-## 3. Train the Self-authored Model
+## 3. Train the Conditional Diffusion Model
 
 ```powershell
 uv run python cli.py train-self --dataset dataset/random_self_diffusion_training --checkpoint outputs/self_music_checkpoint.pt --epochs 2 --batch-size 4

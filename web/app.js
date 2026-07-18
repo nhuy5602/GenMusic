@@ -27,7 +27,7 @@ form.addEventListener("submit", async (event) => {
   statusPill.textContent = "Đang gửi";
   downloads.innerHTML = "";
   warningSlot.hidden = true;
-  audioSlot.textContent = "Đang chuẩn bị model tự code trên Kaggle...";
+  audioSlot.textContent = "Đang chuẩn bị model trên Kaggle...";
   lyricsOutput.textContent = "Đang chuẩn bị LRC...";
   jobBox.textContent = "";
   kaggleLinks.innerHTML = "";
@@ -68,7 +68,8 @@ function renderJob(job) {
     "Backend: " + (job.backend || MODEL),
     "Model: " + (job.model || MODEL),
     "Thời lượng: " + (job.duration_seconds || "-") + " giây",
-    "Dataset training: " + (job.training_dataset_ref || job.dataset_ref || "-"),
+    "Checkpoint: " + (job.checkpoint_kernel_ref || "-"),
+    "Backing: " + (job.backing_kernel_ref || "-"),
     "Kernel: " + (job.kernel_ref || "-"),
     "",
     ...(job.messages || []),
@@ -88,7 +89,8 @@ function renderJob(job) {
 function renderKaggleLinks(job) {
   kaggleLinks.innerHTML = "";
   const links = [
-    ["Mở dataset Kaggle", job.dataset_url],
+    ["Mở checkpoint Kaggle", job.checkpoint_url],
+    ["Mở backing Kaggle", job.backing_url],
     ["Mở kernel Kaggle", job.kernel_url],
   ];
   for (const [label, url] of links) {
@@ -117,7 +119,7 @@ function renderDownloads(job) {
 
 async function pollKaggle(runId) {
   const pollId = ++activePollId;
-  setGenerating(true, "Đang train và tạo...");
+  setGenerating(true, "Đang tạo và mix...");
   for (let index = 0; index < 120; index += 1) {
     await new Promise((resolve) => setTimeout(resolve, 15000));
     if (pollId !== activePollId) return;

@@ -15,7 +15,7 @@ from src.training.self_diffusion import create_random_dataset, train_model, vali
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="genmusic-vn", description="Model sinh nhạc từ text do GenMusic VN tự code.")
+    parser = argparse.ArgumentParser(prog="genmusic-vn", description="Pipeline sinh nhạc tiếng Việt từ văn bản.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     generate = sub.add_parser("generate", help="Đóng gói hoặc submit request lên Kaggle.")
@@ -30,13 +30,14 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--wait", action="store_true")
     generate.add_argument("--poll-seconds", type=int, default=60)
     generate.add_argument("--timeout-seconds", type=int, default=21_600)
-    generate.add_argument("--dataset-ref", default=None, help="Dataset training cố định dạng owner/slug; mặc định lấy từ Kaggle username và slug project.")
+    generate.add_argument("--checkpoint-ref", default=None, help="Kaggle kernel COMPLETE chứa self_all_parts.pt.")
+    generate.add_argument("--backing-ref", default=None, help="Kaggle preprocess kernel COMPLETE chứa backing stems.")
     generate.add_argument("--dataset-gb", type=float, default=None, help="Tương thích lệnh cũ; dataset phải được tạo trước bằng make-and-upload-dataset.")
 
     refresh = sub.add_parser("refresh-kaggle", help="Cập nhật trạng thái và tải output Kaggle.")
     refresh.add_argument("--state", required=True)
 
-    local = sub.add_parser("generate-local", help="Sinh WAV/MP3 bằng model tự code tại local.")
+    local = sub.add_parser("generate-local", help="Sinh WAV/MP3 bằng model GenMusic tại local.")
     local.add_argument("--text", required=True)
     local.add_argument("--backing-mel", default=None, help="Backing mel condition saved by preprocessing.")
     local.add_argument("--style-anchor", default=None, help="MuQ-MuLan style embedding saved by preprocessing.")
@@ -45,6 +46,20 @@ def build_parser() -> argparse.ArgumentParser:
     local.add_argument("--checkpoint", default=None)
     local.add_argument("--steps", type=int, default=6)
     local.add_argument("--guidance-scale", type=float, default=1.0, help="Classifier-free lyric guidance; 1.5 is recommended for new checkpoints.")
+    local.add_argument(
+        "--pronunciation-prior-strength",
+        type=float,
+        default=0.0,
+        help=(
+            "Vietnamese MMS-TTS anchor in [0,1]. Use about 0.7 when a "
+            "diffusion checkpoint sings naturally but does not articulate words."
+        ),
+    )
+    local.add_argument(
+        "--pronunciation-prior-model",
+        default="facebook/mms-tts-vie",
+        help="Hugging Face model ID or local GENMUSIC_VIETNAMESE_TTS_PATH override.",
+    )
     local.add_argument("--seed", type=int, default=5602)
     local.add_argument("--device", default=None)
     local.add_argument("--out", required=True)
@@ -52,6 +67,23 @@ def build_parser() -> argparse.ArgumentParser:
     local.add_argument("--roberta-model", default="vinai/xphonebert-base", help="Tên model RoBERTa dùng làm Text Encoder.")
     local.add_argument("--reference-dataset", default=None, help="Thư mục dataset đã preprocess -- lấy backing_mel + style_anchor thật từ một record để sinh nhạc có điều kiện đúng như lúc train, thay vì mặc định zero-conditioned.")
     local.add_argument("--reference-id", default=None, help="ID record cụ thể trong --reference-dataset (mặc định lấy record đầu tiên).")
+    local.add_argument(
+        "--no-reference-style",
+        action="store_false",
+        dest="use_reference_style",
+        help="Chỉ lấy backing stem, không truyền MuQ style anchor vào vocal generator.",
+    )
+    local.add_argument(
+        "--mix-backing",
+        action="store_true",
+        help="Render backing stem thật rồi mix dưới vocal thay vì xuất vocal-only.",
+    )
+    local.add_argument(
+        "--backing-to-vocal-rms",
+        type=float,
+        default=0.45,
+        help="RMS backing so với vocal; 0.45 giữ lời rõ nhưng vẫn nghe thấy nhạc.",
+    )
 
     random_data = sub.add_parser("make-random-dataset", help="Tạo dataset mel random cho smoke training.")
     random_data.add_argument("--out", required=True)
@@ -80,13 +112,18 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--dataset-ref", default=None, help="Dataset ref cố định dạng owner/slug.")
     prepare.add_argument("--timeout-seconds", type=int, default=3_600)
 
-    train = sub.add_parser("train-self", help="Train conditional diffusion model tự code.")
+    train = sub.add_parser("train-self", help="Train conditional diffusion model của GenMusic.")
     train.add_argument("--dataset", required=True)
     train.add_argument("--checkpoint", required=True)
     train.add_argument("--epochs", type=int, default=1)
     train.add_argument("--batch-size", type=int, default=4)
     train.add_argument("--learning-rate", type=float, default=2e-4)
     train.add_argument("--device", default=None)
+    train.add_argument(
+        "--disable-amp",
+        action="store_true",
+        help="Train in FP32 even on CUDA; useful when FP16 gradients remain non-finite.",
+    )
     train.add_argument("--max-records", type=int, default=None)
     train.add_argument("--resume", action="store_true")
     train.add_argument("--save-every-epoch", action="store_true")
@@ -100,6 +137,23 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--ff-mult", type=int, default=4, help="Hệ số feed-forward.")
     train.add_argument("--frames-per-chunk", type=int, default=None, help="Override độ dài crop train; 384 tương đương khoảng bốn giây ở 24 kHz.")
     train.add_argument("--lambda-vocal", type=float, default=1.0, help="Weight of auxiliary vocal-only prediction loss (Mixed Pro style, 0.0 disables it).")
+    train.add_argument("--style-dropout", type=float, default=0.5, help="Xác suất bỏ MuQ anchor để khớp chế độ generate không có reference.")
+    train.add_argument("--text-dropout", type=float, default=0.1, help="Xác suất bỏ lyric cho classifier-free guidance.")
+    train.add_argument("--text-contrastive-weight", type=float, default=0.08)
+    train.add_argument("--text-contrastive-margin", type=float, default=0.03)
+    # Only some batches need the shuffled-lyric pass; this knob bounds the
+    # additional GPU cost while still preventing text-conditioning collapse.
+    train.add_argument("--text-contrastive-prob", type=float, default=0.5)
+    train.add_argument("--text-sensitivity-weight", type=float, default=2.0)
+    train.add_argument("--text-sensitivity-target", type=float, default=0.20)
+    train.add_argument("--validation-fraction", type=float, default=0.05)
+    train.add_argument("--validation-max-records", type=int, default=128)
+    train.add_argument("--validation-seed", type=int, default=5602)
+    train.add_argument("--early-stopping-patience", type=int, default=4)
+    train.add_argument("--minimum-epochs", type=int, default=8)
+    train.add_argument("--early-stopping-min-delta", type=float, default=0.001)
+    train.add_argument("--dataset-validation-max-records", type=int, default=128)
+    train.add_argument("--minimum-text-sensitivity", type=float, default=None)
 
     distill = sub.add_parser("train-distill", help="Huấn luyện chưng cất tri thức từ DiffRhythm gốc sang MicroDiT.")
     distill.add_argument("--dataset", required=True)
@@ -119,6 +173,12 @@ def build_parser() -> argparse.ArgumentParser:
     distill.add_argument("--roberta-model", default="vinai/xphonebert-base", help="Tên model RoBERTa dùng làm Text Encoder.")
     distill.add_argument("--max-records", type=int, default=None, help="Limit training to the first N usable records (for cheap smoke tests).")
     distill.add_argument("--lambda-vocal", type=float, default=1.0, help="Weight of auxiliary vocal-only prediction loss (Mixed Pro style, 0.0 disables it).")
+    distill.add_argument("--validation-fraction", type=float, default=0.05)
+    distill.add_argument("--validation-max-records", type=int, default=128)
+    distill.add_argument("--validation-seed", type=int, default=5602)
+    distill.add_argument("--early-stopping-patience", type=int, default=4)
+    distill.add_argument("--minimum-epochs", type=int, default=6)
+    distill.add_argument("--early-stopping-min-delta", type=float, default=0.001)
 
     normalize = sub.add_parser("normalize-lyrics", help="Chuẩn hóa lyric tiếng Việt.")
     normalize.add_argument("--input", required=True)
@@ -180,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
             output_root=args.out,
             duration_seconds=args.duration,
             genre=args.genre,
-            config=KaggleJobConfig(model=args.model, username=args.username, machine_shape=args.machine_shape, submit=not args.no_submit, wait=args.wait, poll_seconds=args.poll_seconds, timeout_seconds=args.timeout_seconds, training_dataset_ref=args.dataset_ref),
+            config=KaggleJobConfig(model=args.model, username=args.username, machine_shape=args.machine_shape, submit=not args.no_submit, wait=args.wait, poll_seconds=args.poll_seconds, timeout_seconds=args.timeout_seconds, checkpoint_kernel_ref=args.checkpoint_ref, backing_kernel_ref=args.backing_ref),
         )
     elif args.command == "refresh-kaggle":
         report = refresh_kaggle_job(args.state)
@@ -193,14 +253,19 @@ def main(argv: list[str] | None = None) -> int:
             checkpoint=args.checkpoint,
             steps=args.steps,
             guidance_scale=args.guidance_scale,
+            pronunciation_prior_strength=args.pronunciation_prior_strength,
+            pronunciation_prior_model=args.pronunciation_prior_model,
             seed=args.seed,
             device=args.device,
             vocoder=args.vocoder,
             roberta_model=args.roberta_model,
             reference_dataset=args.reference_dataset,
             reference_id=args.reference_id,
+            use_reference_style=args.use_reference_style,
             backing_mel=args.backing_mel,
             style_anchor=args.style_anchor,
+            mix_backing=args.mix_backing,
+            backing_to_vocal_rms=args.backing_to_vocal_rms,
         )
     elif args.command == "make-random-dataset":
         target_bytes = int(args.target_gb * (1024 ** 3)) if args.target_gb > 0 else None
@@ -215,10 +280,34 @@ def main(argv: list[str] | None = None) -> int:
         upload_report = upload_dataset_to_kaggle(args.out, username=args.username, dataset_ref=args.dataset_ref, timeout_seconds=args.timeout_seconds)
         report = {"status": upload_report["status"], "dataset_report": dataset_report, "upload": upload_report}
     elif args.command == "train-self":
-        report = train_model(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, roberta_model=args.roberta_model, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, frames_per_chunk=args.frames_per_chunk, resume=args.resume, save_every_epoch=args.save_every_epoch, checkpoint_every_steps=args.checkpoint_every_steps, log_every_steps=args.log_every_steps, progress_path=args.progress_file, lambda_vocal=args.lambda_vocal)
+        report = train_model(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, roberta_model=args.roberta_model, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, frames_per_chunk=args.frames_per_chunk, resume=args.resume, save_every_epoch=args.save_every_epoch, checkpoint_every_steps=args.checkpoint_every_steps, log_every_steps=args.log_every_steps, progress_path=args.progress_file, lambda_vocal=args.lambda_vocal, style_dropout_prob=args.style_dropout, text_dropout_prob=args.text_dropout, text_contrastive_weight=args.text_contrastive_weight, text_contrastive_margin=args.text_contrastive_margin, text_contrastive_prob=args.text_contrastive_prob, text_sensitivity_weight=args.text_sensitivity_weight, text_sensitivity_target=args.text_sensitivity_target, validation_fraction=args.validation_fraction, validation_max_records=args.validation_max_records, validation_seed=args.validation_seed, early_stopping_patience=args.early_stopping_patience, minimum_epochs=args.minimum_epochs, early_stopping_min_delta=args.early_stopping_min_delta, dataset_validation_max_records=args.dataset_validation_max_records, minimum_text_sensitivity=args.minimum_text_sensitivity, use_amp=not args.disable_amp)
     elif args.command == "train-distill":
         from src.training.distill_training import run_distillation_training
-        report = run_distillation_training(args.dataset, args.student_checkpoint, args.teacher_checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, alpha_feature=args.alpha_feature, beta_repa=args.beta_repa, repo_id=args.repo_id, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, roberta_model=args.roberta_model, max_records=args.max_records, lambda_vocal=args.lambda_vocal)
+        report = run_distillation_training(
+            args.dataset,
+            args.student_checkpoint,
+            args.teacher_checkpoint,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            learning_rate=args.learning_rate,
+            device=args.device,
+            alpha_feature=args.alpha_feature,
+            beta_repa=args.beta_repa,
+            repo_id=args.repo_id,
+            dim=args.dim,
+            depth=args.depth,
+            heads=args.heads,
+            ff_mult=args.ff_mult,
+            roberta_model=args.roberta_model,
+            max_records=args.max_records,
+            lambda_vocal=args.lambda_vocal,
+            validation_fraction=args.validation_fraction,
+            validation_max_records=args.validation_max_records,
+            validation_seed=args.validation_seed,
+            early_stopping_patience=args.early_stopping_patience,
+            minimum_epochs=args.minimum_epochs,
+            early_stopping_min_delta=args.early_stopping_min_delta,
+        )
     elif args.command == "normalize-lyrics":
         output = Path(args.out)
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -226,7 +315,7 @@ def main(argv: list[str] | None = None) -> int:
         report = {"status": "normalized", "path": str(output.resolve())}
     elif args.command == "lyrics-g2p":
         from text2phonemesequence import Text2PhonemeSequence
-        text2phone = Text2PhonemeSequence(language='vie', is_cuda=False)
+        text2phone = Text2PhonemeSequence(language="vie-c", is_cuda=False)
         text_content = Path(args.input).read_text(encoding="utf-8")
         phonemes = text2phone.infer_sentence(text_content)
         output = Path(args.out)

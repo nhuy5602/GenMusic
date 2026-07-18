@@ -8,7 +8,17 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.data.vietnamese_text import normalize_vietnamese_lyrics
-from src.integrations.kaggle_auto import DEFAULT_KAGGLE_DATASET_SLUG, DEFAULT_MODEL, KaggleJobConfig, resolve_training_dataset_ref, run_local_generation, stage_text_to_music_job, validate_dataset_ref
+from src.integrations.kaggle_auto import (
+    DEFAULT_KAGGLE_DATASET_SLUG,
+    DEFAULT_MODEL,
+    KaggleJobConfig,
+    mix_vocal_with_backing,
+    resolve_training_dataset_ref,
+    run_local_generation,
+    stage_text_to_music_job,
+    validate_dataset_ref,
+    validate_kernel_ref,
+)
 from src.models.text_to_music_diffusion import build_lyric_timing, estimate_minimum_lyric_duration
 from src.training.distill_training import KnowledgeDistillationTrainer, _load_teacher, run_distillation_training
 from src.training.self_diffusion import create_random_dataset, load_reference_conditioning, train_model, validate_dataset
@@ -184,34 +194,85 @@ class SelfDiffusionTests(unittest.TestCase):
 
     def test_kaggle_job_contains_only_project_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            state = stage_text_to_music_job(text="Một ngày mới.", output_root=temp, duration_seconds=4, genre="acoustic pop", config=KaggleJobConfig(submit=False))
+            state = stage_text_to_music_job(
+                text="Một ngày mới.",
+                output_root=temp,
+                duration_seconds=4,
+                genre="acoustic pop",
+                config=KaggleJobConfig(
+                    submit=False,
+                    checkpoint_kernel_ref="alice/checkpoint",
+                    backing_kernel_ref="alice/backing",
+                ),
+            )
             self.assertEqual(state["backend"], "genmusic-vn-self-diffusion")
             self.assertEqual(state["model"], DEFAULT_MODEL)
-            self.assertTrue(state["training_dataset_ref"].endswith(DEFAULT_KAGGLE_DATASET_SLUG))
+            self.assertEqual(state["checkpoint_kernel_ref"], "alice/checkpoint")
+            self.assertEqual(state["backing_kernel_ref"], "alice/backing")
             self.assertIn("request_dataset_ref", state)
-            self.assertIn("dataset_url", state)
+            self.assertIn("checkpoint_url", state)
+            self.assertIn("backing_url", state)
             self.assertIn("kernel_url", state)
             script = Path(state["kernel_dir"], "run_genmusic.py").read_text(encoding="utf-8")
+            metadata = json.loads(
+                Path(state["kernel_dir"], "kernel-metadata.json").read_text(encoding="utf-8")
+            )
             source_zip = Path(state["dataset_dir"], "genmusic_vn_source.zip")
             with zipfile.ZipFile(source_zip) as archive:
                 names = archive.namelist()
                 self.assertIn("src/models/text_to_music_diffusion.py", names)
                 self.assertFalse(any(Path(name).name.startswith(".env") for name in names))
-                self.assertNotIn("kaggle.json", [Path(name).name for name in names])
+            self.assertNotIn("kaggle.json", [Path(name).name for name in names])
             self.assertIn("genmusic_vn_source.zip", script)
-            self.assertIn("train-self", script)
+            self.assertNotIn("train-self", script)
+            self.assertIn("--pronunciation-prior-strength", script)
+            self.assertIn("--mix-backing", script)
+            self.assertIn("self_all_parts.pt", script)
             self.assertIn('rglob("request.json")', script)
             self.assertIn("records.jsonl", script)
             self.assertIn("copytree", script)
             self.assertNotIn("make-random-dataset", script)
             self.assertNotIn("git clone", script.lower())
             self.assertNotIn("raw.", script.lower())
+            self.assertEqual(metadata["dataset_sources"], [state["request_dataset_ref"]])
+            self.assertEqual(
+                metadata["kernel_sources"],
+                ["alice/checkpoint", "alice/backing"],
+            )
+
+    def test_rms_backing_mix_keeps_vocal_forward_and_prevents_clipping(self) -> None:
+        import numpy as np
+        import soundfile as sf
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            sample_rate = 24_000
+            time_axis = np.arange(sample_rate, dtype=np.float32) / sample_rate
+            vocal = 0.2 * np.sin(2 * np.pi * 220 * time_axis)
+            backing = 0.7 * np.sin(2 * np.pi * 110 * time_axis)
+            sf.write(root / "vocal.wav", vocal, sample_rate)
+            sf.write(root / "backing.wav", backing, sample_rate)
+            report = mix_vocal_with_backing(
+                root / "vocal.wav",
+                root / "backing.wav",
+                root / "final.wav",
+                backing_to_vocal_rms=0.45,
+            )
+            mixed, mixed_rate = sf.read(root / "final.wav", dtype="float32")
+            self.assertEqual(mixed_rate, sample_rate)
+            self.assertEqual(len(mixed), len(vocal))
+            self.assertLessEqual(float(np.max(np.abs(mixed))), 0.981)
+            self.assertEqual(report["clip_ratio"], 0.0)
+            self.assertAlmostEqual(report["backing_to_vocal_rms"], 0.45)
 
     def test_dataset_ref_contract(self) -> None:
         self.assertEqual(resolve_training_dataset_ref("alice/music-data"), "alice/music-data")
         self.assertEqual(validate_dataset_ref("alice/music-data"), "alice/music-data")
         with self.assertRaises(ValueError):
             validate_dataset_ref("not-a-dataset-ref")
+        self.assertEqual(validate_kernel_ref("alice/checkpoint"), "alice/checkpoint")
+        with self.assertRaises(ValueError):
+            validate_kernel_ref("not-a-kernel-ref")
 
     def test_server_uses_project_root_and_rejects_escape(self) -> None:
         self.assertEqual(PROJECT_ROOT, Path(__file__).resolve().parents[1])

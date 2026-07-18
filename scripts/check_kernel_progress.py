@@ -11,16 +11,47 @@ a periodic "is it actually still healthy" check instead of hanging the caller.
 """
 import json
 import sys
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from kaggle.api.kaggle_api_extended import KaggleApi
 from kagglesdk import KaggleEnv
 
+from src.integrations.kaggle_auto import kaggle_access_token, load_kaggle_api_tokens
+
 
 def tail_kernel_log(kernel_ref: str, read_timeout: float = 8.0) -> str:
     owner_slug, kernel_slug = kernel_ref.split("/", 1)
-    api = KaggleApi()
-    api.authenticate()
-    with api.build_kaggle_client() as kaggle:
+    access_token = kaggle_access_token(load_kaggle_api_tokens())
+    if access_token:
+        # KGAT access tokens authenticate against www.kaggle.com.  KaggleApi's
+        # legacy api.kaggle.com session does not attach them to this SSE route
+        # and returns 401 even though kernel status/output calls succeed.
+        import requests
+
+        session = requests.Session()
+        url = (
+            "https://www.kaggle.com/api/v1/kernels/logs/stream/"
+            f"{owner_slug}/{kernel_slug}"
+        )
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "text/event-stream, */*",
+        }
+        try:
+            response = session.get(
+                url,
+                stream=True,
+                headers=headers,
+                timeout=(5.0, read_timeout),
+            )
+        except requests.RequestException as exc:
+            return f"[stream connection stopped: {type(exc).__name__}: {exc}]"
+    else:
+        api = KaggleApi()
+        api.authenticate()
+        kaggle = api.build_kaggle_client()
         http = kaggle._http_client
         http._init_session()
         base = http._endpoint if http._env == KaggleEnv.PROD else f"{http._endpoint}/api"
@@ -28,11 +59,12 @@ def tail_kernel_log(kernel_ref: str, read_timeout: float = 8.0) -> str:
         headers = dict(http._session.headers)
         headers["Accept"] = "text/event-stream, */*"
         headers.pop("Content-Type", None)
-
         response = http._session.get(
             url, stream=True, headers=headers, auth=http._session.auth,
             timeout=(5.0, read_timeout),
         )
+
+    try:
         response.raise_for_status()
         content_type = (response.headers.get("Content-Type") or "").lower()
         chunks = []
@@ -59,9 +91,18 @@ def tail_kernel_log(kernel_ref: str, read_timeout: float = 8.0) -> str:
         finally:
             response.close()
         return "".join(chunks)
+    finally:
+        response.close()
 
 
 if __name__ == "__main__":
+    # Kaggle logs may contain Vietnamese text and progress symbols. Windows'
+    # legacy console encoding otherwise raises UnicodeEncodeError while merely
+    # trying to display a healthy job's log.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     kernel_ref = sys.argv[1]
     read_timeout = float(sys.argv[2]) if len(sys.argv) > 2 else 8.0
     text = tail_kernel_log(kernel_ref, read_timeout=read_timeout)

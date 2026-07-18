@@ -94,7 +94,8 @@ class GenMusicHandler(BaseHTTPRequestHandler):
                     model=payload.get("model") or DEFAULT_MODEL,
                     submit=True,
                     wait=False,
-                    training_dataset_ref=payload.get("dataset_ref") or None,
+                    checkpoint_kernel_ref=payload.get("checkpoint_ref") or None,
+                    backing_kernel_ref=payload.get("backing_ref") or None,
                 ),
             )
             self._send_json(job)

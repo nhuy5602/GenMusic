@@ -1,4 +1,4 @@
-"""Training utilities for the self-authored GenMusic model."""
+"""Training utilities for the GenMusic model."""
 
 from .self_diffusion import create_random_dataset, train_model, validate_dataset
 

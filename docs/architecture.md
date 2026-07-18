@@ -1,6 +1,6 @@
 # System Architecture
 
-GenMusic VN is a self-authored text-to-music diffusion project. The local path can
+GenMusic VN is a Vietnamese text-to-music diffusion project. The local path can
 train and sample a model directly; Kaggle is an optional execution backend for
 GPU jobs and dataset preprocessing.
 
