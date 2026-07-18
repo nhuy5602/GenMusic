@@ -99,6 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--heads", type=int, default=4, help="Số attention head.")
     train.add_argument("--ff-mult", type=int, default=4, help="Hệ số feed-forward.")
     train.add_argument("--frames-per-chunk", type=int, default=None, help="Override độ dài crop train; 384 tương đương khoảng bốn giây ở 24 kHz.")
+    train.add_argument("--lambda-vocal", type=float, default=1.0, help="Weight of auxiliary vocal-only prediction loss (Mixed Pro style, 0.0 disables it).")
 
     distill = sub.add_parser("train-distill", help="Huấn luyện chưng cất tri thức từ DiffRhythm gốc sang MicroDiT.")
     distill.add_argument("--dataset", required=True)
@@ -109,7 +110,7 @@ def build_parser() -> argparse.ArgumentParser:
     distill.add_argument("--learning-rate", type=float, default=1e-4)
     distill.add_argument("--device", default=None)
     distill.add_argument("--alpha-feature", type=float, default=0.5)
-    distill.add_argument("--beta-attention", type=float, default=0.0, help="Weight of TinyBERT-style attention-matrix distillation loss (0.0 disables it).")
+    distill.add_argument("--beta-repa", type=float, default=0.0, help="Weight of REPA-style representation-alignment loss against a frozen MuQ encoder (0.0 disables it).")
     distill.add_argument("--repo-id", default="ASLP-lab/DiffRhythm2")
     distill.add_argument("--dim", type=int, default=256, help="Hidden dim của MicroDiT student.")
     distill.add_argument("--depth", type=int, default=4, help="Số lớp transformer block.")
@@ -117,6 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
     distill.add_argument("--ff-mult", type=int, default=4, help="Hệ số feed-forward.")
     distill.add_argument("--roberta-model", default="vinai/xphonebert-base", help="Tên model RoBERTa dùng làm Text Encoder.")
     distill.add_argument("--max-records", type=int, default=None, help="Limit training to the first N usable records (for cheap smoke tests).")
+    distill.add_argument("--lambda-vocal", type=float, default=1.0, help="Weight of auxiliary vocal-only prediction loss (Mixed Pro style, 0.0 disables it).")
 
     normalize = sub.add_parser("normalize-lyrics", help="Chuẩn hóa lyric tiếng Việt.")
     normalize.add_argument("--input", required=True)
@@ -213,10 +215,10 @@ def main(argv: list[str] | None = None) -> int:
         upload_report = upload_dataset_to_kaggle(args.out, username=args.username, dataset_ref=args.dataset_ref, timeout_seconds=args.timeout_seconds)
         report = {"status": upload_report["status"], "dataset_report": dataset_report, "upload": upload_report}
     elif args.command == "train-self":
-        report = train_model(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, roberta_model=args.roberta_model, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, frames_per_chunk=args.frames_per_chunk, resume=args.resume, save_every_epoch=args.save_every_epoch, checkpoint_every_steps=args.checkpoint_every_steps, log_every_steps=args.log_every_steps, progress_path=args.progress_file)
+        report = train_model(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, roberta_model=args.roberta_model, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, frames_per_chunk=args.frames_per_chunk, resume=args.resume, save_every_epoch=args.save_every_epoch, checkpoint_every_steps=args.checkpoint_every_steps, log_every_steps=args.log_every_steps, progress_path=args.progress_file, lambda_vocal=args.lambda_vocal)
     elif args.command == "train-distill":
         from src.training.distill_training import run_distillation_training
-        report = run_distillation_training(args.dataset, args.student_checkpoint, args.teacher_checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, alpha_feature=args.alpha_feature, beta_attention=args.beta_attention, repo_id=args.repo_id, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, roberta_model=args.roberta_model, max_records=args.max_records)
+        report = run_distillation_training(args.dataset, args.student_checkpoint, args.teacher_checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, alpha_feature=args.alpha_feature, beta_repa=args.beta_repa, repo_id=args.repo_id, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, roberta_model=args.roberta_model, max_records=args.max_records, lambda_vocal=args.lambda_vocal)
     elif args.command == "normalize-lyrics":
         output = Path(args.out)
         output.parent.mkdir(parents=True, exist_ok=True)

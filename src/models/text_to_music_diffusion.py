@@ -75,6 +75,30 @@ def denormalize_mel(mel, config: "MusicDiffusionConfig"):
     return clipped * max(1e-4, float(config.mel_std)) + float(config.mel_mean)
 
 
+def reconstruct_full_mix(vocal_mel_normalized, backing_mel_normalized, config: "MusicDiffusionConfig"):
+    """Approximate the full mix (vocal + instrumental) in log-mel space by summing
+    linear-magnitude mel energies (ignoring phase -- the same simplification
+    Griffin-Lim/mel-to-audio already relies on elsewhere in this project).
+
+    This is the student's actual generation target: the project's scope is a
+    complete song (vocals over accompaniment), matching what DiffRhythm2 (the
+    teacher) itself generates -- not an isolated a cappella vocal track (see
+    docs/PROJECT_REPORT.md for the discussion that motivated this). Both
+    train-self and train-distill use this as their CFM target `x1`; an
+    auxiliary vocal-only prediction head (MicroDiT.vocal_proj_out, "Mixed Pro"
+    style, see SongGen arXiv:2502.13128) supervises the model to still track
+    the vocal component explicitly, since joint mixed-audio targets otherwise
+    let the model neglect the harder, sparser vocal signal in favor of the
+    louder, more predictable accompaniment.
+    """
+    torch, _ = _torch()
+    vocal_log_mel = denormalize_mel(vocal_mel_normalized, config)
+    backing_log_mel = denormalize_mel(backing_mel_normalized, config)
+    linear_full = torch.exp(vocal_log_mel) + torch.exp(backing_log_mel)
+    log_full = torch.log(torch.clamp(linear_full, min=VOCOS_MEL_CLIP))
+    return normalize_mel(log_full, config)
+
+
 def compute_mel_spectrogram(waveform, config: "MusicDiffusionConfig"):
     """Log-mel matching Vocos's own MelSpectrogramFeatures exactly (magnitude mel,
     power=1, natural log with 1e-7 clip, no upper clip). Any mel produced this way

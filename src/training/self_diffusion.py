@@ -166,7 +166,7 @@ class MusicDiffusionDataset:
 
 class DiffusionTrainer:
     """Trainer orchestrating optimization steps and gradient descent for the diffusion denoiser."""
-    def __init__(self, model, config: MusicDiffusionConfig, optimizer, device: str = "cpu", scheduler=None, ema_decay: float = 0.999):
+    def __init__(self, model, config: MusicDiffusionConfig, optimizer, device: str = "cpu", scheduler=None, ema_decay: float = 0.999, lambda_vocal: float = 1.0):
         torch, _, _, _ = _torch()
         self.model = model
         self.config = config
@@ -174,6 +174,9 @@ class DiffusionTrainer:
         self.device = device
         self.scheduler = scheduler
         self.ema_decay = float(ema_decay)
+        # Weight of the auxiliary vocal-only prediction loss ("Mixed Pro", see
+        # MicroDiT.vocal_proj_out's docstring). 0.0 disables it.
+        self.lambda_vocal = lambda_vocal
         self.use_amp = str(device).startswith("cuda")
         self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
         self.ema_parameters = {
@@ -220,6 +223,7 @@ class DiffusionTrainer:
             if batch_index < start_batch:
                 continue
             vocal_mel = batch["vocal_mel"].to(self.device)
+            backing_mel = batch["backing_mel"].to(self.device)
             style_anchor = batch["style_anchor"].to(self.device)
             texts = batch["text"]
             self.optimizer.zero_grad(set_to_none=True)
@@ -228,9 +232,13 @@ class DiffusionTrainer:
             # style_anchor is already a flat (batch, 512) MuQ-MuLan embedding, not
             # mel-shaped, so it needs no transpose.
             vocal_mel_t = vocal_mel.transpose(1, 2)
+            backing_mel_t = backing_mel.transpose(1, 2)
             from ..models.cfm_flow import cfm_loss
             with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=self.use_amp):
-                loss = cfm_loss(self.model, vocal_mel_t, style_anchor, texts, self.config)
+                loss, loss_gt, loss_vocal_aux = cfm_loss(
+                    self.model, vocal_mel_t, backing_mel_t, style_anchor, texts, self.config,
+                    lambda_vocal=self.lambda_vocal,
+                )
 
             self.scaler.scale(loss).backward()
             self.scaler.unscale_(self.optimizer)
@@ -240,14 +248,12 @@ class DiffusionTrainer:
             if self.scheduler is not None:
                 self.scheduler.step()
             self._update_ema()
-            # "loss_gt" mirrors distill_training's field name (there is no teacher
-            # here, so loss == loss_gt) so baseline and distilled runs can be
-            # compared on the same axis -- see docs/experiments/*.md.
             loss_value = float(loss.detach().cpu())
             loss_record = {
                 "loss": loss_value,
-                "loss_gt": loss_value,
+                "loss_gt": float(loss_gt.detach().cpu()),
                 "loss_velocity": None,
+                "loss_vocal_aux": float(loss_vocal_aux.detach().cpu()) if loss_vocal_aux is not None else None,
             }
             epoch_losses.append(loss_record)
             completed_batches = batch_index + 1
@@ -460,6 +466,7 @@ def train_model(
     checkpoint_every_steps: int = 0,
     log_every_steps: int = 10,
     progress_path: str | Path | None = None,
+    lambda_vocal: float = 1.0,
 ) -> dict[str, Any]:
     torch, _, _, DataLoaderClass = _torch()
 
@@ -576,7 +583,7 @@ def train_model(
         return 0.1 + 0.9 * 0.5 * (1.0 + math.cos(math.pi * progress))
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, learning_rate_multiplier)
-    trainer = DiffusionTrainer(model, config, optimizer, device=selected_device, scheduler=scheduler)
+    trainer = DiffusionTrainer(model, config, optimizer, device=selected_device, scheduler=scheduler, lambda_vocal=lambda_vocal)
     if resumed_payload.get("scheduler"):
         scheduler.load_state_dict(resumed_payload["scheduler"])
     if resumed_payload.get("ema"):
@@ -676,7 +683,13 @@ def train_model(
             continue
         losses.extend(epoch_losses)
         avg_loss = sum(d["loss"] for d in epoch_losses) / len(epoch_losses)
-        loss_curve.append({"epoch": epoch + 1, "loss": avg_loss, "loss_gt": avg_loss, "loss_velocity": None})
+        avg_loss_gt = sum(d["loss_gt"] for d in epoch_losses) / len(epoch_losses)
+        vocal_aux_values = [d["loss_vocal_aux"] for d in epoch_losses if d["loss_vocal_aux"] is not None]
+        avg_loss_vocal_aux = sum(vocal_aux_values) / len(vocal_aux_values) if vocal_aux_values else None
+        loss_curve.append({
+            "epoch": epoch + 1, "loss": avg_loss, "loss_gt": avg_loss_gt,
+            "loss_velocity": None, "loss_vocal_aux": avg_loss_vocal_aux,
+        })
         if save_every_epoch:
             # Remote workers are preemptible. Persist raw weights, optimizer,
             # scheduler and EMA after each epoch so the next worker can resume.
@@ -736,6 +749,6 @@ def train_model(
         training_state=completed_training_state,
     )
     _write_json_atomic(progress_destination, completed_training_state)
-    report = {"status": "complete", "backend": "genmusic-vn-self-diffusion", "dataset": str(root.resolve()), "checkpoint": str(checkpoint.resolve()), "device": selected_device, "epochs": epoch_count, "resumed_from_epoch": resumed_from_epoch, "resumed_from_batch": resumed_from_batch, "batch_size": batch_size_value, "record_count": len(dataset.records), "excluded_record_count": dataset.excluded_record_count, "additional_record_count": len(additional_records or []), "step_count": len(losses), "global_step": global_step, "checkpoint_every_steps": max(0, int(checkpoint_every_steps)), "final_loss": round(final_loss, 6), "loss_curve": loss_curve, "elapsed_seconds": round(time.perf_counter() - started, 3), "dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult, "frames_per_chunk": config.frames_per_chunk, "chunk_seconds": config.chunk_seconds, "mel_mean": round(config.mel_mean, 6), "mel_std": round(config.mel_std, 6), "warmup_steps": warmup_steps, "ema_decay": trainer.ema_decay, "mixed_precision": trainer.use_amp}
+    report = {"status": "complete", "backend": "genmusic-vn-self-diffusion", "dataset": str(root.resolve()), "checkpoint": str(checkpoint.resolve()), "device": selected_device, "epochs": epoch_count, "resumed_from_epoch": resumed_from_epoch, "resumed_from_batch": resumed_from_batch, "batch_size": batch_size_value, "record_count": len(dataset.records), "excluded_record_count": dataset.excluded_record_count, "additional_record_count": len(additional_records or []), "step_count": len(losses), "global_step": global_step, "checkpoint_every_steps": max(0, int(checkpoint_every_steps)), "final_loss": round(final_loss, 6), "loss_curve": loss_curve, "elapsed_seconds": round(time.perf_counter() - started, 3), "dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult, "frames_per_chunk": config.frames_per_chunk, "chunk_seconds": config.chunk_seconds, "mel_mean": round(config.mel_mean, 6), "mel_std": round(config.mel_std, 6), "warmup_steps": warmup_steps, "ema_decay": trainer.ema_decay, "mixed_precision": trainer.use_amp, "lambda_vocal": lambda_vocal}
     (checkpoint.parent / "training_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report

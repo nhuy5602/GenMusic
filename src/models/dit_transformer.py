@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from transformers import AutoTokenizer, AutoModel
-from transformers.models.llama.modeling_llama import LlamaDecoderLayer, LlamaRotaryEmbedding, apply_rotary_pos_emb, repeat_kv
+from transformers.models.llama.modeling_llama import LlamaAttention, LlamaMLP, LlamaRMSNorm, LlamaRotaryEmbedding
 from transformers.models.llama import LlamaConfig
 
 from .text_to_music_diffusion import MusicDiffusionConfig
@@ -94,30 +94,86 @@ class TimestepEmbedding(nn.Module):
 
 
 class InputEmbedding(nn.Module):
-    """Mel and Text projection block with sequence concatenation and additive conditioning."""
-    def __init__(self, mel_dim: int, text_dim: int, out_dim: int):
+    """Mel projection block with additive timestep/style conditioning.
+
+    Lyric conditioning is no longer folded in here: the previous scheme
+    concatenated text and mel tokens into one self-attention sequence
+    ("prepend"-style). SongGen (arXiv:2502.13128) found cross-attention lyric
+    conditioning clearly beats that (FAD 1.73 vs 3.56, PER 43.34 vs 56.21), so
+    lyric conditioning now happens via a dedicated cross-attention sublayer in
+    each transformer block instead (see CrossAttentionDecoderLayer below) --
+    this embedding only ever sees the mel sequence.
+    """
+    def __init__(self, mel_dim: int, out_dim: int):
         super().__init__()
-        # Project mel (x) to out_dim
         self.proj_x = nn.Linear(mel_dim, out_dim)
-        # Project text_embed to out_dim if shapes differ
-        self.proj_text = nn.Linear(text_dim, out_dim) if text_dim != out_dim else nn.Identity()
         self.proj_final = nn.Linear(out_dim, out_dim)
 
-    def forward(self, x: torch.Tensor, text_embed: torch.Tensor, time_emb: torch.Tensor, style_emb: torch.Tensor) -> torch.Tensor:
-        # Project components to the same out_dim space
+    def forward(self, x: torch.Tensor, time_emb: torch.Tensor, style_emb: torch.Tensor) -> torch.Tensor:
         x_proj = self.proj_x(x)
-        text_proj = self.proj_text(text_embed)
-        
-        # Concatenate text tokens and mel frames along the sequence dimension (dim=1)
-        x_seq = torch.cat([text_proj, x_proj], dim=1)
-        
-        # Expand style across total sequence length
-        seq_len = x_seq.shape[1]
+        seq_len = x_proj.shape[1]
         style_emb_expanded = style_emb.unsqueeze(1).repeat(1, seq_len, 1)
-        
-        # Sum the representations directly (time_emb is already 2D of shape [B, total_len, out_dim])
-        merged = x_seq + style_emb_expanded + time_emb
+        time_emb_expanded = time_emb.unsqueeze(1).repeat(1, seq_len, 1)
+        merged = x_proj + style_emb_expanded + time_emb_expanded
         return self.proj_final(merged)
+
+
+class CrossAttentionDecoderLayer(nn.Module):
+    """A Llama-style block over the mel sequence only, with an added
+    cross-attention sublayer attending to lyric/text token embeddings.
+
+    Replaces the previous "prepend" scheme (text and mel tokens concatenated
+    into one shared self-attention sequence, see InputEmbedding's old
+    docstring) with the architecture SongGen (arXiv:2502.13128) found works
+    better: self-attention stays within the mel sequence (so rotary positions
+    and the attention mask are just plain mel-frame positions, no more text
+    offset/padding bookkeeping), and a dedicated cross-attention sublayer lets
+    mel queries pull in lyric content from text keys/values. Reuses Llama's
+    own self-attention/MLP/RMSNorm building blocks; cross-attention itself has
+    no Llama equivalent (LlamaAttention is hardcoded to self-attention), so
+    it's a standard nn.MultiheadAttention sublayer instead.
+    """
+    def __init__(self, config: LlamaConfig, layer_idx: int):
+        super().__init__()
+        self.self_attn = LlamaAttention(config=config, layer_idx=layer_idx)
+        self.mlp = LlamaMLP(config)
+        self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.cross_attn_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.cross_attn = nn.MultiheadAttention(
+            config.hidden_size, config.num_attention_heads, batch_first=True,
+        )
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        text_embeds: torch.Tensor,
+        text_key_padding_mask: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+    ) -> torch.Tensor:
+        # 1. Self-attention over mel tokens only (no padding among mel frames,
+        # so no attention mask is needed here -- fully bidirectional).
+        residual = hidden_states
+        normed = self.input_layernorm(hidden_states)
+        attn_out, _ = self.self_attn(hidden_states=normed, position_embeddings=position_embeddings)
+        hidden_states = residual + attn_out
+
+        # 2. Cross-attention: mel queries attend to lyric/text keys+values.
+        # nn.MultiheadAttention's key_padding_mask uses True == ignore, the
+        # opposite convention from text_key_padding_mask (True == valid token).
+        residual = hidden_states
+        normed = self.cross_attn_layernorm(hidden_states)
+        cross_out, _ = self.cross_attn(
+            query=normed, key=text_embeds, value=text_embeds,
+            key_padding_mask=~text_key_padding_mask, need_weights=False,
+        )
+        hidden_states = residual + cross_out
+
+        # 3. Feed-forward
+        residual = hidden_states
+        normed = self.post_attention_layernorm(hidden_states)
+        hidden_states = residual + self.mlp(normed)
+        return hidden_states
 
 
 class AudioStyleEncoder(nn.Module):
@@ -169,6 +225,7 @@ class MicroDiT(nn.Module):
         heads: int = 4,
         ff_mult: int = 4,
         style_dim: int = 512,
+        repa_dim: int = 1024,
     ):
         super().__init__()
         self.config = config
@@ -185,8 +242,20 @@ class MicroDiT(nn.Module):
             nn.SiLU(),
             nn.Linear(self.cond_dim, self.cond_dim)
         )
-        
-        self.input_embed = InputEmbedding(config.n_mels, dim, dim)
+
+        self.input_embed = InputEmbedding(config.n_mels, dim)
+        # Projects an intermediate transformer hidden state up to a frozen
+        # self-supervised audio encoder's feature dimension (REPA-style
+        # representation-alignment auxiliary loss, see docs/PROJECT_REPORT.md --
+        # mirrors DiffRhythm2's own "Stochastic Block REPA"). Unconditionally
+        # constructed (matches this file's existing convention for
+        # AudioStyleEncoder/PretrainedPhonemeEncoder); negligible cost, and only
+        # ever used when a caller actually passes repa_layer_idx to forward().
+        self.repa_head = nn.Sequential(
+            nn.Linear(dim, repa_dim),
+            nn.SiLU(),
+            nn.Linear(repa_dim, repa_dim),
+        )
         
         # Llama decoding blocks
         llama_config = LlamaConfig(
@@ -196,21 +265,29 @@ class MicroDiT(nn.Module):
             hidden_act="silu",
             max_position_embeddings=2048
         )
-        # "eager" (not "sdpa") is required so self_attn actually materializes and
-        # returns attention weights -- sdpa's fused kernel always returns
-        # (attn_output, None) regardless of output_attentions (see
-        # transformers.integrations.sdpa_attention.sdpa_attention_forward), which
-        # would silently break attention-matrix distillation (see
-        # docs/PROJECT_REPORT.md's attention-distillation section).
-        llama_config._attn_implementation = "eager"
-        
+        # A bare LlamaConfig() leaves _attn_implementation as None (it's normally
+        # set by PreTrainedModel.__init__/from_pretrained, which we bypass here) --
+        # modeling_llama.py then does ALL_ATTENTION_FUNCTIONS[None] unconditionally
+        # and crashes with KeyError. "sdpa" is the fast default; "eager" was only
+        # ever needed by the now-removed attention-distillation capture hook.
+        llama_config._attn_implementation = "sdpa"
         self.transformer_blocks = nn.ModuleList(
-            [LlamaDecoderLayer(llama_config, layer_idx=i) for i in range(depth)]
+            [CrossAttentionDecoderLayer(llama_config, layer_idx=i) for i in range(depth)]
         )
         self.rotary_emb = LlamaRotaryEmbedding(config=llama_config)
         
         self.norm_out = AdaLayerNormZeroFinal(dim, self.cond_dim)
         self.proj_out = nn.Linear(dim, config.n_mels)
+        # Auxiliary vocal-only prediction head ("Mixed Pro" in SongGen,
+        # arXiv:2502.13128): the model's primary target is now the full song
+        # (vocal + accompaniment, see reconstruct_full_mix in
+        # text_to_music_diffusion.py), and joint mixed-audio targets let a
+        # model neglect the harder, sparser vocal signal in favor of the
+        # louder, more predictable accompaniment. This head shares the final
+        # hidden state with proj_out but predicts vocal-only velocity as an
+        # auxiliary training signal only -- it is never used at inference
+        # unless a caller explicitly asks for it.
+        self.vocal_proj_out = nn.Linear(dim, config.n_mels)
 
     def forward(
         self,
@@ -218,112 +295,60 @@ class MicroDiT(nn.Module):
         texts: list[str],
         timestep: torch.Tensor,
         style_prompt: torch.Tensor | None = None,
-        return_attentions: bool = False,
-    ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]:
+        repa_layer_idx: int | None = None,
+        return_vocal_aux: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, ...]:
         device = x.device
         batch_size, seq_len = x.shape[0], x.shape[1]
-        
-        # 1. Encode text via RoBERTa (frozen)
+
+        # 1. Encode text via RoBERTa (frozen) -- kept as cross-attention keys/values
         text_embeds, text_mask = self.text_encoder(texts, device) # (batch_size, text_seq_len, dim)
         mask = text_mask.unsqueeze(-1).to(text_embeds.dtype)
         pooled_text = (text_embeds * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
-        
+
         # 2. Compute conditional vectors
         t_emb_scalar = self.time_embed(timestep) # (batch_size, cond_dim)
-        
-        # Prepare 2D time sequence: text has -1.0, audio has the scalar timestep
-        text_time = torch.full((batch_size, text_embeds.shape[1]), -1.0, device=device, dtype=x.dtype)
-        noisy_time = timestep.unsqueeze(-1).repeat(1, seq_len)
-        time = torch.cat([text_time, noisy_time], dim=1)
-        t_emb_2d = self.time_embed(time) # (batch_size, text_len + seq_len, cond_dim)
-        
+
         if style_prompt is not None:
             style_vector = self.audio_style_encoder(style_prompt)
         else:
             style_vector = pooled_text
-            
+
         s_emb = self.style_embed(style_vector) # (batch_size, cond_dim)
         c = t_emb_scalar + s_emb
-        
-        # 3. Project and embed features (InputEmbedding concatenates and adds time/style)
-        x = self.input_embed(x, text_embeds, t_emb_2d, s_emb)
-        
-        # 4. Prepare position IDs for concatenated text + mel sequence
-        text_len = text_embeds.shape[1]
-        text_position_ids = torch.arange(text_len, device=device).unsqueeze(0).repeat(batch_size, 1)
-        noisy_position_ids = torch.arange(seq_len, device=device).unsqueeze(0).repeat(batch_size, 1)
-        pos_ids = torch.cat([text_position_ids, noisy_position_ids], dim=1)
-        
+
+        # 3. Project and embed the mel sequence only (lyric conditioning now
+        # happens via cross-attention inside each block, not concatenation).
+        x = self.input_embed(x, t_emb_scalar, s_emb)
+
+        # 4. Rotary position IDs over the mel sequence only
+        pos_ids = torch.arange(seq_len, device=device).unsqueeze(0).repeat(batch_size, 1)
         rotary_embed = self.rotary_emb(x, pos_ids)
-        
-        # 5. Build self-attention mask (noncausal bidirectional attention)
-        key_valid = torch.cat([text_mask, torch.ones((batch_size, seq_len), dtype=torch.bool, device=device)], dim=1)
-        total_len = key_valid.shape[1]
-        attention_mask_4d = key_valid.unsqueeze(1).unsqueeze(2).repeat(1, 1, total_len, 1)
-        attention_mask_inverted = (~attention_mask_4d).float() * torch.finfo(x.dtype).min
-        
-        # LlamaDecoderLayer.forward (this transformers version) computes attn_weights
-        # inside self.self_attn but discards them (`hidden_states, _ = self.self_attn(...)`)
-        # before returning. Reading them off self_attn's own return value via a plain
-        # forward hook is *also* unreliable: it depends on the resolved attention
-        # implementation (config._attn_implementation) actually being "eager" at
-        # call time, which was observed to silently NOT hold on a real Kaggle GPU run
-        # despite setting it on the LlamaConfig before constructing the layers (see
-        # docs/PROJECT_REPORT.md's attention-distillation section -- local CPU test
-        # passed, real CUDA run returned None for every layer, and no GPU is
-        # available locally to root-cause the discrepancy further). Recomputing the
-        # attention weights directly from self_attn's own q_proj/k_proj -- the exact
-        # same computation eager_attention_forward does -- sidesteps that dispatch
-        # entirely and is correct regardless of which implementation the module
-        # itself ends up using internally for its own output.
-        captured_attentions: list[torch.Tensor] = []
-        hook_handles = []
-        if return_attentions:
-            def _capture(module, _args, kwargs):
-                hidden_states = kwargs["hidden_states"]
-                position_embeddings = kwargs["position_embeddings"]
-                attention_mask = kwargs.get("attention_mask")
-                b, seq_len_local = hidden_states.shape[0], hidden_states.shape[1]
-                head_dim = module.head_dim
-                q = module.q_proj(hidden_states).view(b, seq_len_local, -1, head_dim).transpose(1, 2)
-                k = module.k_proj(hidden_states).view(b, seq_len_local, -1, head_dim).transpose(1, 2)
-                cos, sin = position_embeddings
-                q, k = apply_rotary_pos_emb(q, k, cos, sin)
-                if getattr(module, "num_key_value_groups", 1) > 1:
-                    k = repeat_kv(k, module.num_key_value_groups)
-                # head_dim**-0.5 is the standard attention scaling factor computed
-                # directly rather than read off module.scaling -- that attribute's
-                # name/presence varies across transformers versions (confirmed: it
-                # exists locally but the version actually installed on the Kaggle
-                # kernel from DiffRhythm2's requirements.txt raised AttributeError
-                # for it), so recomputing the well-defined constant here is more
-                # robust than depending on either version's internal naming.
-                scaling = head_dim ** -0.5
-                scores = (q @ k.transpose(-1, -2)) * scaling
-                if attention_mask is not None:
-                    scores = scores + attention_mask
-                captured_attentions.append(torch.softmax(scores, dim=-1, dtype=torch.float32).to(q.dtype))
 
-            hook_handles = [
-                block.self_attn.register_forward_pre_hook(_capture, with_kwargs=True)
-                for block in self.transformer_blocks
-            ]
+        repa_hidden_raw = None
+        for i, block in enumerate(self.transformer_blocks):
+            x = block(
+                x, text_embeds=text_embeds, text_key_padding_mask=text_mask,
+                position_embeddings=rotary_embed,
+            )
+            if repa_layer_idx is not None and i == repa_layer_idx:
+                # Hidden state right after this block, before the final
+                # AdaLN/proj_out -- this is the "representation" a REPA-style
+                # loss aligns with a frozen SSL encoder's features (see
+                # docs/PROJECT_REPORT.md), analogous to DiffRhythm2's own
+                # "Stochastic Block REPA" against its DiT's hidden states.
+                repa_hidden_raw = x
 
-        try:
-            for i, block in enumerate(self.transformer_blocks):
-                # Feed through llama block on the unified sequence
-                res = block(x, attention_mask=attention_mask_inverted, position_embeddings=rotary_embed)
-                x = res[0] if isinstance(res, tuple) else res
-        finally:
-            for handle in hook_handles:
-                handle.remove()
-
-        # 6. Extract the audio mel portion of the sequence
-        x = x[:, text_len:]
-
-        # 7. Modulate and project out
+        # 5. Modulate and project out
         x = self.norm_out(x, c)
         out = self.proj_out(x)
-        if return_attentions:
-            return out, captured_attentions, text_len
-        return out
+
+        result: tuple = (out,)
+        if repa_layer_idx is not None:
+            repa_projected = self.repa_head(repa_hidden_raw) if repa_hidden_raw is not None else None
+            result = result + (repa_projected,)
+        if return_vocal_aux:
+            # Shares the same AdaLN-modulated hidden state as the main head --
+            # only the final linear projection differs (see __init__).
+            result = result + (self.vocal_proj_out(x),)
+        return result if len(result) > 1 else out

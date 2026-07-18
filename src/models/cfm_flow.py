@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-from .text_to_music_diffusion import MusicDiffusionConfig
+from .text_to_music_diffusion import MusicDiffusionConfig, reconstruct_full_mix
 
 
 def _prepare_style_condition(
@@ -28,31 +28,45 @@ def _prepare_style_condition(
 
 def cfm_loss(
     model,
-    clean_mel: torch.Tensor,
+    vocal_mel: torch.Tensor,
+    backing_mel: torch.Tensor,
     style_anchor: torch.Tensor,
     texts: list[str],
     config: MusicDiffusionConfig,
     *,
+    lambda_vocal: float = 1.0,
     condition_dropout_prob: float = 0.1,
-) -> torch.Tensor:
-    """Computes the Conditional Flow Matching (CFM) velocity prediction loss."""
-    device = clean_mel.device
-    batch_size = clean_mel.shape[0]
-    
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    """Computes the Conditional Flow Matching (CFM) velocity prediction loss.
+
+    Primary target is the full song (vocal + accompaniment, see
+    reconstruct_full_mix's docstring) -- matches DiffRhythm2's own scope and
+    this project's, not an isolated a cappella vocal track. An auxiliary
+    vocal-only prediction loss ("Mixed Pro", MicroDiT.vocal_proj_out) keeps the
+    model explicitly tracking the harder vocal component instead of only
+    learning the easier, louder joint mix; set lambda_vocal=0 to disable it.
+
+    Returns (total_loss, loss_gt, loss_vocal_aux) so callers can log the
+    components separately (loss_vocal_aux is None when lambda_vocal <= 0).
+    """
+    device = vocal_mel.device
+    batch_size = vocal_mel.shape[0]
+
+    x1 = reconstruct_full_mix(vocal_mel, backing_mel, config)
+
     # 1. Sample t uniformly in [0, 1]
     t = torch.rand(batch_size, device=device)
     t_unsqueezed = t.view(-1, 1, 1) # Alignment for mel channels/frames
-    
+
     # 2. Sample Gaussian noise x0
-    x0 = torch.randn_like(clean_mel)
-    x1 = clean_mel
-    
+    x0 = torch.randn_like(x1)
+
     # 3. Compute linear interpolation xt
     xt = (1.0 - t_unsqueezed) * x0 + t_unsqueezed * x1
-    
+
     # 4. Target velocity field vt = x1 - x0
     target_velocity = x1 - x0
-    
+
     # 5. Classifier-free condition dropout teaches the model all inference modes:
     # real reference conditions, missing style, and an empty lyric prompt.
     normalized_style = style_anchor
@@ -64,18 +78,19 @@ def cfm_loss(
         normalized_style = normalized_style.masked_fill(style_drop[:, None], 0.0)
         text_drop_flags = text_drop.detach().cpu().tolist()
         model_texts = ["" if text_drop_flags[index] else text for index, text in enumerate(model_texts)]
-    
+
     # 6. Predict velocity field using MicroDiT (no cond passed)
-    predicted_velocity = model(
-        x=xt,
-        texts=model_texts,
-        timestep=t,
-        style_prompt=normalized_style
-    )
+    want_vocal_aux = lambda_vocal > 0.0
+    if want_vocal_aux:
+        predicted_velocity, vocal_aux = model(
+            x=xt, texts=model_texts, timestep=t, style_prompt=normalized_style, return_vocal_aux=True,
+        )
+    else:
+        predicted_velocity = model(x=xt, texts=model_texts, timestep=t, style_prompt=normalized_style)
 
     # Vocal-active frames carry the consonants/formants needed for intelligible
     # words, while long silent spans otherwise dominate an unweighted mean.
-    frame_energy = clean_mel.mean(dim=-1)
+    frame_energy = x1.mean(dim=-1)
     activity_threshold = torch.quantile(frame_energy.detach(), 0.55, dim=1, keepdim=True)
     activity = torch.sigmoid((frame_energy - activity_threshold) * 2.0)
     frame_weights = (1.0 + 2.0 * activity).unsqueeze(-1)
@@ -86,10 +101,24 @@ def cfm_loss(
     # time/frequency contours. These inexpensive auxiliary terms sharpen vocal
     # onsets and formant movement without changing the CFM sampling equation.
     predicted_clean = xt + (1.0 - t_unsqueezed) * predicted_velocity
-    reconstruction_loss = ((predicted_clean - clean_mel).abs() * frame_weights).mean()
-    time_delta_loss = F.l1_loss(torch.diff(predicted_clean, dim=1), torch.diff(clean_mel, dim=1))
-    frequency_delta_loss = F.l1_loss(torch.diff(predicted_clean, dim=2), torch.diff(clean_mel, dim=2))
-    return velocity_loss + 0.15 * reconstruction_loss + 0.05 * (time_delta_loss + frequency_delta_loss)
+    reconstruction_loss = ((predicted_clean - x1).abs() * frame_weights).mean()
+    time_delta_loss = F.l1_loss(torch.diff(predicted_clean, dim=1), torch.diff(x1, dim=1))
+    frequency_delta_loss = F.l1_loss(torch.diff(predicted_clean, dim=2), torch.diff(x1, dim=2))
+    loss_gt = velocity_loss + 0.15 * reconstruction_loss + 0.05 * (time_delta_loss + frequency_delta_loss)
+
+    loss_vocal_aux = None
+    total_loss = loss_gt
+    if want_vocal_aux:
+        vocal_target_velocity = vocal_mel - x0
+        vocal_frame_energy = vocal_mel.mean(dim=-1)
+        vocal_activity_threshold = torch.quantile(vocal_frame_energy.detach(), 0.55, dim=1, keepdim=True)
+        vocal_activity = torch.sigmoid((vocal_frame_energy - vocal_activity_threshold) * 2.0)
+        vocal_frame_weights = (1.0 + 2.0 * vocal_activity).unsqueeze(-1)
+        vocal_frame_weights = vocal_frame_weights / vocal_frame_weights.mean(dim=(1, 2), keepdim=True).clamp_min(1e-6)
+        loss_vocal_aux = ((vocal_aux - vocal_target_velocity).square() * vocal_frame_weights).mean()
+        total_loss = total_loss + lambda_vocal * loss_vocal_aux
+
+    return total_loss, loss_gt, loss_vocal_aux
 
 
 @torch.no_grad()

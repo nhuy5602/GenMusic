@@ -1,9 +1,12 @@
 """Objective (no human listening) audio quality check for a generated-music checkpoint.
 
-Compares model-generated audio against the *real* vocal track of the same
-song, rendered through the identical Vocos vocoder -- this isolates model
-quality from vocoder artifacts, since both sides go through the same decode
-path. Metrics:
+Compares model-generated audio against the *real full mix* (vocal +
+accompaniment, see reconstruct_full_mix) of the same song, rendered through
+the identical Vocos vocoder -- this isolates model quality from vocoder
+artifacts, since both sides go through the same decode path. The reference is
+the full song, not an isolated a cappella vocal, because that is now the
+model's actual training target (see reconstruct_full_mix's docstring).
+Metrics:
 
 - spectral_flatness (librosa): ~0 = tonal/harmonic (music-like), ~1 = white
   noise. This is a per-instant proxy for "toan nhieu" (pure noise) complaints
@@ -44,7 +47,7 @@ sys.path.append(str(PROJECT_ROOT))
 import torch
 import librosa
 
-from src.models.text_to_music_diffusion import load_checkpoint, generate_audio, render_mel_to_wav
+from src.models.text_to_music_diffusion import load_checkpoint, generate_audio, render_mel_to_wav, reconstruct_full_mix
 from src.training.self_diffusion import _load_mel
 
 FIXED_TEXT = "Dem nay mua roi tren loi mon xua, long anh nho em nhieu nguoi oi co biet chang"
@@ -102,6 +105,7 @@ def main() -> None:
         backing_mel = _load_mel(dataset_dir / record["backing_mel_path"])
         style_anchor = _load_mel(dataset_dir / record["style_embed_path"]).float().view(-1)
         real_vocal_mel = _load_mel(dataset_dir / record["vocal_mel_path"])
+        real_full_mix_mel = reconstruct_full_mix(real_vocal_mel, backing_mel, config)
 
         gen_path = out_dir / f"{record_id}_generated.wav"
         generate_audio(
@@ -110,22 +114,22 @@ def main() -> None:
             backing_mel=backing_mel, style_anchor=style_anchor,
         )
         real_path = out_dir / f"{record_id}_real.wav"
-        render_mel_to_wav(real_vocal_mel, real_path, config, vocoder_type="vocos")
+        render_mel_to_wav(real_full_mix_mel, real_path, config, vocoder_type="vocos")
 
         entry = {
             "id": record_id,
             "generated": wav_metrics(gen_path),
-            "real_vocal_same_vocoder": wav_metrics(real_path),
+            "real_full_mix_same_vocoder": wav_metrics(real_path),
         }
         results["samples"].append(entry)
-        print(record_id, "gen:", entry["generated"], "real:", entry["real_vocal_same_vocoder"])
+        print(record_id, "gen:", entry["generated"], "real:", entry["real_full_mix_same_vocoder"])
 
     flatness_gen = [s["generated"]["spectral_flatness"] for s in results["samples"]]
-    flatness_real = [s["real_vocal_same_vocoder"]["spectral_flatness"] for s in results["samples"]]
+    flatness_real = [s["real_full_mix_same_vocoder"]["spectral_flatness"] for s in results["samples"]]
     voiced_gen = [s["generated"]["voiced_ratio"] for s in results["samples"]]
-    voiced_real = [s["real_vocal_same_vocoder"]["voiced_ratio"] for s in results["samples"]]
+    voiced_real = [s["real_full_mix_same_vocoder"]["voiced_ratio"] for s in results["samples"]]
     pitch_std_gen = [s["generated"]["pitch_std_semitones"] for s in results["samples"] if s["generated"]["pitch_std_semitones"] is not None]
-    pitch_std_real = [s["real_vocal_same_vocoder"]["pitch_std_semitones"] for s in results["samples"] if s["real_vocal_same_vocoder"]["pitch_std_semitones"] is not None]
+    pitch_std_real = [s["real_full_mix_same_vocoder"]["pitch_std_semitones"] for s in results["samples"] if s["real_full_mix_same_vocoder"]["pitch_std_semitones"] is not None]
     results["summary"] = {
         "mean_flatness_generated": float(np.mean(flatness_gen)) if flatness_gen else None,
         "mean_flatness_real": float(np.mean(flatness_real)) if flatness_real else None,

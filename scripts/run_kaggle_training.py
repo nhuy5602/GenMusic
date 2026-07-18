@@ -19,7 +19,7 @@ from src.integrations.kaggle_auto import (
     write_source_zip,
 )
 
-def _kernel_script_content(dataset_slug: str, epochs: str = "5", batch_size: str = "4") -> str:
+def _kernel_script_content(dataset_slug: str, epochs: str = "5", batch_size: str = "4", lambda_vocal: str = "1.0") -> str:
     # This script will run on the Kaggle GPU instance and log errors to output files instead of crashing
     # We use pure ASCII characters to prevent Windows cp1252 encoding crashes during kaggle push
     return f'''import os
@@ -133,6 +133,7 @@ try:
         "--checkpoint", str(checkpoint_path),
         "--epochs", "{epochs}",
         "--batch-size", "{batch_size}",
+        "--lambda-vocal", "{lambda_vocal}",
         "--device", "cuda"
     ], check=True)
 
@@ -155,6 +156,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--processed-kernel-ref", default=None)
+    parser.add_argument("--lambda-vocal", type=float, default=1.0, help="Weight of auxiliary vocal-only prediction loss (Mixed Pro style, 0.0 disables it).")
     args = parser.parse_args()
 
     # Resolved parent because it is located inside the scripts/ directory
@@ -235,7 +237,7 @@ def main():
     kernel_ref = f"{username}/{kernel_slug}"
     
     (kernel_dir / "run_training.py").write_text(
-        _kernel_script_content(processed_dataset_slug, epochs, batch_size),
+        _kernel_script_content(processed_dataset_slug, epochs, batch_size, str(args.lambda_vocal)),
         encoding="utf-8",
     )
     (kernel_dir / "kernel-metadata.json").write_text(json.dumps({
