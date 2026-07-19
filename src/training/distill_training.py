@@ -38,6 +38,7 @@ from src.training.self_diffusion import (
     _filter_training_records,
     _read_records,
     _torch,
+    _with_absolute_paths,
     estimate_vocal_mel_stats,
 )
 
@@ -578,7 +579,7 @@ class KnowledgeDistillationTrainer:
 
 
 def run_distillation_training(
-    dataset_dir: str | Path,
+    dataset_dir: str | Path | list[str | Path],
     student_checkpoint_path: str | Path,
     teacher_checkpoint_path: str | Path | None = None,
     *,
@@ -599,10 +600,14 @@ def run_distillation_training(
 ) -> dict[str, Any]:
     torch, _, _, DataLoaderClass = _torch()
 
-    root = Path(dataset_dir)
+    dataset_dirs = [Path(dataset_dir)] if isinstance(dataset_dir, (str, Path)) else [Path(d) for d in dataset_dir]
+    root = dataset_dirs[0]
     student_checkpoint = Path(student_checkpoint_path)
     selected_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
+    # All combined datasets are assumed to share the same mel/config format (they
+    # should, since they're preprocessed by the same pipeline) -- only the first
+    # dataset's config.json is actually read.
     config = MusicDiffusionConfig(**json.loads((root / "config.json").read_text(encoding="utf-8")))
     # Auto-calibrate mel_mean/mel_std the same way train-self does (self_diffusion.py's
     # train_model) -- without this, MusicDiffusionDataset applies identity normalization
@@ -610,7 +615,11 @@ def run_distillation_training(
     # log-mel targets. See docs/PROJECT_REPORT.md §4.10/§5 for why this specifically
     # matters here: it was one of the changes that fixed a measured low-variance
     # ("regression to the mean") output on the train-self side.
-    usable_records = _filter_training_records(_read_records(root))
+    usable_records = [
+        _with_absolute_paths(d, record)
+        for d in dataset_dirs
+        for record in _filter_training_records(_read_records(d))
+    ]
     records_for_stats = usable_records[:max_records] if max_records is not None else usable_records
     mel_mean, mel_std = estimate_vocal_mel_stats(root, records_for_stats)
     config = replace(config, mel_mean=mel_mean, mel_std=mel_std)
@@ -640,7 +649,7 @@ def run_distillation_training(
         config, roberta_model=roberta_model, dim=dim, depth=depth, heads=heads, ff_mult=ff_mult, style_dim=TEACHER_COND_DIM,
     ).to(selected_device)
 
-    dataset = MusicDiffusionDataset(root, config, max_records=max_records)
+    dataset = MusicDiffusionDataset(dataset_dirs, config, max_records=max_records)
 
     def collate_fn(batch):
         vocal_mels = torch.stack([item["vocal_mel"] for item in batch])

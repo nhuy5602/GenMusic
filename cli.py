@@ -81,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--timeout-seconds", type=int, default=3_600)
 
     train = sub.add_parser("train-self", help="Train conditional diffusion model tự code.")
-    train.add_argument("--dataset", required=True)
+    train.add_argument("--dataset", required=True, nargs="+", help="Một hoặc nhiều thư mục dataset đã preprocess (kết hợp lại thành một tập huấn luyện).")
     train.add_argument("--checkpoint", required=True)
     train.add_argument("--epochs", type=int, default=1)
     train.add_argument("--batch-size", type=int, default=4)
@@ -102,7 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--lambda-vocal", type=float, default=1.0, help="Weight of auxiliary vocal-only prediction loss (Mixed Pro style, 0.0 disables it).")
 
     distill = sub.add_parser("train-distill", help="Huấn luyện chưng cất tri thức từ DiffRhythm gốc sang MicroDiT.")
-    distill.add_argument("--dataset", required=True)
+    distill.add_argument("--dataset", required=True, nargs="+", help="Một hoặc nhiều thư mục dataset đã preprocess (kết hợp lại thành một tập huấn luyện).")
     distill.add_argument("--student-checkpoint", required=True)
     distill.add_argument("--teacher-checkpoint", default=None)
     distill.add_argument("--epochs", type=int, default=5)

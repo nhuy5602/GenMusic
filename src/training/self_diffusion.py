@@ -93,14 +93,27 @@ def lyric_text_for_window(
     return " ".join(selected).strip()
 
 class MusicDiffusionDataset:
-    """PyTorch Dataset mapping structured Mel-spectrograms and text/style prompts."""
-    def __init__(self, dataset_dir: str | Path, config: MusicDiffusionConfig, max_records: int | None = None, additional_records: list[dict[str, Any]] | None = None):
+    """PyTorch Dataset mapping structured Mel-spectrograms and text/style prompts.
+
+    dataset_dir accepts either one path or a list of paths -- multiple
+    independently-preprocessed datasets (e.g. different raw-data batches/parts)
+    are combined into a single training set, each record's mel/style paths
+    resolved against its own source directory (see _with_absolute_paths).
+    """
+    def __init__(self, dataset_dir: str | Path | list[str | Path], config: MusicDiffusionConfig, max_records: int | None = None, additional_records: list[dict[str, Any]] | None = None):
         _, _, Dataset, _ = _torch()
-        self.root = Path(dataset_dir)
+        dataset_dirs = [Path(dataset_dir)] if isinstance(dataset_dir, (str, Path)) else [Path(d) for d in dataset_dir]
+        if not dataset_dirs:
+            raise ValueError("dataset_dir must contain at least one path")
+        self.root = dataset_dirs[0]
         self.config = config
-        all_records = _read_records(self.root)
-        records = _filter_training_records(all_records)
-        self.excluded_record_count = len(all_records) - len(records)
+        self.excluded_record_count = 0
+        records: list[dict[str, Any]] = []
+        for root in dataset_dirs:
+            all_records = _read_records(root)
+            usable = _filter_training_records(all_records)
+            self.excluded_record_count += len(all_records) - len(usable)
+            records.extend(_with_absolute_paths(root, record) for record in usable)
         self.records = records[:max_records] if max_records is not None else records
         if additional_records:
             self.records.extend(additional_records)
@@ -359,6 +372,24 @@ def _resolve_record_path(root: Path, path_str: str) -> Path:
     path = Path(path_str)
     return path if path.is_absolute() else root / path
 
+_MEL_PATH_FIELDS = ("mel_path", "backing_mel_path", "vocal_mel_path", "style_embed_path")
+
+def _with_absolute_paths(root: Path, record: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite a record's mel/style path fields to absolute paths under its own
+    source dataset root. Lets MusicDiffusionDataset combine records from several
+    independently-preprocessed dataset directories (e.g. different raw-data
+    batches) into one training set: once resolved, `self.root / record[field]`
+    (used throughout __getitem__) returns the resolved absolute path unchanged
+    regardless of which root `self.root` happens to be, since pathlib's `/`
+    operator discards the left operand when the right one is already absolute.
+    """
+    resolved = dict(record)
+    for field in _MEL_PATH_FIELDS:
+        value = resolved.get(field)
+        if value:
+            resolved[field] = str(_resolve_record_path(root, value))
+    return resolved
+
 def _fit_mel_frames(mel, frames: int):
     torch, _, _, _ = _torch()
     if mel.shape[1] > frames:
@@ -446,7 +477,7 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
 
 
 def train_model(
-    dataset_dir: str | Path,
+    dataset_dir: str | Path | list[str | Path],
     checkpoint_path: str | Path,
     *,
     epochs: int = 1,
@@ -470,12 +501,20 @@ def train_model(
 ) -> dict[str, Any]:
     torch, _, _, DataLoaderClass = _torch()
 
-    root = Path(dataset_dir)
+    dataset_dirs = [Path(dataset_dir)] if isinstance(dataset_dir, (str, Path)) else [Path(d) for d in dataset_dir]
+    root = dataset_dirs[0]
     checkpoint = Path(checkpoint_path)
-    validation = validate_dataset(root, report_path=checkpoint.parent / "validation_report.json")
-    if validation["status"] != "valid":
-        raise ValueError("Dataset không hợp lệ; xem validation_report.json.")
+    validations = [
+        validate_dataset(d, report_path=checkpoint.parent / f"validation_report{'' if i == 0 else f'_{i}'}.json")
+        for i, d in enumerate(dataset_dirs)
+    ]
+    invalid = [v for v in validations if v["status"] != "valid"]
+    if invalid:
+        raise ValueError(f"Dataset không hợp lệ; xem validation_report*.json. ({len(invalid)}/{len(dataset_dirs)} dataset(s) invalid)")
 
+    # All combined datasets are assumed to share the same mel/config format (they
+    # should, since they're preprocessed by the same pipeline) -- only the first
+    # dataset's config.json is actually read.
     config = MusicDiffusionConfig(**json.loads((root / "config.json").read_text(encoding="utf-8")))
     if frames_per_chunk is not None:
         frames = max(16, int(frames_per_chunk))
@@ -522,8 +561,15 @@ def train_model(
                 int(saved_training_state.get("batch_in_epoch", 0)),
             )
     else:
-        usable_records = _filter_training_records(_read_records(root))
+        usable_records = [
+            _with_absolute_paths(d, record)
+            for d in dataset_dirs
+            for record in _filter_training_records(_read_records(d))
+        ]
         records_for_stats = usable_records[:max_records] if max_records is not None else usable_records
+        # Records are pre-resolved to absolute paths (_with_absolute_paths), so the
+        # `root` argument below is a no-op for path resolution -- pathlib's `/`
+        # discards it whenever the right-hand side is already absolute.
         mel_mean, mel_std = estimate_vocal_mel_stats(root, records_for_stats)
         config = replace(config, mel_mean=mel_mean, mel_std=mel_std)
         from ..models.dit_transformer import MicroDiT
@@ -545,7 +591,7 @@ def train_model(
         optimizer.load_state_dict(resumed_payload["optimizer"])
 
     # Instantiate custom Dataset and DataLoader
-    dataset = MusicDiffusionDataset(root, config, max_records=max_records, additional_records=additional_records)
+    dataset = MusicDiffusionDataset(dataset_dirs, config, max_records=max_records, additional_records=additional_records)
     if not dataset.records:
         raise ValueError("Dataset has no usable records after vocal/transcript quality filtering.")
     
@@ -610,6 +656,7 @@ def train_model(
             "status": "complete",
             "backend": "genmusic-vn-self-diffusion",
             "dataset": str(root.resolve()),
+            "dataset_dirs": [str(d.resolve()) for d in dataset_dirs],
             "checkpoint": str(checkpoint.resolve()),
             "device": selected_device,
             "epochs": epoch_count,
@@ -749,6 +796,6 @@ def train_model(
         training_state=completed_training_state,
     )
     _write_json_atomic(progress_destination, completed_training_state)
-    report = {"status": "complete", "backend": "genmusic-vn-self-diffusion", "dataset": str(root.resolve()), "checkpoint": str(checkpoint.resolve()), "device": selected_device, "epochs": epoch_count, "resumed_from_epoch": resumed_from_epoch, "resumed_from_batch": resumed_from_batch, "batch_size": batch_size_value, "record_count": len(dataset.records), "excluded_record_count": dataset.excluded_record_count, "additional_record_count": len(additional_records or []), "step_count": len(losses), "global_step": global_step, "checkpoint_every_steps": max(0, int(checkpoint_every_steps)), "final_loss": round(final_loss, 6), "loss_curve": loss_curve, "elapsed_seconds": round(time.perf_counter() - started, 3), "dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult, "frames_per_chunk": config.frames_per_chunk, "chunk_seconds": config.chunk_seconds, "mel_mean": round(config.mel_mean, 6), "mel_std": round(config.mel_std, 6), "warmup_steps": warmup_steps, "ema_decay": trainer.ema_decay, "mixed_precision": trainer.use_amp, "lambda_vocal": lambda_vocal}
+    report = {"status": "complete", "backend": "genmusic-vn-self-diffusion", "dataset": str(root.resolve()), "dataset_dirs": [str(d.resolve()) for d in dataset_dirs], "checkpoint": str(checkpoint.resolve()), "device": selected_device, "epochs": epoch_count, "resumed_from_epoch": resumed_from_epoch, "resumed_from_batch": resumed_from_batch, "batch_size": batch_size_value, "record_count": len(dataset.records), "excluded_record_count": dataset.excluded_record_count, "additional_record_count": len(additional_records or []), "step_count": len(losses), "global_step": global_step, "checkpoint_every_steps": max(0, int(checkpoint_every_steps)), "final_loss": round(final_loss, 6), "loss_curve": loss_curve, "elapsed_seconds": round(time.perf_counter() - started, 3), "dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult, "frames_per_chunk": config.frames_per_chunk, "chunk_seconds": config.chunk_seconds, "mel_mean": round(config.mel_mean, 6), "mel_std": round(config.mel_std, 6), "warmup_steps": warmup_steps, "ema_decay": trainer.ema_decay, "mixed_precision": trainer.use_amp, "lambda_vocal": lambda_vocal}
     (checkpoint.parent / "training_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report

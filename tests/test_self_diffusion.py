@@ -118,6 +118,30 @@ class SelfDiffusionTests(unittest.TestCase):
             self.assertTrue(generated["duration_auto_adjusted"])
             self.assertTrue(Path(generated["audio_path"]).exists())
 
+    def test_train_model_combines_multiple_dataset_dirs(self) -> None:
+        """Two independently-preprocessed dataset directories (e.g. different raw-data
+        batches/parts) combine into one training set, each record resolved against its
+        own source root -- see _with_absolute_paths in self_diffusion.py."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            dataset_a = root / "dataset_a"
+            dataset_b = root / "dataset_b"
+            create_random_dataset(dataset_a, count=2, frames=32, seed=1)
+            create_random_dataset(dataset_b, count=3, frames=32, seed=2)
+            report = train_model(
+                [dataset_a, dataset_b],
+                root / "model.pt",
+                epochs=1,
+                batch_size=2,
+                checkpoint_every_steps=1,
+            )
+            self.assertEqual(report["status"], "complete")
+            self.assertEqual(report["record_count"], 5)
+            self.assertEqual(
+                set(report["dataset_dirs"]),
+                {str(dataset_a.resolve()), str(dataset_b.resolve())},
+            )
+
     def test_training_resumes_from_mid_epoch_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
