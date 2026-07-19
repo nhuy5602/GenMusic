@@ -36,9 +36,11 @@ try:
     processed_dataset = records_file.parent
     print(f"Using processed dataset: {{processed_dataset.resolve()}}")
 
-    checkpoint_candidates = list(input_dir.rglob("distilled_student.pt"))
+    # train-distill saves distilled_student.pt; train-self saves my_trained_model.pt --
+    # accept either so this same eval kernel works on baseline (train-self) checkpoints too.
+    checkpoint_candidates = list(input_dir.rglob("distilled_student.pt")) or list(input_dir.rglob("my_trained_model.pt"))
     if not checkpoint_candidates:
-        raise RuntimeError("Could not find distilled_student.pt in /kaggle/input (checkpoint source kernel not mounted?).")
+        raise RuntimeError("Could not find distilled_student.pt or my_trained_model.pt in /kaggle/input (checkpoint source kernel not mounted?).")
     checkpoint_path = checkpoint_candidates[0]
     print(f"Using checkpoint: {{checkpoint_path.resolve()}}")
 
@@ -182,7 +184,7 @@ def run_kaggle_evaluate(checkpoint_kernel_ref: str, processed_kernel_ref_overrid
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint-kernel-ref", type=str, required=True, help="Kernel ref (owner/slug) whose output contains distilled_student.pt.")
+    parser.add_argument("--checkpoint-kernel-ref", type=str, required=True, help="Kernel ref (owner/slug) whose output contains distilled_student.pt (train-distill) or my_trained_model.pt (train-self).")
     parser.add_argument("--processed-kernel-ref", type=str, default=None, help="Override KAGGLE_PROCESSED_KERNEL_REF for this run.")
     parser.add_argument("--max-records", type=int, default=6)
     args = parser.parse_args()

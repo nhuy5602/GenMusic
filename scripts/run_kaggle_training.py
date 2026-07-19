@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -259,16 +260,31 @@ def main():
     subprocess.run(cli + ["kernels", "push", "-p", str(kernel_dir)], env=kaggle_env, check=True)
 
     # 5. Poll Kernel status
+    # A full-scale run (e.g. 25 epochs, batch_size=8, no --max-records) can comfortably
+    # exceed an hour -- a prior run of this exact script gave up at the old 240*15s=60min
+    # cap while the kernel was still legitimately RUNNING, silently skipping the checkpoint
+    # download. 900 iterations * 15s = 225 minutes gives real full-scale runs enough room.
+    # Status matching uses the literal `KernelWorkerStatus.<NAME>` field (regex) rather than
+    # a naive substring scan for "error"/"failed" -- a transient local network hiccup inside
+    # the `kaggle` CLI subprocess can print those words to stderr without the kernel itself
+    # having failed, which previously caused false-positive "job errored" detections.
     print("⏳ Monitoring training execution status on Kaggle...")
+    status_re = re.compile(r"KernelWorkerStatus\.(\w+)", re.IGNORECASE)
     completed = False
-    for _ in range(240): # Poll for up to 40 minutes (Whisper/Demucs on 1 file + GPU train is fast, ~5-8 mins)
-        res = subprocess.run(cli + ["kernels", "status", kernel_ref], env=kaggle_env, capture_output=True, text=True)
-        status_text = res.stdout.strip().lower()
+    for _ in range(900):
+        try:
+            res = subprocess.run(cli + ["kernels", "status", kernel_ref], env=kaggle_env, capture_output=True, text=True, timeout=60)
+            match = status_re.search(res.stdout)
+            status_text = match.group(1).upper() if match else res.stdout.strip()
+        except Exception as exc:
+            print(f"   [WARNING] Status check failed, retrying: {exc}")
+            time.sleep(15)
+            continue
         print(f"   Current Status: {status_text}")
-        if "complete" in status_text:
+        if status_text == "COMPLETE":
             completed = True
             break
-        if "failed" in status_text or "error" in status_text:
+        if status_text in ("ERROR", "CANCELLED"):
             print("❌ Kaggle Kernel training failed.")
             break
         time.sleep(15)
