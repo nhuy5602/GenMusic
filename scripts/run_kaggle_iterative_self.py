@@ -51,6 +51,18 @@ def _kernel_script_content(
     text_sensitivity_weight: float,
     text_sensitivity_target: float,
     minimum_text_sensitivity: float,
+    text_encoder: str,
+    generation_target: str,
+    lambda_vocal: float,
+    native_ctc_weight: float,
+    native_ctc_teacher_weight: float,
+    native_frame_text_weight: float,
+    native_frame_text_teacher_weight: float,
+    native_vocal_prior_weight: float,
+    vocal_structure_weight: float,
+    native_prosody_weight: float,
+    native_lr_multiplier: float,
+    freeze_native_ctc: bool,
     dataset_validation_max_records: int,
     validation_fraction: float,
     validation_max_records: int,
@@ -62,6 +74,7 @@ def _kernel_script_content(
     online_assets: bool,
     train_only: bool,
     disable_amp: bool,
+    reset_optimizer: bool,
 ) -> str:
     script = f'''import json
 import os
@@ -294,6 +307,8 @@ try:
         "--depth", "{depth}", "--heads", "{heads}", "--device", "cuda",
         "--validation-fraction", "0", "--style-dropout", "{style_dropout}",
         "--text-dropout", "{text_dropout}",
+        "--text-encoder", "{text_encoder}",
+        "--generation-target", "{generation_target}",
     ]
     if {str(disable_amp)}:
         preflight_command.append("--disable-amp")
@@ -328,6 +343,17 @@ try:
         "--text-sensitivity-weight", "{text_sensitivity_weight}",
         "--text-sensitivity-target", "{text_sensitivity_target}",
         "--minimum-text-sensitivity", "{minimum_text_sensitivity}",
+        "--text-encoder", "{text_encoder}",
+        "--generation-target", "{generation_target}",
+        "--lambda-vocal", "{lambda_vocal}",
+        "--native-ctc-weight", "{native_ctc_weight}",
+        "--native-ctc-teacher-weight", "{native_ctc_teacher_weight}",
+        "--native-frame-text-weight", "{native_frame_text_weight}",
+        "--native-frame-text-teacher-weight", "{native_frame_text_teacher_weight}",
+        "--native-vocal-prior-weight", "{native_vocal_prior_weight}",
+        "--vocal-structure-weight", "{vocal_structure_weight}",
+        "--native-prosody-weight", "{native_prosody_weight}",
+        "--native-lr-multiplier", "{native_lr_multiplier}",
         "--dataset-validation-max-records", "{dataset_validation_max_records}",
         "--validation-fraction", "{validation_fraction}",
         "--validation-max-records", "{validation_max_records}",
@@ -337,8 +363,12 @@ try:
     ]
     if resume_enabled:
         train_command.append("--resume")
+    if {str(reset_optimizer)}:
+        train_command.append("--reset-optimizer")
     if {str(disable_amp)}:
         train_command.append("--disable-amp")
+    if {str(freeze_native_ctc)}:
+        train_command.append("--freeze-native-ctc")
     run_logged(train_command, "train_full", cwd=str(source_root), env=os.environ)
 
     if {str(train_only)}:
@@ -365,6 +395,8 @@ try:
                 "best_epoch": report.get("best_epoch"),
                 "best_validation_loss": report.get("best_validation_loss"),
                 "final_text_conditioning_sensitivity": report.get("final_text_conditioning_sensitivity"),
+                "final_native_ctc_validation": report.get("final_native_ctc_validation"),
+                "native_generation": report.get("native_generation"),
             }}, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
@@ -441,6 +473,19 @@ except Exception:
     Path("/kaggle/working/error.txt").write_text(traceback_text, encoding="utf-8")
     raise
 '''
+    if text_encoder == "native_utf8" and train_only:
+        # Native train-only kernels need neither XPhoneBERT/Charsiu nor a TTS,
+        # vocoder, or Whisper. Starting the GPU only after dependency setup
+        # avoids spending quota on downloads that cannot affect training.
+        offline_start = script.index('    assets_root = Path("/kaggle/working/offline_assets")')
+        offline_end = script.index('    nvidia_smi = shutil.which("nvidia-smi")')
+        native_setup = '''    Path("/kaggle/working/native_text_frontend.txt").write_text(
+        "native_utf8: no pretrained text encoder or TTS loaded",
+        encoding="utf-8",
+    )
+
+'''
+        return script[:offline_start] + native_setup + script[offline_end:]
     if not online_assets:
         return script
 
@@ -561,9 +606,43 @@ def main() -> None:
     parser.add_argument("--text-sensitivity-target", type=float, default=0.20)
     parser.add_argument("--minimum-text-sensitivity", type=float, default=0.18)
     parser.add_argument(
+        "--text-encoder",
+        default="native_utf8",
+        choices=("native_utf8", "pretrained_xphonebert"),
+    )
+    parser.add_argument(
+        "--generation-target",
+        default="joint_stems",
+        choices=("joint_stems", "full_mix"),
+    )
+    parser.add_argument(
+        "--lambda-vocal",
+        type=float,
+        default=1.0,
+        help="Direct and auxiliary loss weight for the vocal half of joint stems.",
+    )
+    parser.add_argument("--native-ctc-weight", type=float, default=0.0)
+    parser.add_argument("--native-ctc-teacher-weight", type=float, default=0.0)
+    parser.add_argument("--native-frame-text-weight", type=float, default=0.0)
+    parser.add_argument("--native-frame-text-teacher-weight", type=float, default=0.0)
+    parser.add_argument("--native-vocal-prior-weight", type=float, default=0.0)
+    parser.add_argument("--vocal-structure-weight", type=float, default=0.0)
+    parser.add_argument("--native-prosody-weight", type=float, default=0.0)
+    parser.add_argument("--native-lr-multiplier", type=float, default=10.0)
+    parser.add_argument(
+        "--freeze-native-ctc",
+        action="store_true",
+        help="Freeze a separately pretrained native recognizer during diffusion continuation.",
+    )
+    parser.add_argument(
         "--disable-amp",
         action="store_true",
         help="Use FP32 CUDA training when FP16 backward remains unstable.",
+    )
+    parser.add_argument(
+        "--reset-optimizer",
+        action="store_true",
+        help="Resume model/EMA but restart AdamW and LR schedule for a new objective phase.",
     )
     parser.add_argument("--dataset-validation-max-records", type=int, default=128)
     parser.add_argument("--validation-fraction", type=float, default=0.05)
@@ -647,7 +726,10 @@ def main() -> None:
     assets_ref = args.offline_assets_ref.strip()
     if args.online_assets and assets_ref:
         raise ValueError("Choose either --online-assets or --offline-assets-ref, not both")
-    if not args.online_assets:
+    needs_asset_dataset = not (
+        args.text_encoder == "native_utf8" and args.train_only
+    )
+    if not args.online_assets and needs_asset_dataset:
         if not assets_ref:
             assets_ref = f"{username}/genmusic-offline-assets-{timestamp}"
             bundle = prepare_offline_assets(project_root / "outputs/kaggle_offline_assets/current")
@@ -715,6 +797,20 @@ def main() -> None:
             text_sensitivity_weight=args.text_sensitivity_weight,
             text_sensitivity_target=args.text_sensitivity_target,
             minimum_text_sensitivity=args.minimum_text_sensitivity,
+            text_encoder=args.text_encoder,
+            generation_target=args.generation_target,
+            lambda_vocal=args.lambda_vocal,
+            native_ctc_weight=args.native_ctc_weight,
+            native_ctc_teacher_weight=args.native_ctc_teacher_weight,
+            native_frame_text_weight=args.native_frame_text_weight,
+            native_frame_text_teacher_weight=(
+                args.native_frame_text_teacher_weight
+            ),
+            native_vocal_prior_weight=args.native_vocal_prior_weight,
+            vocal_structure_weight=args.vocal_structure_weight,
+            native_prosody_weight=args.native_prosody_weight,
+            native_lr_multiplier=args.native_lr_multiplier,
+            freeze_native_ctc=args.freeze_native_ctc,
             dataset_validation_max_records=args.dataset_validation_max_records,
             validation_fraction=args.validation_fraction,
             validation_max_records=args.validation_max_records,
@@ -726,6 +822,7 @@ def main() -> None:
             online_assets=args.online_assets,
             train_only=args.train_only,
             disable_amp=args.disable_amp,
+            reset_optimizer=args.reset_optimizer,
         ),
         encoding="utf-8",
     )
@@ -767,19 +864,43 @@ def main() -> None:
         "expected_records": args.expected_records,
         "epochs": args.epochs,
         "batch_size": args.batch_size,
+        "frames_per_chunk": args.frames_per_chunk,
         "dim": args.dim,
         "depth": args.depth,
         "heads": args.heads,
+        "learning_rate": args.learning_rate,
         "style_dropout": args.style_dropout,
         "text_dropout": args.text_dropout,
         "text_contrastive_weight": args.text_contrastive_weight,
+        "text_contrastive_margin": args.text_contrastive_margin,
+        "text_contrastive_prob": args.text_contrastive_prob,
         "text_sensitivity_weight": args.text_sensitivity_weight,
         "text_sensitivity_target": args.text_sensitivity_target,
         "minimum_text_sensitivity": args.minimum_text_sensitivity,
+        "text_encoder": args.text_encoder,
+        "lambda_vocal": args.lambda_vocal,
+        "native_ctc_weight": args.native_ctc_weight,
+        "generation_target": args.generation_target,
+        "native_ctc_teacher_weight": args.native_ctc_teacher_weight,
+        "native_frame_text_weight": args.native_frame_text_weight,
+        "native_frame_text_teacher_weight": (
+            args.native_frame_text_teacher_weight
+        ),
+        "native_vocal_prior_weight": args.native_vocal_prior_weight,
+        "vocal_structure_weight": args.vocal_structure_weight,
+        "native_prosody_weight": args.native_prosody_weight,
+        "native_lr_multiplier": args.native_lr_multiplier,
+        "freeze_native_ctc": args.freeze_native_ctc,
         "dataset_validation_max_records": args.dataset_validation_max_records,
+        "validation_fraction": args.validation_fraction,
+        "validation_max_records": args.validation_max_records,
+        "early_stopping_patience": args.early_stopping_patience,
+        "minimum_epochs": args.minimum_epochs,
+        "evaluation_records": args.evaluation_records,
         "guidance_scales": args.guidance_scales,
         "train_only": args.train_only,
         "disable_amp": args.disable_amp,
+        "reset_optimizer": args.reset_optimizer,
         "accelerator": args.accelerator,
         "session_timeout_seconds": args.session_timeout_seconds,
         "status": "prepared",

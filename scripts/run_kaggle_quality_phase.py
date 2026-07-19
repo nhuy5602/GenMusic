@@ -34,7 +34,9 @@ def _kernel_code(
     steps: int,
     guidance_scales: str,
     pronunciation_prior_strengths: str,
+    native_prior_start_strength: float,
     conditioning_modes: list[str],
+    native_only: bool,
 ) -> str:
     template = r'''import json
 import shutil
@@ -63,7 +65,9 @@ try:
         run_logged,
     )
 
-    environment = install_online_audio_dependencies(source_root)
+    environment = install_online_audio_dependencies(
+        source_root, native_only=__NATIVE_ONLY__
+    )
     gpu_preflight()
     combined_root = build_combined_dataset(
         source_count=__SOURCE_COUNT__,
@@ -93,9 +97,13 @@ try:
             __GUIDANCE_SCALES__,
             "--pronunciation-prior-strengths",
             __PRONUNCIATION_PRIOR_STRENGTHS__,
+            "--native-prior-start-strength",
+            str(__NATIVE_PRIOR_START_STRENGTH__),
         ]
         if mode == "reference_style":
             command.append("--use-style-anchor")
+        if __NATIVE_ONLY__:
+            command.append("--native-only")
         run_logged(
             command,
             f"quality_evaluation_{mode}",
@@ -131,6 +139,7 @@ try:
 
     def sample_rank(sample):
         asr = sample.get("generated_asr") or {}
+        vocal_asr = sample.get("generated_vocal_asr") or {}
         metrics = sample.get("generated") or {}
         real = sample.get("real_vocal_same_vocoder") or {}
         pitch = float(metrics.get("pitch_std_semitones") or 0.0)
@@ -138,6 +147,8 @@ try:
         return (
             float(asr.get("word_accuracy") or 0.0),
             -float(asr.get("cer") or 1.0),
+            float(vocal_asr.get("word_accuracy") or 0.0),
+            -float(vocal_asr.get("cer") or 1.0),
             -abs(pitch - real_pitch),
         )
 
@@ -162,6 +173,10 @@ try:
                     ],
                     "encode_best_mp3",
                 )
+        for stem_name in ("vocal", "backing"):
+            stem_wav = selected_dir / f"{best_sample['id']}_generated_{stem_name}.wav"
+            if stem_wav.is_file():
+                shutil.copy2(stem_wav, WORKING_ROOT / f"best_generated_{stem_name}.wav")
 
     comparison = {
         mode: report.get("summary") or {}
@@ -211,7 +226,9 @@ except Exception:
             "__PRONUNCIATION_PRIOR_STRENGTHS__",
             repr(pronunciation_prior_strengths),
         )
+        .replace("__NATIVE_PRIOR_START_STRENGTH__", repr(float(native_prior_start_strength)))
         .replace("__CONDITIONING_MODES__", repr(conditioning_modes))
+        .replace("__NATIVE_ONLY__", repr(bool(native_only)))
     )
 
 
@@ -232,14 +249,34 @@ def main() -> None:
         help="Comma-separated Vietnamese pronunciation-prior strengths in [0,1]",
     )
     parser.add_argument(
+        "--native-prior-start-strength",
+        type=float,
+        default=0.0,
+        help="Internal native vocal-prior interpolation at CFM start; no pretrained TTS.",
+    )
+    parser.add_argument(
         "--conditioning-modes",
         default="no_style,reference_style",
         help="Comma-separated: no_style,reference_style",
+    )
+    parser.add_argument(
+        "--native-only",
+        action="store_true",
+        help="Fail unless the checkpoint generates with native_utf8 and prior strength 0.",
     )
     parser.add_argument("--accelerator", default="NvidiaTeslaT4")
     parser.add_argument("--session-timeout-seconds", type=int, default=7200)
     parser.add_argument("--kernel-slug", default="")
     args = parser.parse_args()
+
+    if args.native_only:
+        prior_values = [
+            float(value.strip())
+            for value in args.pronunciation_prior_strengths.split(",")
+            if value.strip()
+        ]
+        if prior_values != [0.0]:
+            raise ValueError("--native-only requires --pronunciation-prior-strengths 0.0")
 
     if bool(args.checkpoint_kernel_ref) == bool(args.checkpoint_dataset_ref):
         raise ValueError(
@@ -293,7 +330,9 @@ def main() -> None:
             steps=args.steps,
             guidance_scales=args.guidance_scales,
             pronunciation_prior_strengths=args.pronunciation_prior_strengths,
+            native_prior_start_strength=args.native_prior_start_strength,
             conditioning_modes=modes,
+            native_only=args.native_only,
         ),
         dataset_sources=dataset_sources,
         kernel_sources=kernel_sources,
@@ -312,6 +351,7 @@ def main() -> None:
             "steps": args.steps,
             "guidance_scales": args.guidance_scales,
             "pronunciation_prior_strengths": args.pronunciation_prior_strengths,
+            "native_prior_start_strength": args.native_prior_start_strength,
             "conditioning_modes": modes,
             "accelerator": args.accelerator,
             "session_timeout_seconds": args.session_timeout_seconds,

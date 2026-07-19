@@ -11,6 +11,7 @@ a periodic "is it actually still healthy" check instead of hanging the caller.
 """
 import json
 import sys
+import time
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -68,9 +69,17 @@ def tail_kernel_log(kernel_ref: str, read_timeout: float = 8.0) -> str:
         response.raise_for_status()
         content_type = (response.headers.get("Content-Type") or "").lower()
         chunks = []
+        # Kaggle sends SSE keep-alives frequently enough that requests' socket
+        # read timeout may never fire, even when no new notebook log exists.
+        # Bound the whole stream operation as well so a periodic monitor cannot
+        # hang forever on a healthy but quiet training batch.
+        deadline = time.monotonic() + max(1.0, float(read_timeout))
         try:
             if content_type.startswith("text/event-stream"):
-                for line in response.iter_lines(decode_unicode=True):
+                for line in response.iter_lines(chunk_size=1, decode_unicode=True):
+                    if time.monotonic() >= deadline:
+                        chunks.append("\n[stream stopped: absolute deadline reached]")
+                        break
                     if line is None:
                         continue
                     if line.startswith("data:"):
@@ -84,6 +93,9 @@ def tail_kernel_log(kernel_ref: str, read_timeout: float = 8.0) -> str:
                             chunks.append(payload)
             else:
                 for chunk in response.iter_content(chunk_size=8192, decode_unicode=True):
+                    if time.monotonic() >= deadline:
+                        chunks.append("\n[stream stopped: absolute deadline reached]")
+                        break
                     if chunk:
                         chunks.append(chunk)
         except Exception as e:  # includes requests.exceptions.ReadTimeout

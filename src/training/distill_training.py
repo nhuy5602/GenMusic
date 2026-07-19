@@ -37,6 +37,7 @@ from src.models.dit_transformer import MicroDiT
 from src.training.self_diffusion import (
     MusicDiffusionDataset,
     _filter_training_records,
+    _music_config_from_json,
     _read_records,
     _torch,
     estimate_vocal_mel_stats,
@@ -685,7 +686,7 @@ def run_distillation_training(
     student_checkpoint = Path(student_checkpoint_path)
     selected_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-    config = MusicDiffusionConfig(**json.loads((root / "config.json").read_text(encoding="utf-8")))
+    config = _music_config_from_json(root / "config.json")
     # Auto-calibrate mel_mean/mel_std the same way train-self does (self_diffusion.py's
     # train_model) -- without this, MusicDiffusionDataset applies identity normalization
     # (mel_mean=0, mel_std=1 defaults), leaving the student to fit raw, unnormalized
@@ -728,7 +729,9 @@ def run_distillation_training(
         raise RuntimeError(f"train-distill requires the real lyric tokenizer; it failed to load: {tokenizer_status}.")
 
     model_student = MicroDiT(
-        config, roberta_model=roberta_model, dim=dim, depth=depth, heads=heads, ff_mult=ff_mult, style_dim=TEACHER_COND_DIM,
+        config, roberta_model=roberta_model,
+        text_encoder_type="pretrained_xphonebert",
+        dim=dim, depth=depth, heads=heads, ff_mult=ff_mult, style_dim=TEACHER_COND_DIM,
     ).to(selected_device)
 
     dataset = MusicDiffusionDataset(root, config, records=training_records)
@@ -823,6 +826,7 @@ def run_distillation_training(
         "ff_mult": ff_mult,
         "style_dim": TEACHER_COND_DIM,
         "roberta_model": roberta_model,
+        "text_encoder_type": "pretrained_xphonebert",
     }
     from src.models.text_to_music_diffusion import save_checkpoint
 

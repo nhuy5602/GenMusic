@@ -8,9 +8,44 @@ from transformers.models.llama.modeling_llama import LlamaAttention, LlamaMLP, L
 from transformers.models.llama import LlamaConfig
 
 from .text_to_music_diffusion import MusicDiffusionConfig
+from .native_text import (
+    NativeAudioTextRecognizer,
+    NativeProsodyConditioner,
+    NativeVietnameseTextEncoder,
+    NativeVocalMelPrior,
+)
+
+
+def align_text_to_frames(
+    text_embed: torch.Tensor,
+    text_mask: torch.Tensor,
+    text_present: torch.Tensor,
+    frame_count: int,
+) -> torch.Tensor:
+    """Monotonically expand ordered lyric tokens onto the audio timeline."""
+    aligned_text = []
+    for batch_index in range(text_embed.shape[0]):
+        valid = text_embed[batch_index][text_mask[batch_index]]
+        if valid.shape[0] == 0 or not bool(text_present[batch_index]):
+            aligned = torch.zeros(
+                (frame_count, text_embed.shape[-1]),
+                dtype=text_embed.dtype,
+                device=text_embed.device,
+            )
+        else:
+            aligned = F.interpolate(
+                valid.transpose(0, 1).unsqueeze(0),
+                size=frame_count,
+                mode="linear",
+                align_corners=False,
+            ).squeeze(0).transpose(0, 1)
+        aligned_text.append(aligned)
+    return torch.stack(aligned_text)
 
 class PretrainedPhonemeEncoder(nn.Module):
     """Frozen pretrained XPhoneBERT text encoder to extract rich semantic phoneme-level sequence embeddings."""
+    is_native = False
+    encoder_type = "pretrained_xphonebert"
     def __init__(self, model_name: str = "vinai/xphonebert-base", out_dim: int = 256):
         super().__init__()
         resolved_model_name = os.getenv("GENMUSIC_XPHONEBERT_PATH") or model_name
@@ -156,31 +191,26 @@ class InputEmbedding(nn.Module):
         text_embed: torch.Tensor | None = None,
         text_mask: torch.Tensor | None = None,
         text_present: torch.Tensor | None = None,
+        aligned_text: torch.Tensor | None = None,
     ) -> torch.Tensor:
         x_proj = self.proj_x(x)
 
         if text_embed is not None and text_mask is not None:
             text_embed = self.proj_text(text_embed)
-            aligned_text = []
-            frame_count = x_proj.shape[1]
-            for batch_index in range(text_embed.shape[0]):
-                valid = text_embed[batch_index][text_mask[batch_index]]
-                is_present = (
-                    bool(text_present[batch_index])
-                    if text_present is not None
-                    else valid.shape[0] > 0
+            present = (
+                text_present
+                if text_present is not None
+                else text_mask.any(dim=1)
+            )
+            aligned = aligned_text
+            if aligned is None:
+                aligned = align_text_to_frames(
+                    text_embed,
+                    text_mask,
+                    present,
+                    x_proj.shape[1],
                 )
-                if valid.shape[0] == 0 or not is_present:
-                    aligned = torch.zeros_like(x_proj[batch_index])
-                else:
-                    aligned = F.interpolate(
-                        valid.transpose(0, 1).unsqueeze(0),
-                        size=frame_count,
-                        mode="linear",
-                        align_corners=False,
-                    ).squeeze(0).transpose(0, 1)
-                aligned_text.append(aligned)
-            x_proj = x_proj + self.text_frame_strength() * torch.stack(aligned_text)
+            x_proj = x_proj + self.text_frame_strength() * aligned
 
         seq_len = x_proj.shape[1]
         style_emb_expanded = style_emb.unsqueeze(1).repeat(1, seq_len, 1)
@@ -298,21 +328,52 @@ class MicroDiT(nn.Module):
         self,
         config: MusicDiffusionConfig,
         roberta_model: str = "vinai/xphonebert-base",
+        text_encoder_type: str = "native_utf8",
         dim: int = 256,
         depth: int = 4,
         heads: int = 4,
         ff_mult: int = 4,
         style_dim: int = 512,
         repa_dim: int = 1024,
+        generation_target: str = "full_mix",
     ):
         super().__init__()
         self.config = config
         self.dim = dim
         self.cond_dim = dim
         self.style_dim = style_dim
+        self.generation_target = str(generation_target)
+        if self.generation_target not in {"full_mix", "joint_stems"}:
+            raise ValueError(
+                "generation_target must be 'full_mix' or 'joint_stems', "
+                f"got {self.generation_target!r}"
+            )
 
         # Core embeddings and adapters
-        self.text_encoder = PretrainedPhonemeEncoder(model_name=roberta_model, out_dim=dim)
+        self.text_encoder_type = str(text_encoder_type)
+        if self.text_encoder_type == "native_utf8":
+            self.text_encoder = NativeVietnameseTextEncoder(out_dim=dim)
+            # This recognizer receives audio only. Its CTC loss prevents the
+            # full-mix denoiser from copying text embeddings without rendering
+            # the corresponding Vietnamese content into the vocal component.
+            self.audio_text_recognizer = NativeAudioTextRecognizer(config.n_mels, dim)
+            self.native_prosody = NativeProsodyConditioner(dim)
+            self.native_vocal_prior = NativeVocalMelPrior(dim, config.n_mels)
+            # A bounded non-zero residual makes the direct grapheme-to-vocal
+            # path effective immediately while leaving the DiT free to model
+            # singer, melody and accompaniment variation around it.
+            self.native_vocal_prior_gate = nn.Parameter(torch.tensor(-1.0))
+        elif self.text_encoder_type == "pretrained_xphonebert":
+            self.text_encoder = PretrainedPhonemeEncoder(model_name=roberta_model, out_dim=dim)
+            self.audio_text_recognizer = None
+            self.native_prosody = None
+            self.native_vocal_prior = None
+            self.register_parameter("native_vocal_prior_gate", None)
+        else:
+            raise ValueError(
+                "text_encoder_type must be 'native_utf8' or 'pretrained_xphonebert', "
+                f"got {self.text_encoder_type!r}"
+            )
         self.time_embed = TimestepEmbedding(self.cond_dim)
         self.audio_style_encoder = AudioStyleEncoder(style_dim, dim)
         self.style_embed = nn.Sequential(
@@ -321,7 +382,8 @@ class MicroDiT(nn.Module):
             nn.Linear(self.cond_dim, self.cond_dim)
         )
 
-        self.input_embed = InputEmbedding(config.n_mels, dim)
+        model_mels = config.n_mels * (2 if self.joint_stem_generation else 1)
+        self.input_embed = InputEmbedding(model_mels, dim)
         # Projects an intermediate transformer hidden state up to a frozen
         # self-supervised audio encoder's feature dimension (REPA-style
         # representation-alignment auxiliary loss, see docs/PROJECT_REPORT.md --
@@ -355,7 +417,7 @@ class MicroDiT(nn.Module):
         self.rotary_emb = LlamaRotaryEmbedding(config=llama_config)
         
         self.norm_out = AdaLayerNormZeroFinal(dim, self.cond_dim)
-        self.proj_out = nn.Linear(dim, config.n_mels)
+        self.proj_out = nn.Linear(dim, model_mels)
         # Auxiliary vocal-only prediction head ("Mixed Pro" in SongGen,
         # arXiv:2502.13128): the model's primary target is now the full song
         # (vocal + accompaniment, see reconstruct_full_mix in
@@ -367,6 +429,27 @@ class MicroDiT(nn.Module):
         # unless a caller explicitly asks for it.
         self.vocal_proj_out = nn.Linear(dim, config.n_mels)
 
+    @property
+    def native_generation(self) -> bool:
+        return self.text_encoder_type == "native_utf8"
+
+    @property
+    def joint_stem_generation(self) -> bool:
+        """Whether one denoising state jointly carries backing and vocal mels."""
+        return self.generation_target == "joint_stems"
+
+    def audio_text_logits(self, vocal_mel: torch.Tensor) -> torch.Tensor:
+        """Recognize lyrics from audio only for native CTC supervision."""
+        if self.audio_text_recognizer is None:
+            raise RuntimeError("Audio-text CTC is only available with native_utf8 text encoding")
+        return self.audio_text_recognizer(vocal_mel)
+
+    def native_vocal_prior_strength(self) -> torch.Tensor:
+        """Return a stable 0.10..1.00 contribution to vocal flow velocity."""
+        if self.native_vocal_prior_gate is None:
+            return torch.zeros((), device=next(self.parameters()).device)
+        return 0.10 + 0.90 * torch.sigmoid(self.native_vocal_prior_gate)
+
     def forward(
         self,
         x: torch.Tensor,
@@ -375,11 +458,14 @@ class MicroDiT(nn.Module):
         style_prompt: torch.Tensor | None = None,
         repa_layer_idx: int | None = None,
         return_vocal_aux: bool = False,
+        return_native_vocal_prior: bool = False,
+        return_native_prosody: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, ...]:
         device = x.device
         batch_size, seq_len = x.shape[0], x.shape[1]
 
-        # 1. Encode text via RoBERTa (frozen) -- kept as cross-attention keys/values
+        # 1. Encode text into ordered lyric tokens. Native checkpoints learn
+        # this frontend jointly; legacy checkpoints use frozen XPhoneBERT.
         text_embeds, text_mask = self.text_encoder(texts, device) # (batch_size, text_seq_len, dim)
         mask = text_mask.unsqueeze(-1).to(text_embeds.dtype)
         pooled_text = (text_embeds * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
@@ -402,6 +488,19 @@ class MicroDiT(nn.Module):
             dtype=torch.bool,
             device=device,
         )
+        native_vocal_prior = None
+        native_prosody = None
+        if self.native_vocal_prior is not None:
+            native_prosody = self.native_prosody(
+                text_embeds, text_mask, text_present, seq_len
+            )
+            aligned_native_text = native_prosody["aligned_text"]
+            native_vocal_prior = self.native_vocal_prior(
+                aligned_native_text,
+                text_present,
+            )
+        else:
+            aligned_native_text = None
         x = self.input_embed(
             x,
             t_emb_scalar,
@@ -409,6 +508,7 @@ class MicroDiT(nn.Module):
             text_embed=text_embeds,
             text_mask=text_mask,
             text_present=text_present,
+            aligned_text=aligned_native_text,
         )
 
         # 4. Rotary position IDs over the mel sequence only
@@ -432,6 +532,23 @@ class MicroDiT(nn.Module):
         # 5. Modulate and project out
         x = self.norm_out(x, c)
         out = self.proj_out(x)
+        if self.joint_stem_generation:
+            # The shared projection is excellent at the dense accompaniment,
+            # but its second half can regress toward an unvoiced average while
+            # backing continues to improve. Reuse the dedicated vocal head that
+            # has always received vocal-only supervision instead of making the
+            # two stems compete in one final linear projection. This keeps one
+            # shared DiT and one sampling trajectory; only the last decoder head
+            # is stem-specific.
+            backing_out = out[..., : int(self.config.n_mels)]
+            vocal_out = self.vocal_proj_out(x)
+            if native_vocal_prior is not None:
+                vocal_out = vocal_out + (
+                    self.native_vocal_prior_strength() * native_vocal_prior
+                )
+            out = torch.cat((backing_out, vocal_out), dim=-1)
+        elif native_vocal_prior is not None:
+            out = out + self.native_vocal_prior_strength() * native_vocal_prior
 
         result: tuple = (out,)
         if repa_layer_idx is not None:
@@ -441,4 +558,8 @@ class MicroDiT(nn.Module):
             # Shares the same AdaLN-modulated hidden state as the main head --
             # only the final linear projection differs (see __init__).
             result = result + (self.vocal_proj_out(x),)
+        if return_native_vocal_prior:
+            result = result + (native_vocal_prior,)
+        if return_native_prosody:
+            result = result + (native_prosody,)
         return result if len(result) > 1 else out

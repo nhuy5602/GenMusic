@@ -75,9 +75,13 @@ class KaggleJobConfig:
     timeout_seconds: int = 21_600
     checkpoint_kernel_ref: str | None = None
     backing_kernel_ref: str | None = None
-    pronunciation_prior_strength: float = 0.8
+    # Native full-mix branches must prove intelligibility without seeding the
+    # diffusion path from MMS-TTS. Legacy callers can still opt in explicitly
+    # when loading an older checkpoint.
+    pronunciation_prior_strength: float = 0.0
     diffusion_steps: int = 48
     backing_to_vocal_rms: float = 0.45
+    native_only: bool = True
 
 
 def _fit_backing_mel(backing_mel, target_frames: int, *, seed: int):
@@ -191,6 +195,7 @@ def run_local_generation(
     style_anchor: str | Path | None = None,
     mix_backing: bool = False,
     backing_to_vocal_rms: float = 0.45,
+    native_only: bool = False,
 ) -> dict[str, Any]:
     normalized = normalize_vietnamese_lyrics(text).strip()
     if not normalized:
@@ -233,6 +238,11 @@ def run_local_generation(
         model = MicroDiT(config, roberta_model=roberta_model).to(selected_device)
         checkpoint_path = ""
         checkpoint_epoch = 0
+    if native_only and not bool(getattr(model, "native_generation", False)):
+        raise SelfMusicError(
+            "Native-only generation requires a native_utf8 checkpoint; "
+            "the selected checkpoint still uses the legacy pretrained text path."
+        )
     requested_duration = max(1.0, float(duration_seconds))
     minimum_duration = estimate_minimum_lyric_duration(normalized)
     effective_duration = max(requested_duration, minimum_duration)
@@ -330,6 +340,8 @@ def stage_text_to_music_job(*, text: str, output_root: str | Path, duration_seco
     normalized = normalize_vietnamese_lyrics(text).strip()
     if not normalized:
         raise ValueError("Văn bản input đang trống.")
+    if config.native_only and float(config.pronunciation_prior_strength) != 0.0:
+        raise ValueError("Native-only web jobs require pronunciation_prior_strength=0")
     requested_duration = max(1, min(120, int(duration_seconds)))
     requested_duration = min(120, max(requested_duration, math.ceil(estimate_minimum_lyric_duration(text))))
     run_id = make_run_id(normalized)
@@ -373,6 +385,7 @@ def stage_text_to_music_job(*, text: str, output_root: str | Path, duration_seco
         "diffusion_steps": max(1, int(config.diffusion_steps)),
         "guidance_scale": 1.0,
         "pronunciation_prior_strength": float(config.pronunciation_prior_strength),
+        "native_only": bool(config.native_only),
         "backing_to_vocal_rms": float(config.backing_to_vocal_rms),
         "model": config.model or DEFAULT_MODEL,
         "backend": "genmusic-vn-self-diffusion",
@@ -412,6 +425,7 @@ def stage_text_to_music_job(*, text: str, output_root: str | Path, duration_seco
         "machine_shape": config.machine_shape,
         "diffusion_steps": request["diffusion_steps"],
         "pronunciation_prior_strength": request["pronunciation_prior_strength"],
+        "native_only": request["native_only"],
         "backing_to_vocal_rms": request["backing_to_vocal_rms"],
         "checkpoint_url": _kernel_url(checkpoint_kernel_ref),
         "backing_url": _kernel_url(backing_kernel_ref),
@@ -578,8 +592,10 @@ def _modern_kernel_output(
     kernel_ref: str,
     destination: Path,
     access_token: str,
+    *,
+    include_prefixes: tuple[str, ...] = ("genmusic_output/",),
 ) -> dict[str, Any]:
-    """Download generated web artifacts without copying the whole source tree."""
+    """Download selected kernel artifacts without copying its source tree."""
     import requests
 
     owner, slug = validate_kernel_ref(kernel_ref).split("/", 1)
@@ -603,9 +619,10 @@ def _modern_kernel_output(
             )
             for item in payload.get("files", []):
                 name = str(item.get("fileName", "")).replace("\\", "/")
-                # The web kernel copies source into /kaggle/working as well. Only
-                # generation artifacts belong in a request's downloaded output.
-                if not name.startswith("genmusic_output/"):
+                # Kernels often copy source/data into /kaggle/working. Keep the
+                # allow-list explicit so a small quality download cannot pull
+                # gigabytes of unrelated training inputs.
+                if not any(name.startswith(prefix) for prefix in include_prefixes):
                     continue
                 relative = Path(name)
                 target = (destination / relative).resolve()
@@ -961,9 +978,13 @@ elif source_dir and source_dir.is_dir():
 else:
     raise RuntimeError("Không tìm thấy source model trong request dataset Kaggle.")
 os.environ["PYTHONPATH"] = str(source_root) + os.pathsep + os.environ.get("PYTHONPATH", "")
-subprocess.run(["apt-get", "update", "-qq"], check=True)
-subprocess.run(["apt-get", "install", "-y", "-qq", "espeak-ng"], check=True)
-subprocess.run([sys.executable, "-m", "pip", "install", "-q", "torch", "torchaudio", "librosa", "soundfile", "imageio-ffmpeg", "vocos", "transformers", "sentencepiece", "text2phonemesequence"], check=True)
+packages = ["torch", "torchaudio", "librosa", "soundfile", "imageio-ffmpeg", "vocos", "transformers"]
+if not request.get("native_only", False):
+    # Legacy XPhoneBERT checkpoints still need the external G2P frontend.
+    subprocess.run(["apt-get", "update", "-qq"], check=True)
+    subprocess.run(["apt-get", "install", "-y", "-qq", "espeak-ng"], check=True)
+    packages.extend(["sentencepiece", "text2phonemesequence"])
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", *packages], check=True)
 output = Path("/kaggle/working/genmusic_output")
 command = [
     sys.executable, "cli.py", "generate-local",
@@ -979,6 +1000,8 @@ command = [
     "--device", "cuda",
     "--out", str(output),
 ]
+if request.get("native_only", False):
+    command.append("--native-only")
 print("Generation-only full-mix web job:", " ".join(command), flush=True)
 subprocess.run(command, cwd=source_root, check=True)
 output.joinpath("request.json").write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")

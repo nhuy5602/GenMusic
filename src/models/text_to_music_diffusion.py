@@ -289,6 +289,8 @@ def load_checkpoint(
     *,
     device="cpu",
     roberta_model: str | None = None,
+    text_encoder_type: str | None = None,
+    generation_target: str | None = None,
     use_ema: bool = True,
 ) -> tuple[Any, MusicDiffusionConfig, dict[str, Any]]:
     torch, _ = _torch()
@@ -310,19 +312,102 @@ def load_checkpoint(
     # "roberta_model" was tracked in arch.
     arch = payload.get("arch") or {}
     resolved_roberta_model = roberta_model or arch.get("roberta_model", "xlm-roberta-base")
+    # Older checkpoints predate the field and therefore used XPhoneBERT. An
+    # explicit override is used only for a deliberate native-model upgrade.
+    resolved_text_encoder_type = text_encoder_type or arch.get(
+        "text_encoder_type", "pretrained_xphonebert"
+    )
+    resolved_generation_target = generation_target or arch.get(
+        "generation_target", "full_mix"
+    )
     model = MicroDiT(
         config, roberta_model=resolved_roberta_model,
+        text_encoder_type=resolved_text_encoder_type,
         dim=arch.get("dim", 256), depth=arch.get("depth", 4),
         heads=arch.get("heads", 4), ff_mult=arch.get("ff_mult", 4),
         style_dim=arch.get("style_dim", 512),
+        generation_target=resolved_generation_target,
     ).to(device)
+
+    def load_compatible_state(state: dict[str, Any]) -> None:
+        current = model.state_dict()
+        state = dict(state)
+        joint_migrated = False
+        if bool(getattr(model, "joint_stem_generation", False)):
+            input_name = "input_embed.proj_x.weight"
+            old_input = state.get(input_name)
+            new_input = current.get(input_name)
+            if (
+                old_input is not None
+                and new_input is not None
+                and old_input.shape[0] == new_input.shape[0]
+                and old_input.shape[1] * 2 == new_input.shape[1]
+            ):
+                # The old denoiser saw one approximate full-mix mel. Preserve
+                # that response while exposing backing and vocal as separate
+                # halves of the new state.
+                expanded = new_input.clone()
+                expanded[:, : old_input.shape[1]] = old_input * 0.5
+                expanded[:, old_input.shape[1] :] = old_input * 0.5
+                state[input_name] = expanded
+                joint_migrated = True
+
+            output_weight = state.get("proj_out.weight")
+            new_output_weight = current.get("proj_out.weight")
+            output_bias = state.get("proj_out.bias")
+            new_output_bias = current.get("proj_out.bias")
+            vocal_weight = state.get("vocal_proj_out.weight")
+            vocal_bias = state.get("vocal_proj_out.bias")
+            if (
+                output_weight is not None
+                and new_output_weight is not None
+                and output_weight.shape[0] * 2 == new_output_weight.shape[0]
+                and vocal_weight is not None
+                and vocal_weight.shape == output_weight.shape
+            ):
+                joined_weight = new_output_weight.clone()
+                joined_weight[: output_weight.shape[0]] = output_weight
+                joined_weight[output_weight.shape[0] :] = vocal_weight
+                state["proj_out.weight"] = joined_weight
+                if (
+                    output_bias is not None
+                    and new_output_bias is not None
+                    and vocal_bias is not None
+                    and output_bias.shape[0] * 2 == new_output_bias.shape[0]
+                ):
+                    joined_bias = new_output_bias.clone()
+                    joined_bias[: output_bias.shape[0]] = output_bias
+                    joined_bias[output_bias.shape[0] :] = vocal_bias
+                    state["proj_out.bias"] = joined_bias
+                joint_migrated = True
+        compatible: dict[str, Any] = {}
+        migrated: list[str] = []
+        for name, value in state.items():
+            expected = current.get(name)
+            if expected is not None and tuple(expected.shape) != tuple(value.shape):
+                if name.startswith("audio_text_recognizer.classifier."):
+                    # Native CTC v2 shortens UTF-8 byte targets to one token
+                    # per Vietnamese grapheme. Keep the trained audio frontend
+                    # and context layers, but initialize its new classifier.
+                    migrated.append(name)
+                    continue
+                raise RuntimeError(
+                    f"Checkpoint tensor shape mismatch for {name}: "
+                    f"{tuple(value.shape)} != {tuple(expected.shape)}"
+                )
+            compatible[name] = value
+        model.load_state_dict(compatible, strict=False)
+        if migrated:
+            payload["native_ctc_classifier_migrated"] = True
+        if joint_migrated:
+            payload["joint_stem_checkpoint_migrated"] = True
 
     # strict=False: checkpoints deliberately omit the frozen RoBERTa encoder
     # weights (see save_checkpoint) -- those are already loaded fresh from
     # HuggingFace by the model constructor above.
-    model.load_state_dict(payload["model"], strict=False)
+    load_compatible_state(payload["model"])
     if use_ema and payload.get("ema"):
-        model.load_state_dict(payload["ema"], strict=False)
+        load_compatible_state(payload["ema"])
     return model, config, payload
 
 
@@ -345,20 +430,25 @@ def generate_audio(
     style_prompt=None,
     enforce_minimum_duration: bool = True,
     pronunciation_prior_strength: float = 0.0,
+    native_prior_start_strength: float = 0.0,
     pronunciation_prior_model: str = "facebook/mms-tts-vie",
 ) -> dict[str, Any]:
-    """Generate audio with the same backing/style inputs used during training.
+    """Generate a full mix directly from lyrics, noise, and optional style.
 
-    ``backing_mel`` and ``style_anchor`` can come from
-    ``src.training.self_diffusion.load_reference_conditioning``. Without them,
-    generation falls back to zero backing conditioning and the model's text
-    style path. ``style_prompt`` is retained as a compatibility alias for local
-    callers that already passed a MuQ-MuLan anchor directly.
+    ``backing_mel`` is retained only as a compatibility argument and is not
+    mixed or conditioned into native full-mix generation. ``style_anchor`` and
+    its ``style_prompt`` alias may supply a MuQ style embedding; without one,
+    sampling uses the zero-style path seen during training.
     """
     torch, _ = _torch()
     prior_strength = float(pronunciation_prior_strength)
     if prior_strength < 0.0 or prior_strength > 1.0:
         raise ValueError("pronunciation_prior_strength must be in [0, 1]")
+    if bool(getattr(model, "native_generation", False)) and prior_strength > 0.0:
+        raise ValueError(
+            "Native full-mix checkpoints forbid pronunciation/TTS priors; "
+            "set pronunciation_prior_strength=0."
+        )
     model.to(device)
 
     if style_anchor is not None and style_prompt is not None:
@@ -386,6 +476,8 @@ def generate_audio(
         else requested_duration
     )
     rendered = []
+    rendered_vocal = []
+    rendered_backing = []
     lyric_timing = build_lyric_timing(text, duration_seconds)
     section_number = 0
     # Derive the generation span from the exact training tensor length.
@@ -409,7 +501,7 @@ def generate_audio(
                 model_name=pronunciation_prior_model,
             )
 
-        mel = sample_cfm(
+        sampled = sample_cfm(
             model,
             [chunk_text],
             chunk_frames,
@@ -421,17 +513,35 @@ def generate_audio(
             style_prompt=normalized_style,
             initial_mel=pronunciation_mel,
             pronunciation_prior_strength=prior_strength,
+            native_prior_start_strength=native_prior_start_strength,
         )
-        rendered.append(mel.squeeze(0))
+        if isinstance(sampled, tuple):
+            vocal_mel, backing_mel_generated = sampled
+            rendered_vocal.append(vocal_mel.squeeze(0))
+            rendered_backing.append(backing_mel_generated.squeeze(0))
+        else:
+            rendered.append(sampled.squeeze(0))
         section_number += 1
-    mel = torch.cat(rendered, dim=1)
     target_frames = max(1, int(float(duration_seconds) * config.sample_rate / config.hop_length))
-    mel = mel[:, :target_frames]
-    mel = denormalize_mel(mel, config)
+    vocal_mel = None
+    backing_mel_generated = None
+    if rendered_vocal:
+        vocal_mel = torch.cat(rendered_vocal, dim=1)[:, :target_frames]
+        backing_mel_generated = torch.cat(rendered_backing, dim=1)[:, :target_frames]
+        mel_normalized = reconstruct_full_mix(vocal_mel, backing_mel_generated, config)
+    else:
+        mel_normalized = torch.cat(rendered, dim=1)[:, :target_frames]
+    mel = denormalize_mel(mel_normalized, config)
     if mel_output:
         mel_path = Path(mel_output)
         mel_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save({"mel": mel.detach().cpu(), "text": text, "style": style}, mel_path)
+        mel_payload = {"mel": mel.detach().cpu(), "text": text, "style": style}
+        if vocal_mel is not None and backing_mel_generated is not None:
+            mel_payload.update({
+                "vocal_mel": denormalize_mel(vocal_mel, config).detach().cpu(),
+                "backing_mel": denormalize_mel(backing_mel_generated, config).detach().cpu(),
+            })
+        torch.save(mel_payload, mel_path)
     audio_path = render_mel_to_wav(mel, destination, config, vocoder_type=vocoder_type)
     return {
         "status": "complete",
@@ -446,11 +556,15 @@ def generate_audio(
         "backing_conditioned": False,
         "muq_style_conditioned": normalized_style is not None,
         "pronunciation_prior_strength": prior_strength,
+        "native_prior_start_strength": float(native_prior_start_strength),
         "pronunciation_prior_model": (
             pronunciation_prior_model
             if prior_strength > 0.0
             else None
         ),
+        "native_generation": bool(getattr(model, "native_generation", False)),
+        "text_encoder_type": getattr(model, "text_encoder_type", None),
+        "generation_target": getattr(model, "generation_target", "full_mix"),
     }
 
 

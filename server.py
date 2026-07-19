@@ -132,6 +132,10 @@ class GenMusicHandler(BaseHTTPRequestHandler):
         if length <= 0:
             raise ValueError("Request JSON đang trống.")
         if length > MAX_REQUEST_BYTES:
+            # Drain one bounded request window before replying. On Windows, closing a
+            # socket with unread request bytes can reset the connection before the
+            # client receives our JSON error response.
+            self.rfile.read(min(length, MAX_REQUEST_BYTES + 1))
             raise ValueError("Request JSON vượt quá dung lượng cho phép.")
         try:
             payload = json.loads(self.rfile.read(length).decode("utf-8"))

@@ -226,6 +226,8 @@ class SelfDiffusionTests(unittest.TestCase):
             self.assertIn("genmusic_vn_source.zip", script)
             self.assertNotIn("train-self", script)
             self.assertIn("--pronunciation-prior-strength", script)
+            self.assertIn("--native-only", script)
+            self.assertTrue(state["native_only"])
             self.assertNotIn("--mix-backing", script)
             self.assertIn("self_all_parts.pt", script)
             self.assertIn('rglob("request.json")', script)

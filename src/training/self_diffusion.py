@@ -10,7 +10,7 @@ import random
 import re
 import time
 import unicodedata
-from dataclasses import asdict, replace
+from dataclasses import asdict, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -18,6 +18,13 @@ from typing import Any
 from ..models.text_to_music_diffusion import MusicDiffusionConfig, normalize_mel, structured_random_mel
 
 STYLE_EMBED_DIM = 512  # matches MuQ-MuLan / DiffRhythm2 teacher's cond_dim
+
+
+def _music_config_from_json(path: str | Path) -> MusicDiffusionConfig:
+    """Load model fields while allowing dataset provenance beside them."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    allowed = {field.name for field in fields(MusicDiffusionConfig)}
+    return MusicDiffusionConfig(**{key: value for key, value in data.items() if key in allowed})
 
 # Whisper-tiny labels from the original six Kaggle shards contain occasional
 # English fragments, CJK characters and YouTube call-to-action speech.  Keeping
@@ -159,13 +166,24 @@ def split_training_records(
     if validation_max_records is not None:
         validation_count = min(validation_count, max(1, int(validation_max_records)))
     validation_count = min(validation_count, len(usable) - 1)
-    ranked = sorted(
-        enumerate(usable),
-        key=lambda item: hashlib.sha256(
-            f"{seed}:{item[1].get('id', item[0])}".encode("utf-8")
-        ).digest(),
+    groups: dict[str, list[int]] = {}
+    for index, record in enumerate(usable):
+        # Clean aligned datasets contain multiple chunks from the same song.
+        # Splitting on chunk id would leak the singer, backing, and adjacent
+        # lyrics into validation, so prefer a stable parent-song identifier.
+        group_key = str(record.get("song_id") or record.get("id") or index)
+        groups.setdefault(group_key, []).append(index)
+    if len(groups) < 2:
+        return usable, []
+    ranked_groups = sorted(
+        groups,
+        key=lambda key: hashlib.sha256(f"{seed}:{key}".encode("utf-8")).digest(),
     )
-    validation_indices = {index for index, _ in ranked[:validation_count]}
+    validation_indices: set[int] = set()
+    for group_key in ranked_groups[:-1]:
+        if len(validation_indices) >= validation_count:
+            break
+        validation_indices.update(groups[group_key])
     training_records = [
         record for index, record in enumerate(usable) if index not in validation_indices
     ]
@@ -237,6 +255,62 @@ def lyric_text_for_window(
     # An empty result is intentional: this crop lies in a non-vocal interval,
     # so conditioning it on the full-song transcript would teach false alignment.
     return clean_vietnamese_lyric(" ".join(selected))
+
+
+def lyric_lines_for_window(
+    full_text: str,
+    segments: list[dict[str, Any]],
+    start_seconds: float,
+    end_seconds: float,
+) -> str:
+    """Keep timestamped segment boundaries when preparing a generation prompt.
+
+    Training crops are at most ``frames_per_chunk`` (4.096 s by default), while
+    quality checks and the web UI often render several crops back-to-back.  A
+    flattened multi-segment prompt makes ``generate_audio`` put the entire
+    lyric on one overlong denoising sequence, which is outside the training
+    distribution and audibly rushes syllables.  Newlines preserve the natural
+    segment/crop boundaries; the generator allocates each line independently.
+    """
+    if not segments:
+        return clean_vietnamese_lyric(full_text)
+
+    lines: list[str] = []
+    for segment in segments:
+        if not clean_vietnamese_lyric(str(segment.get("text", ""))):
+            continue
+        segment_start = float(segment.get("start", 0.0))
+        segment_end = max(segment_start, float(segment.get("end", segment_start)))
+        timestamped_words = segment.get("words") or []
+        if timestamped_words:
+            word_spans = [
+                (
+                    float(word.get("start", segment_start)),
+                    float(word.get("end", segment_end)),
+                    str(word.get("word") or word.get("text") or "").strip(),
+                )
+                for word in timestamped_words
+            ]
+        else:
+            words = str(segment.get("text", "")).strip().split()
+            duration = max(1e-3, segment_end - segment_start)
+            word_spans = [
+                (
+                    segment_start + duration * index / max(1, len(words)),
+                    segment_start + duration * (index + 1) / max(1, len(words)),
+                    word,
+                )
+                for index, word in enumerate(words)
+            ]
+        selected = [
+            word
+            for word_start, word_end, word in word_spans
+            if word and word_end > start_seconds and word_start < end_seconds
+        ]
+        line = clean_vietnamese_lyric(" ".join(selected))
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
 
 class MusicDiffusionDataset:
     """PyTorch Dataset mapping structured Mel-spectrograms and text/style prompts."""
@@ -347,11 +421,21 @@ class MusicDiffusionDataset:
 
         lyric_text = clean_vietnamese_lyric(str(record["text"]))
         segments = record.get("segments") or []
+        crop_start_seconds = crop_start * self.config.hop_length / self.config.sample_rate
+        crop_end_seconds = crop_start_seconds + self.config.frames_per_chunk * self.config.hop_length / self.config.sample_rate
         if segments:
-            crop_start_seconds = crop_start * self.config.hop_length / self.config.sample_rate
-            crop_end_seconds = crop_start_seconds + self.config.frames_per_chunk * self.config.hop_length / self.config.sample_rate
             lyric_text = lyric_text_for_window(lyric_text, segments, crop_start_seconds, crop_end_seconds)
-        return {"vocal_mel": vocal_mel, "backing_mel": backing_mel, "style_anchor": style_anchor, "text": lyric_text}
+        return {
+            "vocal_mel": vocal_mel,
+            "backing_mel": backing_mel,
+            "style_anchor": style_anchor,
+            "text": lyric_text,
+            "frame_text_segments": (
+                segments if record.get("exact_word_timestamps") else []
+            ),
+            "frame_text_crop_start_seconds": crop_start_seconds,
+            "frame_text_crop_end_seconds": crop_end_seconds,
+        }
 
 class DiffusionTrainer:
     """Trainer orchestrating optimization steps and gradient descent for the diffusion denoiser."""
@@ -371,6 +455,13 @@ class DiffusionTrainer:
         text_contrastive_prob: float = 0.5,
         text_sensitivity_weight: float = 2.0,
         text_sensitivity_target: float = 0.20,
+        native_ctc_weight: float = 0.0,
+        native_ctc_teacher_weight: float = 0.0,
+        native_frame_text_weight: float = 0.0,
+        native_frame_text_teacher_weight: float = 0.0,
+        native_vocal_prior_weight: float = 0.0,
+        vocal_structure_weight: float = 0.0,
+        native_prosody_weight: float = 0.0,
         use_amp: bool = True,
     ):
         torch, _, _, _ = _torch()
@@ -390,6 +481,17 @@ class DiffusionTrainer:
         self.text_contrastive_prob = max(0.0, min(1.0, float(text_contrastive_prob)))
         self.text_sensitivity_weight = max(0.0, float(text_sensitivity_weight))
         self.text_sensitivity_target = max(0.0, float(text_sensitivity_target))
+        self.native_ctc_weight = max(0.0, float(native_ctc_weight))
+        self.native_ctc_teacher_weight = max(0.0, float(native_ctc_teacher_weight))
+        self.native_frame_text_weight = max(
+            0.0, float(native_frame_text_weight)
+        )
+        self.native_frame_text_teacher_weight = max(
+            0.0, float(native_frame_text_teacher_weight)
+        )
+        self.native_vocal_prior_weight = max(0.0, float(native_vocal_prior_weight))
+        self.vocal_structure_weight = max(0.0, float(vocal_structure_weight))
+        self.native_prosody_weight = max(0.0, float(native_prosody_weight))
         # FP16 is optional even on CUDA. The content-conditioned objective can
         # legitimately need FP32 backward on Turing GPUs when GradScaler falls
         # below 1 yet data-dependent attention gradients still overflow.
@@ -418,7 +520,10 @@ class DiffusionTrainer:
     def load_ema_state(self, state: dict[str, Any]) -> None:
         """Restore EMA tensors when a preempted training session resumes."""
         for name, value in state.items():
-            if name in self.ema_parameters:
+            if (
+                name in self.ema_parameters
+                and tuple(value.shape) == tuple(self.ema_parameters[name].shape)
+            ):
                 self.ema_parameters[name] = value.detach().to(self.device).clone()
 
     def evaluate_ground_truth(self, dataloader, *, seed: int = 5602) -> float:
@@ -460,6 +565,20 @@ class DiffusionTrainer:
                             style_dropout_prob=0.0,
                             text_dropout_prob=0.0,
                             lambda_vocal=self.lambda_vocal,
+                            native_frame_text_weight=self.native_frame_text_weight,
+                            native_frame_text_teacher_weight=(
+                                self.native_frame_text_teacher_weight
+                            ),
+                            frame_text_segments=batch.get("frame_text_segments"),
+                            frame_text_crop_starts_seconds=batch.get(
+                                "frame_text_crop_start_seconds"
+                            ),
+                            frame_text_crop_ends_seconds=batch.get(
+                                "frame_text_crop_end_seconds"
+                            ),
+                            native_vocal_prior_weight=self.native_vocal_prior_weight,
+                            vocal_structure_weight=self.vocal_structure_weight,
+                            native_prosody_weight=self.native_prosody_weight,
                         )
                         losses.append(float(loss.detach().cpu()))
         finally:
@@ -489,7 +608,12 @@ class DiffusionTrainer:
                         parameter.copy_(self.ema_parameters[name])
             self.model.eval()
             batch = next(iter(dataloader))
-            clean_mel = batch["vocal_mel"].to(self.device).transpose(1, 2)
+            vocal_mel = batch["vocal_mel"].to(self.device).transpose(1, 2)
+            if bool(getattr(self.model, "joint_stem_generation", False)):
+                backing_mel = batch["backing_mel"].to(self.device).transpose(1, 2)
+                clean_mel = torch.cat((backing_mel, vocal_mel), dim=-1)
+            else:
+                clean_mel = vocal_mel
             generator = torch.Generator(device=self.device).manual_seed(int(seed))
             noise = torch.randn(
                 clean_mel.shape,
@@ -526,6 +650,10 @@ class DiffusionTrainer:
                     timestep=timestep,
                     style_prompt=zero_style,
                 )
+            if bool(getattr(self.model, "joint_stem_generation", False)):
+                mel_count = int(self.config.n_mels)
+                conditioned = conditioned[..., mel_count:]
+                mismatched = mismatched[..., mel_count:]
             difference = (
                 (conditioned - mismatched).square().mean(dim=(1, 2)).sqrt()
             )[content_mask].mean()
@@ -540,6 +668,39 @@ class DiffusionTrainer:
                         parameter.copy_(raw_parameters[name])
             self.model.train(was_training)
 
+    def evaluate_native_ctc(self, dataloader, *, use_ema: bool = True) -> float | None:
+        """Held-out audio-only lyric loss; optionally bypass slow EMA warmup."""
+        if not bool(getattr(self.model, "native_generation", False)):
+            return None
+        torch, _, _, _ = _torch()
+        from ..models.native_text import native_ctc_loss
+
+        was_training = self.model.training
+        raw_parameters = {
+            name: parameter.detach().clone()
+            for name, parameter in self.model.named_parameters()
+            if use_ema and name in self.ema_parameters
+        }
+        losses: list[float] = []
+        try:
+            with torch.no_grad():
+                for name, parameter in self.model.named_parameters():
+                    if use_ema and name in self.ema_parameters:
+                        parameter.copy_(self.ema_parameters[name])
+            self.model.eval()
+            with torch.no_grad():
+                for batch in dataloader:
+                    vocal_mel = batch["vocal_mel"].to(self.device).transpose(1, 2)
+                    logits = self.model.audio_text_logits(vocal_mel.float())
+                    losses.append(float(native_ctc_loss(logits, batch["text"]).cpu()))
+        finally:
+            with torch.no_grad():
+                for name, parameter in self.model.named_parameters():
+                    if name in raw_parameters:
+                        parameter.copy_(raw_parameters[name])
+            self.model.train(was_training)
+        return sum(losses) / len(losses) if losses else None
+
     def train_epoch(
         self,
         dataloader,
@@ -547,13 +708,14 @@ class DiffusionTrainer:
         epoch_index: int = 0,
         total_epochs: int = 1,
         start_batch: int = 0,
+        batch_offset: int = 0,
         log_every_steps: int = 10,
         on_step=None,
     ) -> list[float]:
         torch, _, _, _ = _torch()
         self.model.train()
         epoch_losses = []
-        total_batches = len(dataloader)
+        total_batches = len(dataloader) + max(0, int(batch_offset))
         consecutive_overflow_steps = 0
         # GradScaler starts high and may need several halvings on the first
         # resumed batch. Sixteen attempts cover 65536 -> 1 without letting a
@@ -562,6 +724,7 @@ class DiffusionTrainer:
         for batch_index, batch in enumerate(dataloader):
             if batch_index < start_batch:
                 continue
+            actual_batch = batch_index + 1 + max(0, int(batch_offset))
             vocal_mel = batch["vocal_mel"].to(self.device)
             backing_mel = batch["backing_mel"].to(self.device)
             style_anchor = batch["style_anchor"].to(self.device)
@@ -575,7 +738,7 @@ class DiffusionTrainer:
             backing_mel_t = backing_mel.transpose(1, 2)
             from ..models.cfm_flow import cfm_loss
             with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=self.use_amp):
-                loss, loss_gt, loss_vocal_aux = cfm_loss(
+                loss, loss_gt, loss_vocal_aux, loss_details = cfm_loss(
                     self.model, vocal_mel_t, backing_mel_t, style_anchor, texts, self.config,
                     lambda_vocal=self.lambda_vocal,
                     style_dropout_prob=self.style_dropout_prob,
@@ -585,13 +748,30 @@ class DiffusionTrainer:
                     text_contrastive_prob=self.text_contrastive_prob,
                     text_sensitivity_weight=self.text_sensitivity_weight,
                     text_sensitivity_target=self.text_sensitivity_target,
+                    native_ctc_weight=self.native_ctc_weight,
+                    native_ctc_teacher_weight=self.native_ctc_teacher_weight,
+                    native_frame_text_weight=self.native_frame_text_weight,
+                    native_frame_text_teacher_weight=(
+                        self.native_frame_text_teacher_weight
+                    ),
+                    frame_text_segments=batch.get("frame_text_segments"),
+                    frame_text_crop_starts_seconds=batch.get(
+                        "frame_text_crop_start_seconds"
+                    ),
+                    frame_text_crop_ends_seconds=batch.get(
+                        "frame_text_crop_end_seconds"
+                    ),
+                    native_vocal_prior_weight=self.native_vocal_prior_weight,
+                    vocal_structure_weight=self.vocal_structure_weight,
+                    native_prosody_weight=self.native_prosody_weight,
+                    return_details=True,
                 )
 
             if not bool(torch.isfinite(loss)):
                 current_lr = float(self.optimizer.param_groups[0]["lr"])
                 raise FloatingPointError(
                     "Non-finite training loss detected; refusing to corrupt the next "
-                    f"checkpoint (epoch={epoch_index + 1}, batch={batch_index + 1}, "
+                    f"checkpoint (epoch={epoch_index + 1}, batch={actual_batch}, "
                     f"lr={current_lr:.8g}, amp_scale={float(self.scaler.get_scale()):.1f})."
                 )
 
@@ -610,7 +790,7 @@ class DiffusionTrainer:
                     raise FloatingPointError(
                         "Non-finite gradients detected without AMP; refusing to "
                         "corrupt the next checkpoint "
-                        f"(epoch={epoch_index + 1}, batch={batch_index + 1}, "
+                        f"(epoch={epoch_index + 1}, batch={actual_batch}, "
                         f"lr={current_lr:.8g})."
                     )
 
@@ -625,7 +805,7 @@ class DiffusionTrainer:
                 next_scale = float(self.scaler.get_scale())
                 print(
                     "AMP gradient overflow; skipped optimizer step "
-                    f"(epoch={epoch_index + 1}, batch={batch_index + 1}, "
+                    f"(epoch={epoch_index + 1}, batch={actual_batch}, "
                     f"lr={current_lr:.8g}, amp_scale={previous_scale:.1f}"
                     f"->{next_scale:.1f}, consecutive="
                     f"{consecutive_overflow_steps}/{max_consecutive_overflow_steps}).",
@@ -636,7 +816,7 @@ class DiffusionTrainer:
                         "Gradients remained non-finite after repeated AMP scale "
                         "reductions; refusing to waste the session or corrupt a "
                         f"checkpoint (epoch={epoch_index + 1}, "
-                        f"batch={batch_index + 1}, lr={current_lr:.8g}, "
+                        f"batch={actual_batch}, lr={current_lr:.8g}, "
                         f"amp_scale={next_scale:.1f})."
                     )
                 continue
@@ -653,9 +833,59 @@ class DiffusionTrainer:
                 "loss_gt": float(loss_gt.detach().cpu()),
                 "loss_velocity": None,
                 "loss_vocal_aux": float(loss_vocal_aux.detach().cpu()) if loss_vocal_aux is not None else None,
+                "loss_native_ctc_pred": (
+                    float(loss_details["native_ctc_pred"].detach().cpu())
+                    if loss_details["native_ctc_pred"] is not None else None
+                ),
+                "loss_native_ctc_teacher": (
+                    float(loss_details["native_ctc_teacher"].detach().cpu())
+                    if loss_details["native_ctc_teacher"] is not None else None
+                ),
+                "loss_native_frame_text_pred": (
+                    float(
+                        loss_details["native_frame_text_pred"].detach().cpu()
+                    )
+                    if loss_details["native_frame_text_pred"] is not None
+                    else None
+                ),
+                "loss_native_frame_text_teacher": (
+                    float(
+                        loss_details["native_frame_text_teacher"].detach().cpu()
+                    )
+                    if loss_details["native_frame_text_teacher"] is not None
+                    else None
+                ),
+                "loss_native_frame_text_prior": (
+                    float(
+                        loss_details["native_frame_text_prior"].detach().cpu()
+                    )
+                    if loss_details["native_frame_text_prior"] is not None
+                    else None
+                ),
+                "loss_native_vocal_prior": (
+                    float(loss_details["native_vocal_prior"].detach().cpu())
+                    if loss_details["native_vocal_prior"] is not None else None
+                ),
+                "loss_native_vocal_prior_contrastive": (
+                    float(
+                        loss_details["native_vocal_prior_contrastive"]
+                        .detach()
+                        .cpu()
+                    )
+                    if loss_details["native_vocal_prior_contrastive"] is not None
+                    else None
+                ),
+                "loss_vocal_structure": (
+                    float(loss_details["vocal_structure"].detach().cpu())
+                    if loss_details["vocal_structure"] is not None else None
+                ),
+                "loss_native_prosody": (
+                    float(loss_details["native_prosody"].detach().cpu())
+                    if loss_details["native_prosody"] is not None else None
+                ),
             }
             epoch_losses.append(loss_record)
-            completed_batches = batch_index + 1
+            completed_batches = actual_batch
             should_log = (
                 completed_batches == total_batches
                 or completed_batches % max(1, int(log_every_steps)) == 0
@@ -879,12 +1109,15 @@ def train_model(
     max_records: int | None = None,
     additional_records: list[dict[str, Any]] | None = None,
     roberta_model: str = "vinai/xphonebert-base",
+    text_encoder_type: str = "native_utf8",
+    generation_target: str = "full_mix",
     dim: int = 256,
     depth: int = 4,
     heads: int = 4,
     ff_mult: int = 4,
     frames_per_chunk: int | None = None,
     resume: bool = False,
+    reset_optimizer: bool = False,
     save_every_epoch: bool = False,
     checkpoint_every_steps: int = 0,
     log_every_steps: int = 10,
@@ -897,6 +1130,15 @@ def train_model(
     text_contrastive_prob: float = 0.5,
     text_sensitivity_weight: float = 2.0,
     text_sensitivity_target: float = 0.20,
+    native_ctc_weight: float = 0.0,
+    native_ctc_teacher_weight: float = 0.0,
+    native_frame_text_weight: float = 0.0,
+    native_frame_text_teacher_weight: float = 0.0,
+    native_vocal_prior_weight: float = 0.0,
+    vocal_structure_weight: float = 0.0,
+    native_prosody_weight: float = 0.0,
+    native_learning_rate_multiplier: float = 10.0,
+    freeze_native_ctc: bool = False,
     validation_fraction: float = 0.05,
     validation_max_records: int | None = 128,
     validation_seed: int = 5602,
@@ -919,7 +1161,7 @@ def train_model(
     if validation["status"] != "valid":
         raise ValueError("Dataset không hợp lệ; xem validation_report.json.")
 
-    config = MusicDiffusionConfig(**json.loads((root / "config.json").read_text(encoding="utf-8")))
+    config = _music_config_from_json(root / "config.json")
     if frames_per_chunk is not None:
         frames = max(16, int(frames_per_chunk))
         config = replace(
@@ -929,7 +1171,20 @@ def train_model(
         )
     selected_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     arch = {"dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult}
-    arch_to_save = {**arch, "roberta_model": roberta_model}
+    arch_to_save = {
+        **arch,
+        "roberta_model": roberta_model,
+        "text_encoder_type": text_encoder_type,
+        "generation_target": generation_target,
+        "native_ctc_tokenizer": (
+            "vi_grapheme_v1" if text_encoder_type == "native_utf8" else None
+        ),
+        "native_text_tokenizer": (
+            "vi_grapheme_v2" if text_encoder_type == "native_utf8" else None
+        ),
+        "native_vocal_prior": text_encoder_type == "native_utf8",
+        "native_prosody": text_encoder_type == "native_utf8",
+    }
     resumed_payload: dict[str, Any] = {}
     start_epoch = 0
     resume_batch_in_epoch = 0
@@ -951,6 +1206,8 @@ def train_model(
             checkpoint,
             device=selected_device,
             roberta_model=roberta_model,
+            text_encoder_type=text_encoder_type,
+            generation_target=generation_target,
             use_ema=False,
         )
         saved_arch = resumed_payload.get("arch") or {}
@@ -982,18 +1239,57 @@ def train_model(
         model = MicroDiT(
             config,
             roberta_model=roberta_model,
+            text_encoder_type=text_encoder_type,
+            generation_target=generation_target,
             dim=dim,
             depth=depth,
             heads=heads,
             ff_mult=ff_mult,
         ).to(selected_device)
 
-    # Train only parameters that require gradients (the frozen RoBERTa weights
-    # are re-downloaded on load and intentionally omitted from checkpoints).
-    trainable_params = [parameter for parameter in model.parameters() if parameter.requires_grad]
-    optimizer = torch.optim.AdamW(trainable_params, lr=learning_rate)
+    if freeze_native_ctc:
+        recognizer = getattr(model, "audio_text_recognizer", None)
+        if recognizer is None:
+            raise ValueError("freeze_native_ctc requires a native_utf8 checkpoint")
+        for parameter in recognizer.parameters():
+            parameter.requires_grad_(False)
+        print("native_ctc_frozen_for_diffusion=true", flush=True)
+
+    # Native text/audio-content modules train faster than the warm-started
+    # acoustic DiT. Legacy frozen RoBERTa parameters remain excluded because
+    # requires_grad=False.
+    native_modules = [
+        module for module in (
+            getattr(model, "text_encoder", None),
+            getattr(model, "audio_text_recognizer", None),
+            getattr(model, "native_prosody", None),
+            getattr(model, "native_vocal_prior", None),
+        )
+        if module is not None and bool(getattr(model, "native_generation", False))
+    ]
+    native_parameter_ids = {
+        id(parameter)
+        for module in native_modules
+        for parameter in module.parameters()
+        if parameter.requires_grad
+    }
+    base_params = [
+        parameter for parameter in model.parameters()
+        if parameter.requires_grad and id(parameter) not in native_parameter_ids
+    ]
+    native_params = [
+        parameter for parameter in model.parameters()
+        if parameter.requires_grad and id(parameter) in native_parameter_ids
+    ]
+    parameter_groups = [{"params": base_params, "lr": learning_rate}]
+    if native_params:
+        parameter_groups.append({
+            "params": native_params,
+            "lr": learning_rate * max(1.0, float(native_learning_rate_multiplier)),
+        })
+    optimizer = torch.optim.AdamW(parameter_groups, lr=learning_rate)
     optimizer_state_restored = False
-    if resumed_payload.get("optimizer"):
+    if resumed_payload.get("optimizer") and not reset_optimizer:
         try:
             optimizer.load_state_dict(resumed_payload["optimizer"])
             optimizer_state_restored = True
@@ -1002,6 +1298,8 @@ def train_model(
             # count, but the old acoustic weights are still a valuable warm
             # start. Resume model/epoch/EMA and restart AdamW safely.
             print(f"optimizer_state_reset_for_model_upgrade={exc}", flush=True)
+    elif resumed_payload.get("optimizer") and reset_optimizer:
+        print("optimizer_state_reset_by_request=true", flush=True)
 
     # Instantiate custom Dataset and DataLoader
     dataset = MusicDiffusionDataset(
@@ -1029,15 +1327,46 @@ def train_model(
         backing_mels = torch.stack([item["backing_mel"] for item in batch])
         style_anchors = torch.stack([item["style_anchor"] for item in batch])
         texts = [item["text"] for item in batch]
-        return {"vocal_mel": vocal_mels, "backing_mel": backing_mels, "style_anchor": style_anchors, "text": texts}
+        return {
+            "vocal_mel": vocal_mels,
+            "backing_mel": backing_mels,
+            "style_anchor": style_anchors,
+            "text": texts,
+            "frame_text_segments": [item["frame_text_segments"] for item in batch],
+            "frame_text_crop_start_seconds": [
+                item["frame_text_crop_start_seconds"] for item in batch
+            ],
+            "frame_text_crop_end_seconds": [
+                item["frame_text_crop_end_seconds"] for item in batch
+            ],
+        }
 
     batch_size_value = max(1, int(batch_size))
 
-    def build_dataloader(epoch_index: int):
+    def build_dataloader(epoch_index: int, *, skip_batches: int = 0):
         # A deterministic per-epoch sampler lets a resumed worker skip batches
         # already covered by its latest mid-epoch checkpoint.
         generator = torch.Generator()
         generator.manual_seed(5602 + int(epoch_index))
+        skipped = max(0, int(skip_batches)) * batch_size_value
+        if skipped > 0:
+            # Reproduce RandomSampler's permutation locally and remove completed
+            # indices before DataLoader calls Dataset.__getitem__. The previous
+            # `continue` loop re-read hundreds of full-song tensors from Kaggle
+            # FUSE just to discard them, wasting several GPU-minutes on resume.
+            # DataLoader consumes one int64 from its generator for `_base_seed`
+            # before RandomSampler draws the epoch permutation. Mirror that
+            # detail so a mid-epoch resume selects exactly the unseen records.
+            torch.empty((), dtype=torch.int64).random_(generator=generator)
+            indices = torch.randperm(len(dataset), generator=generator).tolist()
+            remaining_indices = indices[min(skipped, len(indices)) :]
+            return DataLoaderClass(
+                dataset,
+                batch_size=batch_size_value,
+                sampler=remaining_indices,
+                shuffle=False,
+                collate_fn=collate_fn,
+            )
         return DataLoaderClass(
             dataset,
             batch_size=batch_size_value,
@@ -1097,6 +1426,13 @@ def train_model(
         text_contrastive_prob=text_contrastive_prob,
         text_sensitivity_weight=text_sensitivity_weight,
         text_sensitivity_target=text_sensitivity_target,
+        native_ctc_weight=native_ctc_weight,
+        native_ctc_teacher_weight=native_ctc_teacher_weight,
+        native_frame_text_weight=native_frame_text_weight,
+        native_frame_text_teacher_weight=native_frame_text_teacher_weight,
+        native_vocal_prior_weight=native_vocal_prior_weight,
+        vocal_structure_weight=vocal_structure_weight,
+        native_prosody_weight=native_prosody_weight,
         use_amp=use_amp,
     )
     if optimizer_state_restored and resumed_payload.get("scheduler"):
@@ -1158,6 +1494,8 @@ def train_model(
     )
     final_validation_loss: float | None = None
     final_text_sensitivity: float | None = None
+    final_native_ctc_validation: float | None = None
+    final_native_ctc_validation_raw: float | None = None
     # A validation-only selector previously replaced a text-responsive model
     # with a marginally lower-loss checkpoint that ignored lyrics. Keep a small
     # tolerance for measurement noise while making intelligibility a hard gate.
@@ -1175,8 +1513,8 @@ def train_model(
     from ..models.text_to_music_diffusion import save_checkpoint
 
     for epoch in range(start_epoch, epoch_count):
-        dataloader = build_dataloader(epoch)
         start_batch = resume_batch_in_epoch if epoch == start_epoch else 0
+        dataloader = build_dataloader(epoch, skip_batches=start_batch)
 
         def on_step(
             completed_batches: int,
@@ -1226,7 +1564,8 @@ def train_model(
             dataloader,
             epoch_index=epoch,
             total_epochs=epoch_count,
-            start_batch=start_batch,
+            start_batch=0,
+            batch_offset=start_batch,
             log_every_steps=log_every_steps,
             on_step=on_step,
         )
@@ -1238,6 +1577,81 @@ def train_model(
         avg_loss_gt = sum(d["loss_gt"] for d in epoch_losses) / len(epoch_losses)
         vocal_aux_values = [d["loss_vocal_aux"] for d in epoch_losses if d["loss_vocal_aux"] is not None]
         avg_loss_vocal_aux = sum(vocal_aux_values) / len(vocal_aux_values) if vocal_aux_values else None
+        native_ctc_pred_values = [
+            d["loss_native_ctc_pred"] for d in epoch_losses
+            if d["loss_native_ctc_pred"] is not None
+        ]
+        native_ctc_teacher_values = [
+            d["loss_native_ctc_teacher"] for d in epoch_losses
+            if d["loss_native_ctc_teacher"] is not None
+        ]
+        native_frame_text_pred_values = [
+            d["loss_native_frame_text_pred"] for d in epoch_losses
+            if d["loss_native_frame_text_pred"] is not None
+        ]
+        native_frame_text_teacher_values = [
+            d["loss_native_frame_text_teacher"] for d in epoch_losses
+            if d["loss_native_frame_text_teacher"] is not None
+        ]
+        native_frame_text_prior_values = [
+            d["loss_native_frame_text_prior"] for d in epoch_losses
+            if d["loss_native_frame_text_prior"] is not None
+        ]
+        avg_native_ctc_pred = (
+            sum(native_ctc_pred_values) / len(native_ctc_pred_values)
+            if native_ctc_pred_values else None
+        )
+        avg_native_ctc_teacher = (
+            sum(native_ctc_teacher_values) / len(native_ctc_teacher_values)
+            if native_ctc_teacher_values else None
+        )
+        avg_native_frame_text_pred = (
+            sum(native_frame_text_pred_values) / len(native_frame_text_pred_values)
+            if native_frame_text_pred_values else None
+        )
+        avg_native_frame_text_teacher = (
+            sum(native_frame_text_teacher_values)
+            / len(native_frame_text_teacher_values)
+            if native_frame_text_teacher_values else None
+        )
+        avg_native_frame_text_prior = (
+            sum(native_frame_text_prior_values) / len(native_frame_text_prior_values)
+            if native_frame_text_prior_values else None
+        )
+        native_vocal_prior_values = [
+            d["loss_native_vocal_prior"] for d in epoch_losses
+            if d["loss_native_vocal_prior"] is not None
+        ]
+        native_vocal_prior_contrastive_values = [
+            d["loss_native_vocal_prior_contrastive"]
+            for d in epoch_losses
+            if d["loss_native_vocal_prior_contrastive"] is not None
+        ]
+        vocal_structure_values = [
+            d["loss_vocal_structure"] for d in epoch_losses
+            if d["loss_vocal_structure"] is not None
+        ]
+        native_prosody_values = [
+            d["loss_native_prosody"] for d in epoch_losses
+            if d.get("loss_native_prosody") is not None
+        ]
+        avg_native_vocal_prior = (
+            sum(native_vocal_prior_values) / len(native_vocal_prior_values)
+            if native_vocal_prior_values else None
+        )
+        avg_native_vocal_prior_contrastive = (
+            sum(native_vocal_prior_contrastive_values)
+            / len(native_vocal_prior_contrastive_values)
+            if native_vocal_prior_contrastive_values else None
+        )
+        avg_vocal_structure = (
+            sum(vocal_structure_values) / len(vocal_structure_values)
+            if vocal_structure_values else None
+        )
+        avg_native_prosody = (
+            sum(native_prosody_values) / len(native_prosody_values)
+            if native_prosody_values else None
+        )
         completed_epochs = epoch + 1
         final_validation_loss = (
             trainer.evaluate_ground_truth(validation_dataloader, seed=validation_seed)
@@ -1246,6 +1660,16 @@ def train_model(
         )
         final_text_sensitivity = (
             trainer.evaluate_text_sensitivity(validation_dataloader, seed=validation_seed)
+            if validation_dataloader is not None
+            else None
+        )
+        final_native_ctc_validation = (
+            trainer.evaluate_native_ctc(validation_dataloader)
+            if validation_dataloader is not None
+            else None
+        )
+        final_native_ctc_validation_raw = (
+            trainer.evaluate_native_ctc(validation_dataloader, use_ema=False)
             if validation_dataloader is not None
             else None
         )
@@ -1275,6 +1699,8 @@ def train_model(
                     "best_validation_loss": best_validation_loss,
                     "best_epoch": best_epoch,
                     "text_conditioning_sensitivity": final_text_sensitivity,
+                    "native_ctc_validation": final_native_ctc_validation,
+                    "native_ctc_validation_raw": final_native_ctc_validation_raw,
                     "minimum_text_sensitivity": checkpoint_sensitivity_floor,
                 },
             )
@@ -1286,9 +1712,22 @@ def train_model(
             "loss_gt": avg_loss_gt,
             "loss_velocity": None,
             "loss_vocal_aux": avg_loss_vocal_aux,
+            "loss_native_ctc_pred": avg_native_ctc_pred,
+            "loss_native_ctc_teacher": avg_native_ctc_teacher,
+            "loss_native_frame_text_pred": avg_native_frame_text_pred,
+            "loss_native_frame_text_teacher": avg_native_frame_text_teacher,
+            "loss_native_frame_text_prior": avg_native_frame_text_prior,
+            "loss_native_vocal_prior": avg_native_vocal_prior,
+            "loss_native_vocal_prior_contrastive": (
+                avg_native_vocal_prior_contrastive
+            ),
+            "loss_vocal_structure": avg_vocal_structure,
+            "loss_native_prosody": avg_native_prosody,
             "validation_loss": final_validation_loss,
             "best_validation_loss": best_validation_loss if math.isfinite(best_validation_loss) else None,
             "text_conditioning_sensitivity": final_text_sensitivity,
+            "native_ctc_validation": final_native_ctc_validation,
+            "native_ctc_validation_raw": final_native_ctc_validation_raw,
             "minimum_text_sensitivity": checkpoint_sensitivity_floor,
             "conditioning_gate_pass": (
                 final_text_sensitivity is None
@@ -1299,6 +1738,8 @@ def train_model(
             f"epoch={completed_epochs}/{epoch_count} train_loss={avg_loss:.6f} "
             f"validation_loss={final_validation_loss if final_validation_loss is not None else 'disabled'} "
             f"text_sensitivity={final_text_sensitivity if final_text_sensitivity is not None else 'disabled'} "
+            f"native_ctc_validation={final_native_ctc_validation if final_native_ctc_validation is not None else 'disabled'} "
+            f"native_ctc_validation_raw={final_native_ctc_validation_raw if final_native_ctc_validation_raw is not None else 'disabled'} "
             f"best_epoch={best_epoch or 'n/a'}",
             flush=True,
         )
@@ -1385,6 +1826,43 @@ def train_model(
     _write_json_atomic(progress_destination, completed_training_state)
     report = {"status": "complete", "backend": "genmusic-vn-self-diffusion", "dataset": str(root.resolve()), "checkpoint": str(checkpoint.resolve()), "best_checkpoint": str(best_checkpoint.resolve()) if best_checkpoint.is_file() else None, "device": selected_device, "requested_epochs": epoch_count, "completed_epochs": completed_epochs, "stopped_early": stopped_early, "best_epoch": best_epoch, "best_validation_loss": round(best_validation_loss, 6) if math.isfinite(best_validation_loss) else None, "final_validation_loss": round(final_validation_loss, 6) if final_validation_loss is not None else None, "final_text_conditioning_sensitivity": round(final_text_sensitivity, 6) if final_text_sensitivity is not None else None, "validation_record_count": len(validation_records), "dataset_validation": validation, "resumed_from_epoch": resumed_from_epoch, "resumed_from_batch": resumed_from_batch, "optimizer_state_restored": optimizer_state_restored, "batch_size": batch_size_value, "record_count": len(dataset.records), "excluded_record_count": dataset.excluded_record_count, "additional_record_count": len(additional_records or []), "step_count": len(losses), "global_step": global_step, "checkpoint_every_steps": max(0, int(checkpoint_every_steps)), "final_loss": round(final_loss, 6), "loss_curve": loss_curve, "elapsed_seconds": round(time.perf_counter() - started, 3), "dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult, "frames_per_chunk": config.frames_per_chunk, "chunk_seconds": config.chunk_seconds, "mel_mean": round(config.mel_mean, 6), "mel_std": round(config.mel_std, 6), "warmup_steps": warmup_steps, "ema_decay": trainer.ema_decay, "style_dropout_prob": trainer.style_dropout_prob, "text_dropout_prob": trainer.text_dropout_prob, "text_contrastive_weight": trainer.text_contrastive_weight, "text_contrastive_margin": trainer.text_contrastive_margin, "text_contrastive_prob": trainer.text_contrastive_prob, "text_sensitivity_weight": trainer.text_sensitivity_weight, "text_sensitivity_target": trainer.text_sensitivity_target, "lyric_aligned_crop_prob": dataset.lyric_aligned_crop_prob, "mixed_precision": trainer.use_amp}
     report["lambda_vocal"] = lambda_vocal
+    report["text_encoder_type"] = text_encoder_type
+    report["native_generation"] = text_encoder_type == "native_utf8"
+    report["generation_target"] = getattr(model, "generation_target", generation_target)
+    report["joint_stem_checkpoint_migrated"] = bool(
+        resumed_payload.get("joint_stem_checkpoint_migrated", False)
+    )
+    report["native_ctc_tokenizer"] = (
+        "vi_grapheme_v1" if text_encoder_type == "native_utf8" else None
+    )
+    report["native_ctc_classifier_migrated"] = bool(
+        resumed_payload.get("native_ctc_classifier_migrated", False)
+    )
+    report["native_ctc_weight"] = trainer.native_ctc_weight
+    report["native_ctc_teacher_weight"] = trainer.native_ctc_teacher_weight
+    report["native_frame_text_weight"] = trainer.native_frame_text_weight
+    report["native_frame_text_teacher_weight"] = (
+        trainer.native_frame_text_teacher_weight
+    )
+    report["native_vocal_prior_weight"] = trainer.native_vocal_prior_weight
+    report["vocal_structure_weight"] = trainer.vocal_structure_weight
+    report["native_prosody_weight"] = trainer.native_prosody_weight
+    report["native_text_tokenizer"] = (
+        "vi_grapheme_v2" if text_encoder_type == "native_utf8" else None
+    )
+    report["native_ctc_frozen"] = bool(freeze_native_ctc)
+    report["optimizer_reset_requested"] = bool(reset_optimizer)
+    report["native_learning_rate_multiplier"] = max(
+        1.0, float(native_learning_rate_multiplier)
+    )
+    report["final_native_ctc_validation"] = (
+        round(final_native_ctc_validation, 6)
+        if final_native_ctc_validation is not None else None
+    )
+    report["final_native_ctc_validation_raw"] = (
+        round(final_native_ctc_validation_raw, 6)
+        if final_native_ctc_validation_raw is not None else None
+    )
     report["minimum_text_sensitivity"] = checkpoint_sensitivity_floor
     report["text_sensitivity_mode"] = "matched_vs_mismatched_lyrics"
     (checkpoint.parent / "training_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

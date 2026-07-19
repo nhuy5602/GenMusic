@@ -54,10 +54,33 @@ import librosa
 
 from src.models.text_to_music_diffusion import load_checkpoint, generate_audio, render_mel_to_wav, reconstruct_full_mix
 from src.models.pronunciation_prior import trim_wav_silence
-from src.training.self_diffusion import _load_mel, lyric_text_for_window, usable_lyric_spans
+from src.training.self_diffusion import (
+    _load_mel,
+    lyric_lines_for_window,
+    lyric_text_for_window,
+    usable_lyric_spans,
+)
 
 FIXED_TEXT = "Dem nay mua roi tren loi mon xua, long anh nho em nhieu nguoi oi co biet chang"
 FIXED_STYLE = "Vietnamese pop, warm piano, clear melody"
+
+
+def compatible_pronunciation_prior_strengths(
+    model,
+    strengths: list[float],
+) -> list[float]:
+    """Drop TTS priors that a native full-mix checkpoint cannot consume.
+
+    A generic quality sweep may be reused across legacy and native checkpoints.
+    Native joint-stem checkpoints deliberately generate both voice and backing
+    without a pretrained TTS anchor, so treating an incompatible sweep value as
+    a fatal error wastes a Kaggle session after all models have been loaded.
+    """
+    if bool(getattr(model, "native_generation", False)) and str(
+        getattr(model, "generation_target", "")
+    ) == "joint_stems":
+        return [0.0]
+    return list(strengths)
 
 
 def _normalized_units(text: str, *, words: bool) -> list[str]:
@@ -204,9 +227,20 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--native-prior-start-strength",
+        type=float,
+        default=0.0,
+        help="Internal native vocal-prior interpolation at CFM start (no pretrained TTS).",
+    )
+    parser.add_argument(
         "--use-style-anchor",
         action="store_true",
         help="Evaluate reference-conditioned generation. Default evaluates the user path with no MuQ anchor.",
+    )
+    parser.add_argument(
+        "--native-only",
+        action="store_true",
+        help="Require a native_utf8 checkpoint and forbid every pronunciation/TTS prior.",
     )
     args = parser.parse_args()
     checkpoint_path = args.checkpoint
@@ -232,6 +266,23 @@ def main() -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Loading checkpoint {checkpoint_path} on {device}...")
     model, config, payload = load_checkpoint(checkpoint_path, device=device)
+    if args.native_only:
+        if not bool(getattr(model, "native_generation", False)):
+            raise ValueError("--native-only requires a native_utf8 checkpoint")
+        if prior_strengths != [0.0]:
+            raise ValueError("--native-only requires --pronunciation-prior-strengths 0.0")
+    else:
+        compatible_strengths = compatible_pronunciation_prior_strengths(
+            model,
+            prior_strengths,
+        )
+        if compatible_strengths != prior_strengths:
+            print(
+                "Native full-mix checkpoint detected; restricting the quality "
+                "sweep to pronunciation_prior_strength=0.",
+                flush=True,
+            )
+        prior_strengths = compatible_strengths
     whisper_model = None
     if args.whisper_model.casefold() not in {"", "none", "off"}:
         import whisper
@@ -268,6 +319,8 @@ def main() -> None:
         "conditioning_mode": "reference_style" if args.use_style_anchor else "no_style_anchor",
         "guidance_scales": guidance_scales,
         "pronunciation_prior_strengths": prior_strengths,
+        "native_only": bool(args.native_only),
+        "text_encoder_type": getattr(model, "text_encoder_type", None),
         "duration_seconds": float(args.duration),
         "diffusion_steps": int(args.steps),
         "samples": [],
@@ -291,6 +344,15 @@ def main() -> None:
             start_seconds,
             start_seconds + args.duration,
         )
+        # Keep segment boundaries so an 8–16 s quality clip is rendered as
+        # several training-length denoising windows instead of squeezing all
+        # words into one out-of-distribution long sequence.
+        reference_text = lyric_lines_for_window(
+            str(record.get("text", "")),
+            segments,
+            start_seconds,
+            start_seconds + args.duration,
+        ) or reference_text
         if not reference_text:
             reference_text = " ".join(str(record.get("text", "")).split()[:20])
             start_seconds = 0.0
@@ -328,19 +390,25 @@ def main() -> None:
                 candidate_path = out_dir / (
                     f"{record_id}_prior{prior_tag}_cfg{scale_tag}_generated.wav"
                 )
-                generate_audio(
+                candidate_mel_path = candidate_path.with_suffix(".mel.pt")
+                generation_result = generate_audio(
                     model, reference_text, FIXED_STYLE, candidate_path,
                     duration_seconds=args.duration, config=config, device=device,
                     steps=args.steps, guidance_scale=guidance_scale, seed=5602,
+                    mel_output=candidate_mel_path,
                     backing_mel=backing_mel,
                     style_anchor=style_anchor,
                     enforce_minimum_duration=False,
                     pronunciation_prior_strength=prior_strength,
+                    native_prior_start_strength=args.native_prior_start_strength,
                 )
                 candidate = {
                     "guidance_scale": guidance_scale,
                     "pronunciation_prior_strength": prior_strength,
+                    "native_prior_start_strength": args.native_prior_start_strength,
                     "path": candidate_path.name,
+                    "mel_path": candidate_mel_path.name,
+                    "generation_target": generation_result.get("generation_target"),
                     "metrics": wav_metrics(candidate_path),
                 }
                 if prior_strength > 0.0:
@@ -370,6 +438,45 @@ def main() -> None:
         )
         shutil.copy2(selected_candidate_path, gen_path)
 
+        # A full mix can hide a weak vocal behind a plausible backing stem.
+        # Decode only the selected candidate's two joint stems so the report can
+        # distinguish a mixing problem from a vocal-generation problem without
+        # multiplying Vocos/Whisper work for every CFG candidate.
+        generated_vocal_metrics = None
+        generated_backing_metrics = None
+        generated_vocal_asr = None
+        selected_mel_path = out_dir / best_candidate["mel_path"]
+        selected_mel_payload = torch.load(
+            selected_mel_path,
+            map_location="cpu",
+            weights_only=True,
+        )
+        if "vocal_mel" in selected_mel_payload and "backing_mel" in selected_mel_payload:
+            generated_vocal_path = out_dir / f"{record_id}_generated_vocal.wav"
+            generated_backing_path = out_dir / f"{record_id}_generated_backing.wav"
+            render_mel_to_wav(
+                selected_mel_payload["vocal_mel"],
+                generated_vocal_path,
+                config,
+                vocoder_type="vocos",
+            )
+            render_mel_to_wav(
+                selected_mel_payload["backing_mel"],
+                generated_backing_path,
+                config,
+                vocoder_type="vocos",
+            )
+            generated_vocal_metrics = wav_metrics(generated_vocal_path)
+            generated_backing_metrics = wav_metrics(generated_backing_path)
+            if whisper_model is not None:
+                generated_vocal_transcript = whisper_model.transcribe(
+                    str(generated_vocal_path), language="vi", fp16=device == "cuda"
+                ).get("text", "").strip()
+                generated_vocal_asr = transcription_metrics(
+                    reference_text,
+                    generated_vocal_transcript,
+                )
+
         entry = {
             "id": record_id,
             "reference_text": reference_text,
@@ -381,11 +488,14 @@ def main() -> None:
             "guidance_candidates": candidates,
             "generated": best_candidate["metrics"],
             "generated_fixed_window": best_candidate.get("fixed_window_metrics"),
+            "generated_vocal": generated_vocal_metrics,
+            "generated_backing": generated_backing_metrics,
             "real_vocal_same_vocoder": real_vocal_metrics,
             "real_full_mix_same_vocoder": real_mix_metrics,
         }
         if whisper_model is not None:
             entry["generated_asr"] = best_candidate["asr"]
+            entry["generated_vocal_asr"] = generated_vocal_asr
             entry["real_vocal_asr"] = real_asr
         results["samples"].append(entry)
         print(record_id, "gen:", entry["generated"], "real:", entry["real_full_mix_same_vocoder"])
@@ -408,6 +518,11 @@ def main() -> None:
         "mean_silence_ratio_generated": float(np.mean([s["generated"]["silence_ratio"] for s in results["samples"]])) if results["samples"] else None,
     }
     generated_asr = [sample["generated_asr"] for sample in results["samples"] if "generated_asr" in sample]
+    generated_vocal_asr = [
+        sample["generated_vocal_asr"]
+        for sample in results["samples"]
+        if sample.get("generated_vocal_asr") is not None
+    ]
     real_asr = [sample["real_vocal_asr"] for sample in results["samples"] if "real_vocal_asr" in sample]
     if generated_asr:
         mean_word_accuracy = float(np.mean([item["word_accuracy"] for item in generated_asr]))
@@ -431,6 +546,18 @@ def main() -> None:
                 and passing_samples >= max(1, len(generated_asr) // 2)
                 and voiced_ratio >= 0.35
                 and pitch_std >= 1.0
+            ),
+        })
+    if generated_vocal_asr:
+        results["summary"].update({
+            "mean_word_accuracy_generated_vocal": float(np.mean([
+                item["word_accuracy"] for item in generated_vocal_asr
+            ])),
+            "mean_cer_generated_vocal": float(np.mean([
+                item["cer"] for item in generated_vocal_asr
+            ])),
+            "vocal_asr_passing_samples": sum(
+                item["word_accuracy"] >= 0.30 for item in generated_vocal_asr
             ),
         })
     (out_dir / "quality_report.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")

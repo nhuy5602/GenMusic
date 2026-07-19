@@ -77,6 +77,43 @@ class ConditioningParityTests(unittest.TestCase):
         self.assertTrue(torch.equal(call["style"], style.unsqueeze(0)))
         self.assertEqual(call["texts"], ["lyrics"])
 
+    def test_native_prior_start_only_initializes_joint_vocal_half(self) -> None:
+        class NativeJointFlowModel:
+            joint_stem_generation = True
+            native_generation = True
+            style_dim = 512
+
+            def eval(self):
+                return self
+
+            def __call__(self, x, texts, timestep, style_prompt=None, **kwargs):
+                if kwargs.get("return_native_vocal_prior"):
+                    return torch.zeros_like(x), torch.ones(
+                        x.shape[0], x.shape[1], 4, dtype=x.dtype
+                    )
+                return torch.zeros_like(x)
+
+        config = MusicDiffusionConfig(n_mels=4)
+        vocal, backing = sample_cfm(
+            NativeJointFlowModel(),
+            ["lyrics"],
+            6,
+            config,
+            "cpu",
+            steps=1,
+            seed=1,
+            native_prior_start_strength=0.5,
+        )
+
+        self.assertEqual(tuple(vocal.shape), (1, 4, 6))
+        self.assertEqual(tuple(backing.shape), (1, 4, 6))
+        torch.manual_seed(1)
+        noise = torch.randn(1, 6, 8)
+        expected_vocal = (0.5 * noise[..., 4:] + 0.5).transpose(1, 2)
+        expected_backing = noise[..., :4].transpose(1, 2)
+        self.assertTrue(torch.allclose(vocal, expected_vocal))
+        self.assertTrue(torch.allclose(backing, expected_backing))
+
     def test_generate_audio_passes_style_anchor(self) -> None:
         config = MusicDiffusionConfig()
         model = _RecordingFlowModel()

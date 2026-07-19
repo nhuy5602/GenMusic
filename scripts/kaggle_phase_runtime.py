@@ -58,8 +58,18 @@ def run_logged(
         )
 
 
-def install_online_audio_dependencies(source_root: Path) -> dict[str, str]:
+def install_online_audio_dependencies(
+    source_root: Path, *, native_only: bool = False
+) -> dict[str, str]:
     """Install only the packages required by checkpoint evaluation."""
+    packages = [
+        "vocos==0.1.0",
+        "encodec==0.1.1",
+        "segments==2.4.0",
+        "openai-whisper==20250625",
+    ]
+    if not native_only:
+        packages.append("text2phonemesequence==0.1.4")
     run_logged(
         [
             sys.executable,
@@ -67,18 +77,15 @@ def install_online_audio_dependencies(source_root: Path) -> dict[str, str]:
             "pip",
             "install",
             "--disable-pip-version-check",
-            "vocos==0.1.0",
-            "encodec==0.1.1",
-            "text2phonemesequence==0.1.4",
-            "segments==2.4.0",
-            "openai-whisper==20250625",
+            *packages,
         ],
         "install_online_dependencies",
     )
-    urllib.request.urlretrieve(
-        "https://raw.githubusercontent.com/lingjzhu/CharsiuG2P/main/dicts/vie-c.tsv",
-        source_root / "vie-c.tsv",
-    )
+    if not native_only:
+        urllib.request.urlretrieve(
+            "https://raw.githubusercontent.com/lingjzhu/CharsiuG2P/main/dicts/vie-c.tsv",
+            source_root / "vie-c.tsv",
+        )
     environment = {
         **os.environ,
         "PYTHONUNBUFFERED": "1",
@@ -183,7 +190,7 @@ def build_combined_dataset(*, source_count: int, expected_records: int) -> Path:
 
 
 def find_checkpoint() -> Path:
-    """Choose the largest mounted final checkpoint, never a preflight file."""
+    """Choose the explicit final checkpoint, never a preflight/best surrogate."""
     candidates = [
         path
         for path in INPUT_ROOT.rglob("self_all_parts*.pt")
@@ -191,7 +198,8 @@ def find_checkpoint() -> Path:
     ]
     if not candidates:
         raise FileNotFoundError("No mounted self_all_parts checkpoint was found")
-    return max(candidates, key=lambda path: path.stat().st_size)
+    final_candidates = [path for path in candidates if path.name == "self_all_parts.pt"]
+    return max(final_candidates or candidates, key=lambda path: path.stat().st_size)
 
 
 def find_json_reports(filename: str) -> Iterable[tuple[Path, dict]]:

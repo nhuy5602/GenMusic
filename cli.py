@@ -65,6 +65,11 @@ def build_parser() -> argparse.ArgumentParser:
     local.add_argument("--out", required=True)
     local.add_argument("--vocoder", default="vocos", choices=["vocos", "griffinlim"], help="Chọn bộ giải mã spectrogram thành âm thanh.")
     local.add_argument("--roberta-model", default="vinai/xphonebert-base", help="Tên model RoBERTa dùng làm Text Encoder.")
+    local.add_argument(
+        "--native-only",
+        action="store_true",
+        help="Từ chối checkpoint legacy/TTS; chỉ sinh bằng native_utf8 từ noise.",
+    )
     local.add_argument("--reference-dataset", default=None, help="Thư mục dataset đã preprocess -- lấy backing_mel + style_anchor thật từ một record để sinh nhạc có điều kiện đúng như lúc train, thay vì mặc định zero-conditioned.")
     local.add_argument("--reference-id", default=None, help="ID record cụ thể trong --reference-dataset (mặc định lấy record đầu tiên).")
     local.add_argument(
@@ -126,11 +131,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     train.add_argument("--max-records", type=int, default=None)
     train.add_argument("--resume", action="store_true")
+    train.add_argument("--reset-optimizer", action="store_true", help="Warm-start model/EMA nhưng tạo AdamW và scheduler mới.")
     train.add_argument("--save-every-epoch", action="store_true")
     train.add_argument("--checkpoint-every-steps", type=int, default=0)
     train.add_argument("--log-every-steps", type=int, default=10)
     train.add_argument("--progress-file", default=None)
     train.add_argument("--roberta-model", default="vinai/xphonebert-base", help="Tên model RoBERTa dùng làm Text Encoder.")
+    train.add_argument(
+        "--text-encoder",
+        default="native_utf8",
+        choices=("native_utf8", "pretrained_xphonebert"),
+        help="native_utf8 học tiếng Việt cùng model và không tải text/TTS model có sẵn.",
+    )
+    train.add_argument(
+        "--generation-target",
+        default="joint_stems",
+        choices=("joint_stems", "full_mix"),
+        help="joint_stems sinh vocal và backing bằng hai nửa của cùng trạng thái diffusion.",
+    )
     train.add_argument("--dim", type=int, default=256, help="Hidden dim của MicroDiT.")
     train.add_argument("--depth", type=int, default=4, help="Số lớp transformer block.")
     train.add_argument("--heads", type=int, default=4, help="Số attention head.")
@@ -146,6 +164,19 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--text-contrastive-prob", type=float, default=0.5)
     train.add_argument("--text-sensitivity-weight", type=float, default=2.0)
     train.add_argument("--text-sensitivity-target", type=float, default=0.20)
+    train.add_argument("--native-ctc-weight", type=float, default=0.0, help="CTC loss trên vocal do model dự đoán.")
+    train.add_argument("--native-ctc-teacher-weight", type=float, default=0.0, help="CTC loss học nhận dạng từ vocal thật.")
+    train.add_argument("--native-frame-text-weight", type=float, default=0.0, help="Frame-level Vietnamese grapheme loss trên vocal/prior sinh.")
+    train.add_argument("--native-frame-text-teacher-weight", type=float, default=0.0, help="Frame-level grapheme loss neo recognizer vào vocal thật.")
+    train.add_argument("--native-vocal-prior-weight", type=float, default=0.0, help="Loss cho nhánh grapheme-to-vocal train từ đầu (không TTS).")
+    train.add_argument("--vocal-structure-weight", type=float, default=0.0, help="Loss energy/onset/formant trên vocal stem được sinh.")
+    train.add_argument("--native-prosody-weight", type=float, default=0.0, help="Loss duration/pitch/voicing của nhánh native học từ vocal mel; không dùng TTS.")
+    train.add_argument("--native-lr-multiplier", type=float, default=10.0, help="LR multiplier cho text encoder và audio CTC native mới.")
+    train.add_argument(
+        "--freeze-native-ctc",
+        action="store_true",
+        help="Giữ recognizer đã pretrain cố định nhưng vẫn truyền gradient CTC về vocal sinh.",
+    )
     train.add_argument("--validation-fraction", type=float, default=0.05)
     train.add_argument("--validation-max-records", type=int, default=128)
     train.add_argument("--validation-seed", type=int, default=5602)
@@ -266,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
             style_anchor=args.style_anchor,
             mix_backing=args.mix_backing,
             backing_to_vocal_rms=args.backing_to_vocal_rms,
+            native_only=args.native_only,
         )
     elif args.command == "make-random-dataset":
         target_bytes = int(args.target_gb * (1024 ** 3)) if args.target_gb > 0 else None
@@ -280,7 +312,7 @@ def main(argv: list[str] | None = None) -> int:
         upload_report = upload_dataset_to_kaggle(args.out, username=args.username, dataset_ref=args.dataset_ref, timeout_seconds=args.timeout_seconds)
         report = {"status": upload_report["status"], "dataset_report": dataset_report, "upload": upload_report}
     elif args.command == "train-self":
-        report = train_model(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, roberta_model=args.roberta_model, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, frames_per_chunk=args.frames_per_chunk, resume=args.resume, save_every_epoch=args.save_every_epoch, checkpoint_every_steps=args.checkpoint_every_steps, log_every_steps=args.log_every_steps, progress_path=args.progress_file, lambda_vocal=args.lambda_vocal, style_dropout_prob=args.style_dropout, text_dropout_prob=args.text_dropout, text_contrastive_weight=args.text_contrastive_weight, text_contrastive_margin=args.text_contrastive_margin, text_contrastive_prob=args.text_contrastive_prob, text_sensitivity_weight=args.text_sensitivity_weight, text_sensitivity_target=args.text_sensitivity_target, validation_fraction=args.validation_fraction, validation_max_records=args.validation_max_records, validation_seed=args.validation_seed, early_stopping_patience=args.early_stopping_patience, minimum_epochs=args.minimum_epochs, early_stopping_min_delta=args.early_stopping_min_delta, dataset_validation_max_records=args.dataset_validation_max_records, minimum_text_sensitivity=args.minimum_text_sensitivity, use_amp=not args.disable_amp)
+        report = train_model(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, roberta_model=args.roberta_model, text_encoder_type=args.text_encoder, generation_target=args.generation_target, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, frames_per_chunk=args.frames_per_chunk, resume=args.resume, reset_optimizer=args.reset_optimizer, save_every_epoch=args.save_every_epoch, checkpoint_every_steps=args.checkpoint_every_steps, log_every_steps=args.log_every_steps, progress_path=args.progress_file, lambda_vocal=args.lambda_vocal, style_dropout_prob=args.style_dropout, text_dropout_prob=args.text_dropout, text_contrastive_weight=args.text_contrastive_weight, text_contrastive_margin=args.text_contrastive_margin, text_contrastive_prob=args.text_contrastive_prob, text_sensitivity_weight=args.text_sensitivity_weight, text_sensitivity_target=args.text_sensitivity_target, native_ctc_weight=args.native_ctc_weight, native_ctc_teacher_weight=args.native_ctc_teacher_weight, native_frame_text_weight=args.native_frame_text_weight, native_frame_text_teacher_weight=args.native_frame_text_teacher_weight, native_vocal_prior_weight=args.native_vocal_prior_weight, vocal_structure_weight=args.vocal_structure_weight, native_prosody_weight=args.native_prosody_weight, native_learning_rate_multiplier=args.native_lr_multiplier, freeze_native_ctc=args.freeze_native_ctc, validation_fraction=args.validation_fraction, validation_max_records=args.validation_max_records, validation_seed=args.validation_seed, early_stopping_patience=args.early_stopping_patience, early_stopping_min_delta=args.early_stopping_min_delta, dataset_validation_max_records=args.dataset_validation_max_records, minimum_text_sensitivity=args.minimum_text_sensitivity, use_amp=not args.disable_amp)
     elif args.command == "train-distill":
         from src.training.distill_training import run_distillation_training
         report = run_distillation_training(
