@@ -247,7 +247,20 @@ def process_file(
         if transcribe and whisper_model is not None:
             print("-> Transcribing lyrics using Whisper ASR...", flush=True)
             if whisper_backend == "hf":
-                asr_res = whisper_model(str(vocals_wav), return_timestamps="word")
+                # Whisper's long-form/chunked decoding can fall into a runaway
+                # repetition loop (a token/phrase repeated for the whole
+                # transcript) once one chunk hallucinates and later chunks
+                # condition on that bad output -- condition_on_prev_tokens=False
+                # stops that compounding; no_repeat_ngram_size/repetition_penalty
+                # additionally suppress within-chunk repetition loops.
+                asr_res = whisper_model(
+                    str(vocals_wav), return_timestamps="word",
+                    generate_kwargs={
+                        "condition_on_prev_tokens": False,
+                        "no_repeat_ngram_size": 3,
+                        "repetition_penalty": 1.3,
+                    },
+                )
                 lyrics = str(asr_res.get("text", "")).strip()
                 words = []
                 previous_end = 0.0
