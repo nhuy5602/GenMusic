@@ -38,7 +38,14 @@ class PretrainedPhonemeEncoder(nn.Module):
         if not hasattr(self, "text2phone_model"):
             from text2phonemesequence import Text2PhonemeSequence
             is_cuda = "cuda" in str(device)
-            self.text2phone_model = Text2PhonemeSequence(language='vie', is_cuda=is_cuda)
+            # 'vie' is not a real CharsiuG2P language tag (confirmed: the
+            # package's own default is 'vie-c', and its internal dict only
+            # lists vie-c/vie-n/vie-s -- three Vietnamese dialect variants,
+            # no bare 'vie'). With 'vie', the wget for vie.tsv 404s, phone_dict
+            # stays empty, and every word falls through to the raw '<vie>: '
+            # prompt -- a tag the G2P model never saw during its own training.
+            # Every phoneme sequence fed to XPhoneBERT has been affected.
+            self.text2phone_model = Text2PhonemeSequence(language='vie-c', is_cuda=is_cuda)
 
         # Convert texts to phoneme sequences
         phoneme_texts = []
