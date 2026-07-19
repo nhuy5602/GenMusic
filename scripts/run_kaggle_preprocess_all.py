@@ -315,6 +315,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--max-files", type=int, default=None, help="Limit how many raw files to preprocess.")
     parser.add_argument("--whisper-model", type=str, default="tiny", help="Openai-whisper size (tiny/base/small/...) or a HuggingFace repo id (owner/name) for a fine-tuned ASR model, e.g. xyzDivergence/whisper-small-vietnamese-lyrics-transcription.")
+    parser.add_argument("--raw-dataset-ref", type=str, default=None, help="Override KAGGLE_RAW_DATASET_REF for this run, e.g. sonlest/vietnamese-music-dataset-version3-part1 (the raw corpus has parts 1-6, only part6 has ever been preprocessed).")
     args = parser.parse_args()
 
     # Resolved parent because it is located inside the scripts/ directory
@@ -329,7 +330,7 @@ def main():
 
     # Credentials are passed in-memory so project .env remains authoritative.
 
-    raw_dataset_ref = os.getenv("KAGGLE_RAW_DATASET_REF") or tokens.get("KAGGLE_RAW_DATASET_REF", "sonlest/vietnamese-music-dataset-version3-part6")
+    raw_dataset_ref = args.raw_dataset_ref or os.getenv("KAGGLE_RAW_DATASET_REF") or tokens.get("KAGGLE_RAW_DATASET_REF", "sonlest/vietnamese-music-dataset-version3-part6")
     raw_dataset_slug = raw_dataset_ref.split("/")[-1]
     
     if args.max_files is not None and args.max_files < 1:
