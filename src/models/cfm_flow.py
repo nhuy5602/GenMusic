@@ -3,6 +3,30 @@ import torch.nn.functional as F
 from .text_to_music_diffusion import MusicDiffusionConfig, reconstruct_full_mix
 
 
+def build_mismatched_texts(texts: list[str]) -> tuple[list[str], list[bool]]:
+    """Rotate each non-empty lyric to a different lyric in the same batch.
+
+    Empty-text comparison only proves that the model reacts to *some* text. It
+    does not prove that "em yeu anh" produces different phonemes from "mua roi".
+    This helper supplies content-negative prompts while marking samples for
+    which a genuinely different non-empty prompt exists.
+    """
+    normalized = [str(text).strip() for text in texts]
+    mismatched = ["" for _ in normalized]
+    valid = [False for _ in normalized]
+    for index, text in enumerate(normalized):
+        if not text:
+            continue
+        folded = text.casefold()
+        for offset in range(1, len(normalized)):
+            candidate = normalized[(index + offset) % len(normalized)]
+            if candidate and candidate.casefold() != folded:
+                mismatched[index] = candidate
+                valid[index] = True
+                break
+    return mismatched, valid
+
+
 def _prepare_style_condition(
     style_prompt: torch.Tensor | None,
     *,
@@ -36,6 +60,13 @@ def cfm_loss(
     *,
     lambda_vocal: float = 1.0,
     condition_dropout_prob: float = 0.1,
+    style_dropout_prob: float | None = None,
+    text_dropout_prob: float | None = None,
+    text_contrastive_weight: float = 0.0,
+    text_contrastive_margin: float = 0.03,
+    text_contrastive_prob: float = 0.5,
+    text_sensitivity_weight: float = 0.0,
+    text_sensitivity_target: float = 0.20,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
     """Computes the Conditional Flow Matching (CFM) velocity prediction loss.
 
@@ -45,6 +76,19 @@ def cfm_loss(
     vocal-only prediction loss ("Mixed Pro", MicroDiT.vocal_proj_out) keeps the
     model explicitly tracking the harder vocal component instead of only
     learning the easier, louder joint mix; set lambda_vocal=0 to disable it.
+
+    text_contrastive_weight/text_sensitivity_weight (both 0.0 by default, i.e.
+    disabled) add a lyric-content-specific supervision signal on top of the
+    main CFM loss: the main loss can be minimized while the model reacts only
+    to "some text present" rather than to *which* phonemes were requested.
+    build_mismatched_texts swaps each lyric for a different one in the same
+    batch (same mel target); the contrastive term penalizes the model for not
+    predicting a *worse* velocity for the wrong lyric than for the correct one,
+    and the sensitivity term penalizes the two predictions for being too
+    similar in absolute terms. style_dropout_prob/text_dropout_prob let CFG
+    dropout rates differ per condition (real usage rarely supplies a style
+    reference but almost always supplies lyrics) -- both fall back to
+    condition_dropout_prob when left as None.
 
     Returns (total_loss, loss_gt, loss_vocal_aux) so callers can log the
     components separately (loss_vocal_aux is None when lambda_vocal <= 0).
@@ -71,10 +115,15 @@ def cfm_loss(
     # real reference conditions, missing style, and an empty lyric prompt.
     normalized_style = style_anchor
     model_texts = list(texts)
-    dropout = max(0.0, min(1.0, float(condition_dropout_prob)))
-    if dropout > 0.0:
-        style_drop = torch.rand(batch_size, device=device) < dropout
-        text_drop = torch.rand(batch_size, device=device) < dropout
+    default_dropout = max(0.0, min(1.0, float(condition_dropout_prob)))
+    style_dropout = default_dropout if style_dropout_prob is None else max(0.0, min(1.0, float(style_dropout_prob)))
+    text_dropout = default_dropout if text_dropout_prob is None else max(0.0, min(1.0, float(text_dropout_prob)))
+    if style_dropout > 0.0 or text_dropout > 0.0:
+        # Most user generation has no reference MuQ anchor, while text is
+        # always supplied. Train the zero-style path substantially more often
+        # without also erasing the Vietnamese lyric at the same high rate.
+        style_drop = torch.rand(batch_size, device=device) < style_dropout
+        text_drop = torch.rand(batch_size, device=device) < text_dropout
         normalized_style = normalized_style.masked_fill(style_drop[:, None], 0.0)
         text_drop_flags = text_drop.detach().cpu().tolist()
         model_texts = ["" if text_drop_flags[index] else text for index, text in enumerate(model_texts)]
@@ -129,6 +178,64 @@ def cfm_loss(
         vocal_frame_weights = vocal_frame_weights / vocal_frame_weights.mean(dim=(1, 2), keepdim=True).clamp_min(1e-6)
         loss_vocal_aux = ((vocal_aux.float() - vocal_target_velocity).square() * vocal_frame_weights).mean()
         total_loss = total_loss + lambda_vocal * loss_vocal_aux
+
+    # Conditional flow matching can minimize its marginal audio loss while
+    # reacting only to "text present" rather than to the requested phonemes.
+    # Compare each correct lyric against a different lyric from the same batch.
+    # Text dropout already trains the empty classifier-free branch; this extra
+    # forward is reserved for the missing content-specific supervision.
+    contrastive_weight = max(0.0, float(text_contrastive_weight))
+    sensitivity_weight = max(0.0, float(text_sensitivity_weight))
+    contrastive_probability = max(0.0, min(1.0, float(text_contrastive_prob)))
+    mismatched_texts, content_mask_flags = build_mismatched_texts(model_texts)
+    content_mask = torch.tensor(content_mask_flags, dtype=torch.bool, device=device)
+    if (
+        (contrastive_weight > 0.0 or sensitivity_weight > 0.0)
+        and bool(content_mask.any())
+        and torch.rand((), device=device) < contrastive_probability
+    ):
+        mismatched_velocity = model(
+            x=xt, texts=mismatched_texts, timestep=t, style_prompt=normalized_style,
+        )
+        mismatched_velocity_fp32 = mismatched_velocity.float()
+        matched_error = (
+            (predicted_velocity_fp32 - target_velocity_fp32).square() * frame_weights_fp32
+        ).mean(dim=(1, 2))[content_mask]
+        mismatched_error = (
+            (mismatched_velocity_fp32 - target_velocity_fp32).square() * frame_weights_fp32
+        ).mean(dim=(1, 2))[content_mask]
+        contrastive_loss = F.relu(
+            max(0.0, float(text_contrastive_margin)) + matched_error - mismatched_error
+        ).mean()
+        total_loss = total_loss + contrastive_weight * contrastive_loss
+
+        # Error ranking alone has a weak gradient when two different lyrics
+        # produce the same velocity. This response floor measures lyric A
+        # versus lyric B, not lyric versus empty, so a generic "text on"
+        # signal can no longer satisfy the gate.
+        response_rms = (
+            (predicted_velocity_fp32 - mismatched_velocity_fp32).square().mean(dim=(1, 2))
+            # When the model ignores lyrics, matched and mismatched outputs can
+            # be exactly equal. sqrt'(0) is singular and would otherwise
+            # produce non-finite gradients even though the forward loss is finite.
+            .clamp_min(1e-12).sqrt()[content_mask]
+        )
+        response_scale = 0.5 * (
+            predicted_velocity_fp32.square().mean(dim=(1, 2)).clamp_min(1e-12).sqrt()
+            + target_velocity_fp32.square().mean(dim=(1, 2)).clamp_min(1e-12).sqrt()
+        ).detach().clamp_min(1e-6)[content_mask]
+        relative_response = response_rms / response_scale
+        response_shortfall = F.relu(max(0.0, float(text_sensitivity_target)) - relative_response)
+        # A plain squared hinge becomes nearly inert just below the target. A
+        # one-sided Huber penalty retains a useful gradient near the boundary
+        # while staying bounded and smooth.
+        huber_beta = 0.05
+        sensitivity_loss = torch.where(
+            response_shortfall < huber_beta,
+            0.5 * response_shortfall.square() / huber_beta,
+            response_shortfall - 0.5 * huber_beta,
+        ).mean()
+        total_loss = total_loss + sensitivity_weight * sensitivity_loss
 
     return total_loss, loss_gt, loss_vocal_aux
 

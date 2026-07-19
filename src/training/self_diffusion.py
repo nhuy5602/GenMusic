@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -46,6 +47,48 @@ def _is_usable_training_record(record: dict[str, Any]) -> bool:
 
 def _filter_training_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [record for record in records if _is_usable_training_record(record)]
+
+
+def split_training_records(
+    records: list[dict[str, Any]],
+    *,
+    validation_fraction: float = 0.05,
+    validation_max_records: int | None = 128,
+    seed: int = 5602,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Create a stable song-level split so validation never sees train crops."""
+    usable = _filter_training_records(records)
+    fraction = max(0.0, min(0.5, float(validation_fraction)))
+    if fraction <= 0.0 or len(usable) < 2:
+        return usable, []
+
+    validation_count = max(1, round(len(usable) * fraction))
+    if validation_max_records is not None:
+        validation_count = min(validation_count, max(1, int(validation_max_records)))
+    validation_count = min(validation_count, len(usable) - 1)
+    ranked = sorted(
+        enumerate(usable),
+        key=lambda item: hashlib.sha256(f"{seed}:{item[1].get('id', item[0])}".encode("utf-8")).digest(),
+    )
+    validation_indices = {index for index, _ in ranked[:validation_count]}
+    training_records = [record for index, record in enumerate(usable) if index not in validation_indices]
+    validation_records = [record for index, record in enumerate(usable) if index in validation_indices]
+    return training_records, validation_records
+
+
+def _is_checkpoint_improvement(
+    validation_loss: float | None,
+    best_validation_loss: float,
+    text_sensitivity: float | None,
+    minimum_text_sensitivity: float,
+    min_delta: float = 0.0,
+) -> bool:
+    """Require acoustic improvement without accepting lyric-conditioning collapse."""
+    if validation_loss is None:
+        return False
+    if text_sensitivity is not None and text_sensitivity < minimum_text_sensitivity:
+        return False
+    return validation_loss < best_validation_loss - max(0.0, float(min_delta))
 
 
 def lyric_text_for_window(
@@ -100,21 +143,39 @@ class MusicDiffusionDataset:
     are combined into a single training set, each record's mel/style paths
     resolved against its own source directory (see _with_absolute_paths).
     """
-    def __init__(self, dataset_dir: str | Path | list[str | Path], config: MusicDiffusionConfig, max_records: int | None = None, additional_records: list[dict[str, Any]] | None = None):
+    def __init__(
+        self,
+        dataset_dir: str | Path | list[str | Path],
+        config: MusicDiffusionConfig,
+        max_records: int | None = None,
+        additional_records: list[dict[str, Any]] | None = None,
+        records: list[dict[str, Any]] | None = None,
+        deterministic_crop: bool = False,
+        crop_seed: int = 5602,
+    ):
         _, _, Dataset, _ = _torch()
         dataset_dirs = [Path(dataset_dir)] if isinstance(dataset_dir, (str, Path)) else [Path(d) for d in dataset_dir]
         if not dataset_dirs:
             raise ValueError("dataset_dir must contain at least one path")
         self.root = dataset_dirs[0]
         self.config = config
-        self.excluded_record_count = 0
-        records: list[dict[str, Any]] = []
-        for root in dataset_dirs:
-            all_records = _read_records(root)
-            usable = _filter_training_records(all_records)
-            self.excluded_record_count += len(all_records) - len(usable)
-            records.extend(_with_absolute_paths(root, record) for record in usable)
-        self.records = records[:max_records] if max_records is not None else records
+        self.deterministic_crop = bool(deterministic_crop)
+        self.crop_seed = int(crop_seed)
+        if records is not None:
+            # Caller already resolved/filtered these (e.g. split_training_records'
+            # validation half) -- records are assumed already absolute-pathed via
+            # _with_absolute_paths, so skip re-reading from disk entirely.
+            self.excluded_record_count = 0
+            resolved_records = list(records)
+        else:
+            self.excluded_record_count = 0
+            resolved_records = []
+            for root in dataset_dirs:
+                all_records = _read_records(root)
+                usable = _filter_training_records(all_records)
+                self.excluded_record_count += len(all_records) - len(usable)
+                resolved_records.extend(_with_absolute_paths(root, record) for record in usable)
+        self.records = resolved_records[:max_records] if max_records is not None else resolved_records
         if additional_records:
             self.records.extend(additional_records)
 
@@ -141,10 +202,20 @@ class MusicDiffusionDataset:
             
         # Crop both stems at the same offset so the text/audio condition stays aligned
         # (also a cheap augmentation: different epochs see different windows of longer songs).
+        # Validation needs a *stable* measurement across epochs/resumes, so
+        # deterministic_crop derives crop_start from a seeded hash of the
+        # record id instead of the process-global random.randint used for
+        # training augmentation.
         crop_start = 0
         shared_frames = min(vocal_mel.shape[1], backing_mel.shape[1])
         if shared_frames > self.config.frames_per_chunk:
-            crop_start = random.randint(0, shared_frames - self.config.frames_per_chunk)
+            max_start = shared_frames - self.config.frames_per_chunk
+            if self.deterministic_crop:
+                record_key = str(record.get("id") or idx)
+                digest = hashlib.sha256(f"{self.crop_seed}:{record_key}".encode("utf-8")).digest()
+                crop_start = int.from_bytes(digest[:8], "big") % (max_start + 1)
+            else:
+                crop_start = random.randint(0, max_start)
             vocal_mel = vocal_mel[:, crop_start:crop_start + self.config.frames_per_chunk]
             backing_mel = backing_mel[:, crop_start:crop_start + self.config.frames_per_chunk]
         else:
@@ -179,7 +250,23 @@ class MusicDiffusionDataset:
 
 class DiffusionTrainer:
     """Trainer orchestrating optimization steps and gradient descent for the diffusion denoiser."""
-    def __init__(self, model, config: MusicDiffusionConfig, optimizer, device: str = "cpu", scheduler=None, ema_decay: float = 0.999, lambda_vocal: float = 1.0):
+    def __init__(
+        self,
+        model,
+        config: MusicDiffusionConfig,
+        optimizer,
+        device: str = "cpu",
+        scheduler=None,
+        ema_decay: float = 0.999,
+        lambda_vocal: float = 1.0,
+        style_dropout_prob: float = 0.5,
+        text_dropout_prob: float = 0.1,
+        text_contrastive_weight: float = 0.0,
+        text_contrastive_margin: float = 0.03,
+        text_contrastive_prob: float = 0.5,
+        text_sensitivity_weight: float = 0.0,
+        text_sensitivity_target: float = 0.20,
+    ):
         torch, _, _, _ = _torch()
         self.model = model
         self.config = config
@@ -190,6 +277,15 @@ class DiffusionTrainer:
         # Weight of the auxiliary vocal-only prediction loss ("Mixed Pro", see
         # MicroDiT.vocal_proj_out's docstring). 0.0 disables it.
         self.lambda_vocal = lambda_vocal
+        # CFG dropout rates and lyric-content-sensitivity loss weights (see
+        # cfm_loss's docstring); both loss weights default to 0.0 (disabled).
+        self.style_dropout_prob = float(style_dropout_prob)
+        self.text_dropout_prob = float(text_dropout_prob)
+        self.text_contrastive_weight = max(0.0, float(text_contrastive_weight))
+        self.text_contrastive_margin = max(0.0, float(text_contrastive_margin))
+        self.text_contrastive_prob = max(0.0, min(1.0, float(text_contrastive_prob)))
+        self.text_sensitivity_weight = max(0.0, float(text_sensitivity_weight))
+        self.text_sensitivity_target = max(0.0, float(text_sensitivity_target))
         self.use_amp = str(device).startswith("cuda")
         self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
         self.ema_parameters = {
@@ -217,6 +313,100 @@ class DiffusionTrainer:
         for name, value in state.items():
             if name in self.ema_parameters:
                 self.ema_parameters[name] = value.detach().to(self.device).clone()
+
+    def evaluate_ground_truth(self, dataloader, *, seed: int = 5602) -> float:
+        """Measure a deterministic held-out loss using the EMA weights."""
+        torch, _, _, _ = _torch()
+        from ..models.cfm_flow import cfm_loss
+
+        was_training = self.model.training
+        raw_parameters = {
+            name: parameter.detach().clone()
+            for name, parameter in self.model.named_parameters()
+            if name in self.ema_parameters
+        }
+        cuda_devices = [torch.cuda.current_device()] if str(self.device).startswith("cuda") else []
+        losses: list[float] = []
+        try:
+            with torch.no_grad():
+                for name, parameter in self.model.named_parameters():
+                    if name in self.ema_parameters:
+                        parameter.copy_(self.ema_parameters[name])
+            self.model.eval()
+            with torch.random.fork_rng(devices=cuda_devices):
+                torch.manual_seed(int(seed))
+                if cuda_devices:
+                    torch.cuda.manual_seed_all(int(seed))
+                with torch.no_grad():
+                    for batch in dataloader:
+                        vocal_mel = batch["vocal_mel"].to(self.device).transpose(1, 2)
+                        backing_mel = batch["backing_mel"].to(self.device).transpose(1, 2)
+                        style_anchor = batch["style_anchor"].to(self.device)
+                        loss, _, _ = cfm_loss(
+                            self.model,
+                            vocal_mel,
+                            backing_mel,
+                            style_anchor,
+                            batch["text"],
+                            self.config,
+                            style_dropout_prob=0.0,
+                            text_dropout_prob=0.0,
+                            lambda_vocal=self.lambda_vocal,
+                        )
+                        losses.append(float(loss.detach().cpu()))
+        finally:
+            with torch.no_grad():
+                for name, parameter in self.model.named_parameters():
+                    if name in raw_parameters:
+                        parameter.copy_(raw_parameters[name])
+            self.model.train(was_training)
+        if not losses:
+            raise ValueError("Validation dataset produced no batches.")
+        return sum(losses) / len(losses)
+
+    def evaluate_text_sensitivity(self, dataloader, *, seed: int = 5602) -> float:
+        """Measure whether EMA predictions change for a *different* lyric."""
+        torch, _, _, _ = _torch()
+        from ..models.cfm_flow import build_mismatched_texts
+
+        was_training = self.model.training
+        raw_parameters = {
+            name: parameter.detach().clone()
+            for name, parameter in self.model.named_parameters()
+            if name in self.ema_parameters
+        }
+        try:
+            with torch.no_grad():
+                for name, parameter in self.model.named_parameters():
+                    if name in self.ema_parameters:
+                        parameter.copy_(self.ema_parameters[name])
+            self.model.eval()
+            batch = next(iter(dataloader))
+            clean_mel = batch["vocal_mel"].to(self.device).transpose(1, 2)
+            generator = torch.Generator(device=self.device).manual_seed(int(seed))
+            noise = torch.randn(clean_mel.shape, generator=generator, device=self.device, dtype=clean_mel.dtype)
+            timestep = torch.full((clean_mel.shape[0],), 0.5, device=self.device, dtype=clean_mel.dtype)
+            noisy = 0.5 * noise + 0.5 * clean_mel
+            zero_style = torch.zeros(
+                (clean_mel.shape[0], int(getattr(self.model, "style_dim", STYLE_EMBED_DIM))),
+                device=self.device,
+            )
+            with torch.no_grad():
+                mismatched_texts, content_mask_flags = build_mismatched_texts(batch["text"])
+                content_mask = torch.tensor(content_mask_flags, dtype=torch.bool, device=self.device)
+                if not bool(content_mask.any()):
+                    return 0.0
+                conditioned = self.model(x=noisy, texts=batch["text"], timestep=timestep, style_prompt=zero_style)
+                mismatched = self.model(x=noisy, texts=mismatched_texts, timestep=timestep, style_prompt=zero_style)
+            difference = ((conditioned - mismatched).square().mean(dim=(1, 2)).sqrt())[content_mask].mean()
+            baseline = (conditioned.square().mean(dim=(1, 2)).sqrt())[content_mask].mean().clamp_min(1e-8)
+            return float((difference / baseline).detach().cpu())
+        finally:
+            with torch.no_grad():
+                for name, parameter in self.model.named_parameters():
+                    if name in raw_parameters:
+                        parameter.copy_(raw_parameters[name])
+            self.model.train(was_training)
 
     def train_epoch(
         self,
@@ -251,6 +441,13 @@ class DiffusionTrainer:
                 loss, loss_gt, loss_vocal_aux = cfm_loss(
                     self.model, vocal_mel_t, backing_mel_t, style_anchor, texts, self.config,
                     lambda_vocal=self.lambda_vocal,
+                    style_dropout_prob=self.style_dropout_prob,
+                    text_dropout_prob=self.text_dropout_prob,
+                    text_contrastive_weight=self.text_contrastive_weight,
+                    text_contrastive_margin=self.text_contrastive_margin,
+                    text_contrastive_prob=self.text_contrastive_prob,
+                    text_sensitivity_weight=self.text_sensitivity_weight,
+                    text_sensitivity_target=self.text_sensitivity_target,
                 )
 
             self.scaler.scale(loss).backward()
@@ -498,6 +695,20 @@ def train_model(
     log_every_steps: int = 10,
     progress_path: str | Path | None = None,
     lambda_vocal: float = 1.0,
+    style_dropout_prob: float = 0.5,
+    text_dropout_prob: float = 0.1,
+    text_contrastive_weight: float = 0.08,
+    text_contrastive_margin: float = 0.03,
+    text_contrastive_prob: float = 0.5,
+    text_sensitivity_weight: float = 2.0,
+    text_sensitivity_target: float = 0.20,
+    validation_fraction: float = 0.05,
+    validation_max_records: int | None = 128,
+    validation_seed: int = 5602,
+    early_stopping_patience: int = 4,
+    minimum_epochs: int = 8,
+    early_stopping_min_delta: float = 0.001,
+    minimum_text_sensitivity: float | None = None,
 ) -> dict[str, Any]:
     torch, _, _, DataLoaderClass = _torch()
 
@@ -530,6 +741,27 @@ def train_model(
     start_epoch = 0
     resume_batch_in_epoch = 0
 
+    # Song-level train/validation split, computed once regardless of resume,
+    # so a resumed run keeps evaluating against the same held-out songs.
+    # Records are pre-resolved to absolute paths (_with_absolute_paths), so the
+    # `root` argument passed to estimate_vocal_mel_stats below is a no-op for
+    # path resolution -- pathlib's `/` discards it whenever the right-hand
+    # side is already absolute.
+    all_records = [
+        _with_absolute_paths(d, record)
+        for d in dataset_dirs
+        for record in _filter_training_records(_read_records(d))
+    ]
+    selected_records = all_records[:max_records] if max_records is not None else all_records
+    training_records, validation_records = split_training_records(
+        selected_records,
+        validation_fraction=validation_fraction,
+        validation_max_records=validation_max_records,
+        seed=validation_seed,
+    )
+    if not training_records:
+        raise ValueError("Dataset has no usable training records after validation split.")
+
     if resume and checkpoint.is_file():
         from ..models.text_to_music_diffusion import load_checkpoint
 
@@ -561,16 +793,7 @@ def train_model(
                 int(saved_training_state.get("batch_in_epoch", 0)),
             )
     else:
-        usable_records = [
-            _with_absolute_paths(d, record)
-            for d in dataset_dirs
-            for record in _filter_training_records(_read_records(d))
-        ]
-        records_for_stats = usable_records[:max_records] if max_records is not None else usable_records
-        # Records are pre-resolved to absolute paths (_with_absolute_paths), so the
-        # `root` argument below is a no-op for path resolution -- pathlib's `/`
-        # discards it whenever the right-hand side is already absolute.
-        mel_mean, mel_std = estimate_vocal_mel_stats(root, records_for_stats)
+        mel_mean, mel_std = estimate_vocal_mel_stats(root, training_records)
         config = replace(config, mel_mean=mel_mean, mel_std=mel_std)
         from ..models.dit_transformer import MicroDiT
 
@@ -587,14 +810,27 @@ def train_model(
     # are re-downloaded on load and intentionally omitted from checkpoints).
     trainable_params = [parameter for parameter in model.parameters() if parameter.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=learning_rate)
+    optimizer_state_restored = False
     if resumed_payload.get("optimizer"):
-        optimizer.load_state_dict(resumed_payload["optimizer"])
+        try:
+            optimizer.load_state_dict(resumed_payload["optimizer"])
+            optimizer_state_restored = True
+        except ValueError as exc:
+            # New lyric-conditioning parameters change the optimizer parameter
+            # count, but the old acoustic weights are still a valuable warm
+            # start. Resume model/epoch/EMA and restart AdamW safely.
+            print(f"optimizer_state_reset_for_model_upgrade={exc}", flush=True)
 
     # Instantiate custom Dataset and DataLoader
-    dataset = MusicDiffusionDataset(dataset_dirs, config, max_records=max_records, additional_records=additional_records)
+    dataset = MusicDiffusionDataset(dataset_dirs, config, records=training_records, additional_records=additional_records)
+    validation_dataset = (
+        MusicDiffusionDataset(dataset_dirs, config, records=validation_records, deterministic_crop=True, crop_seed=validation_seed)
+        if validation_records
+        else None
+    )
     if not dataset.records:
         raise ValueError("Dataset has no usable records after vocal/transcript quality filtering.")
-    
+
     def collate_fn(batch):
         vocal_mels = torch.stack([item["vocal_mel"] for item in batch])
         backing_mels = torch.stack([item["backing_mel"] for item in batch])
@@ -617,20 +853,48 @@ def train_model(
             generator=generator,
         )
 
+    validation_dataloader = (
+        DataLoaderClass(validation_dataset, batch_size=batch_size_value, shuffle=False, collate_fn=collate_fn)
+        if validation_dataset is not None
+        else None
+    )
+
     epoch_count = max(1, int(epochs))
     steps_per_epoch = len(build_dataloader(0))
     total_steps = max(1, epoch_count * steps_per_epoch)
-    warmup_steps = min(max(1, int(total_steps * 0.05)), max(1, total_steps - 1))
+    # A model-objective upgrade intentionally resets AdamW. Do not then spend
+    # 5% of all historical epochs warming up again; schedule over only the
+    # remaining resume window. Restored schedulers keep the full target span.
+    schedule_total_steps = (
+        total_steps
+        if optimizer_state_restored or start_epoch == 0
+        else max(1, (epoch_count - start_epoch) * steps_per_epoch)
+    )
+    warmup_steps = min(max(1, int(schedule_total_steps * 0.05)), max(1, schedule_total_steps - 1))
 
     def learning_rate_multiplier(step: int) -> float:
         if step < warmup_steps:
             return (step + 1) / warmup_steps
-        progress = min(1.0, (step - warmup_steps) / max(1, total_steps - warmup_steps))
+        progress = min(1.0, (step - warmup_steps) / max(1, schedule_total_steps - warmup_steps))
         return 0.1 + 0.9 * 0.5 * (1.0 + math.cos(math.pi * progress))
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, learning_rate_multiplier)
-    trainer = DiffusionTrainer(model, config, optimizer, device=selected_device, scheduler=scheduler, lambda_vocal=lambda_vocal)
-    if resumed_payload.get("scheduler"):
+    trainer = DiffusionTrainer(
+        model,
+        config,
+        optimizer,
+        device=selected_device,
+        scheduler=scheduler,
+        lambda_vocal=lambda_vocal,
+        style_dropout_prob=style_dropout_prob,
+        text_dropout_prob=text_dropout_prob,
+        text_contrastive_weight=text_contrastive_weight,
+        text_contrastive_margin=text_contrastive_margin,
+        text_contrastive_prob=text_contrastive_prob,
+        text_sensitivity_weight=text_sensitivity_weight,
+        text_sensitivity_target=text_sensitivity_target,
+    )
+    if optimizer_state_restored and resumed_payload.get("scheduler"):
         scheduler.load_state_dict(resumed_payload["scheduler"])
     if resumed_payload.get("ema"):
         trainer.load_ema_state(resumed_payload["ema"])
@@ -665,10 +929,35 @@ def train_model(
             "global_step": global_step,
             "message": "Checkpoint already reached the requested epoch count.",
         }
-    
+
     started = time.perf_counter()
     losses = []
     loss_curve = []
+    best_checkpoint = checkpoint.with_name(f"{checkpoint.stem}.best{checkpoint.suffix}")
+    # A changed crop curriculum/model input path makes the old validation loss
+    # incomparable; start a fresh best-checkpoint window after such an upgrade.
+    saved_best_validation_loss = (
+        saved_training_state.get("best_validation_loss")
+        if not resumed_payload or optimizer_state_restored
+        else None
+    )
+    best_validation_loss = float(saved_best_validation_loss) if saved_best_validation_loss is not None else float("inf")
+    best_epoch = int(saved_training_state.get("best_epoch", 0)) if saved_best_validation_loss is not None else 0
+    epochs_without_improvement = (
+        int(saved_training_state.get("epochs_without_improvement", 0)) if saved_best_validation_loss is not None else 0
+    )
+    final_validation_loss: float | None = None
+    final_text_sensitivity: float | None = None
+    # A validation-only selector could otherwise replace a text-responsive
+    # model with a marginally lower-loss checkpoint that ignores lyrics. Keep
+    # a small tolerance for measurement noise while making intelligibility a
+    # hard gate.
+    checkpoint_sensitivity_floor = max(
+        0.0,
+        float(minimum_text_sensitivity if minimum_text_sensitivity is not None else 0.90 * max(0.0, float(text_sensitivity_target))),
+    )
+    stopped_early = False
+    completed_epochs = start_epoch
 
     from ..models.text_to_music_diffusion import save_checkpoint
 
@@ -692,6 +981,9 @@ def train_model(
                 "global_step": global_step,
                 "total_steps": total_steps,
                 "loss": loss_record["loss"],
+                "best_validation_loss": best_validation_loss if math.isfinite(best_validation_loss) else None,
+                "best_epoch": best_epoch,
+                "epochs_without_improvement": epochs_without_improvement,
                 "checkpoint": str(checkpoint.resolve()),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -733,10 +1025,66 @@ def train_model(
         avg_loss_gt = sum(d["loss_gt"] for d in epoch_losses) / len(epoch_losses)
         vocal_aux_values = [d["loss_vocal_aux"] for d in epoch_losses if d["loss_vocal_aux"] is not None]
         avg_loss_vocal_aux = sum(vocal_aux_values) / len(vocal_aux_values) if vocal_aux_values else None
+        completed_epochs = epoch + 1
+        final_validation_loss = (
+            trainer.evaluate_ground_truth(validation_dataloader, seed=validation_seed)
+            if validation_dataloader is not None
+            else None
+        )
+        final_text_sensitivity = (
+            trainer.evaluate_text_sensitivity(validation_dataloader, seed=validation_seed)
+            if validation_dataloader is not None
+            else None
+        )
+        improved = _is_checkpoint_improvement(
+            final_validation_loss,
+            best_validation_loss,
+            final_text_sensitivity,
+            checkpoint_sensitivity_floor,
+            early_stopping_min_delta,
+        )
+        if improved:
+            best_validation_loss = final_validation_loss
+            best_epoch = completed_epochs
+            epochs_without_improvement = 0
+            save_checkpoint(
+                model,
+                best_checkpoint,
+                config,
+                ema_state=trainer.ema_parameters,
+                epoch=completed_epochs,
+                loss=avg_loss,
+                arch=arch_to_save,
+                training_state={
+                    "status": "best",
+                    "epoch": completed_epochs,
+                    "validation_loss": final_validation_loss,
+                    "best_validation_loss": best_validation_loss,
+                    "best_epoch": best_epoch,
+                    "text_conditioning_sensitivity": final_text_sensitivity,
+                    "minimum_text_sensitivity": checkpoint_sensitivity_floor,
+                },
+            )
+        elif final_validation_loss is not None:
+            epochs_without_improvement += 1
         loss_curve.append({
-            "epoch": epoch + 1, "loss": avg_loss, "loss_gt": avg_loss_gt,
+            "epoch": completed_epochs, "loss": avg_loss, "loss_gt": avg_loss_gt,
             "loss_velocity": None, "loss_vocal_aux": avg_loss_vocal_aux,
+            "validation_loss": final_validation_loss,
+            "best_validation_loss": best_validation_loss if math.isfinite(best_validation_loss) else None,
+            "text_conditioning_sensitivity": final_text_sensitivity,
+            "minimum_text_sensitivity": checkpoint_sensitivity_floor,
+            "conditioning_gate_pass": (
+                final_text_sensitivity is None or final_text_sensitivity >= checkpoint_sensitivity_floor
+            ),
         })
+        print(
+            f"epoch={completed_epochs}/{epoch_count} train_loss={avg_loss:.6f} "
+            f"validation_loss={final_validation_loss if final_validation_loss is not None else 'disabled'} "
+            f"text_sensitivity={final_text_sensitivity if final_text_sensitivity is not None else 'disabled'} "
+            f"best_epoch={best_epoch or 'n/a'}",
+            flush=True,
+        )
         if save_every_epoch:
             # Remote workers are preemptible. Persist raw weights, optimizer,
             # scheduler and EMA after each epoch so the next worker can resume.
@@ -747,23 +1095,37 @@ def train_model(
                 optimizer=optimizer,
                 scheduler=scheduler,
                 ema_state=trainer.ema_parameters,
-                epoch=epoch + 1,
+                epoch=completed_epochs,
                 loss=avg_loss,
                 arch=arch_to_save,
                 training_state={
                     "status": "training",
-                    "epoch": epoch + 1,
+                    "epoch": completed_epochs,
                     "display_epoch": min(epoch + 2, epoch_count),
                     "batch_in_epoch": 0,
                     "batches_per_epoch": steps_per_epoch,
                     "global_step": global_step,
                     "total_steps": total_steps,
                     "loss": avg_loss,
+                    "validation_loss": final_validation_loss,
+                    "text_conditioning_sensitivity": final_text_sensitivity,
+                    "minimum_text_sensitivity": checkpoint_sensitivity_floor,
+                    "best_validation_loss": best_validation_loss if math.isfinite(best_validation_loss) else None,
+                    "best_epoch": best_epoch,
+                    "epochs_without_improvement": epochs_without_improvement,
                     "checkpoint": str(checkpoint.resolve()),
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 },
             )
         resume_batch_in_epoch = 0
+        if (
+            validation_dataloader is not None
+            and completed_epochs >= max(1, int(minimum_epochs))
+            and epochs_without_improvement >= max(1, int(early_stopping_patience))
+        ):
+            stopped_early = True
+            print(f"Early stopping at epoch {completed_epochs}; best validation epoch was {best_epoch}.", flush=True)
+            break
 
     final_loss = (
         sum(d["loss"] for d in losses[-min(10, len(losses)):])
@@ -773,13 +1135,18 @@ def train_model(
     )
     completed_training_state = {
         "status": "complete",
-        "epoch": epoch_count,
-        "display_epoch": epoch_count,
+        "epoch": completed_epochs,
+        "display_epoch": completed_epochs,
         "batch_in_epoch": 0,
         "batches_per_epoch": steps_per_epoch,
         "global_step": global_step,
         "total_steps": total_steps,
         "loss": final_loss,
+        "validation_loss": final_validation_loss,
+        "best_validation_loss": best_validation_loss if math.isfinite(best_validation_loss) else None,
+        "best_epoch": best_epoch,
+        "epochs_without_improvement": epochs_without_improvement,
+        "stopped_early": stopped_early,
         "checkpoint": str(checkpoint.resolve()),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -790,12 +1157,12 @@ def train_model(
         optimizer=optimizer,
         scheduler=scheduler,
         ema_state=trainer.ema_parameters,
-        epoch=epoch_count,
+        epoch=completed_epochs,
         loss=final_loss,
         arch=arch_to_save,
         training_state=completed_training_state,
     )
     _write_json_atomic(progress_destination, completed_training_state)
-    report = {"status": "complete", "backend": "genmusic-vn-self-diffusion", "dataset": str(root.resolve()), "dataset_dirs": [str(d.resolve()) for d in dataset_dirs], "checkpoint": str(checkpoint.resolve()), "device": selected_device, "epochs": epoch_count, "resumed_from_epoch": resumed_from_epoch, "resumed_from_batch": resumed_from_batch, "batch_size": batch_size_value, "record_count": len(dataset.records), "excluded_record_count": dataset.excluded_record_count, "additional_record_count": len(additional_records or []), "step_count": len(losses), "global_step": global_step, "checkpoint_every_steps": max(0, int(checkpoint_every_steps)), "final_loss": round(final_loss, 6), "loss_curve": loss_curve, "elapsed_seconds": round(time.perf_counter() - started, 3), "dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult, "frames_per_chunk": config.frames_per_chunk, "chunk_seconds": config.chunk_seconds, "mel_mean": round(config.mel_mean, 6), "mel_std": round(config.mel_std, 6), "warmup_steps": warmup_steps, "ema_decay": trainer.ema_decay, "mixed_precision": trainer.use_amp, "lambda_vocal": lambda_vocal}
+    report = {"status": "complete", "backend": "genmusic-vn-self-diffusion", "dataset": str(root.resolve()), "dataset_dirs": [str(d.resolve()) for d in dataset_dirs], "checkpoint": str(checkpoint.resolve()), "best_checkpoint": str(best_checkpoint.resolve()) if best_checkpoint.is_file() else None, "device": selected_device, "requested_epochs": epoch_count, "completed_epochs": completed_epochs, "stopped_early": stopped_early, "best_epoch": best_epoch, "best_validation_loss": round(best_validation_loss, 6) if math.isfinite(best_validation_loss) else None, "final_validation_loss": round(final_validation_loss, 6) if final_validation_loss is not None else None, "final_text_conditioning_sensitivity": round(final_text_sensitivity, 6) if final_text_sensitivity is not None else None, "validation_record_count": len(validation_records), "resumed_from_epoch": resumed_from_epoch, "resumed_from_batch": resumed_from_batch, "optimizer_state_restored": optimizer_state_restored, "batch_size": batch_size_value, "record_count": len(dataset.records), "excluded_record_count": dataset.excluded_record_count, "additional_record_count": len(additional_records or []), "step_count": len(losses), "global_step": global_step, "checkpoint_every_steps": max(0, int(checkpoint_every_steps)), "final_loss": round(final_loss, 6), "loss_curve": loss_curve, "elapsed_seconds": round(time.perf_counter() - started, 3), "dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult, "frames_per_chunk": config.frames_per_chunk, "chunk_seconds": config.chunk_seconds, "mel_mean": round(config.mel_mean, 6), "mel_std": round(config.mel_std, 6), "warmup_steps": warmup_steps, "ema_decay": trainer.ema_decay, "style_dropout_prob": trainer.style_dropout_prob, "text_dropout_prob": trainer.text_dropout_prob, "text_contrastive_weight": trainer.text_contrastive_weight, "text_contrastive_margin": trainer.text_contrastive_margin, "text_contrastive_prob": trainer.text_contrastive_prob, "text_sensitivity_weight": trainer.text_sensitivity_weight, "text_sensitivity_target": trainer.text_sensitivity_target, "minimum_text_sensitivity": checkpoint_sensitivity_floor, "text_sensitivity_mode": "matched_vs_mismatched_lyrics", "mixed_precision": trainer.use_amp, "lambda_vocal": lambda_vocal}
     (checkpoint.parent / "training_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report

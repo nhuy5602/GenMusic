@@ -134,6 +134,7 @@ class SelfDiffusionTests(unittest.TestCase):
                 epochs=1,
                 batch_size=2,
                 checkpoint_every_steps=1,
+                validation_fraction=0.0,
             )
             self.assertEqual(report["status"], "complete")
             self.assertEqual(report["record_count"], 5)
