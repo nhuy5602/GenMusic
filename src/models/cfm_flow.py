@@ -95,27 +95,39 @@ def cfm_loss(
     activity = torch.sigmoid((frame_energy - activity_threshold) * 2.0)
     frame_weights = (1.0 + 2.0 * activity).unsqueeze(-1)
     frame_weights = frame_weights / frame_weights.mean(dim=(1, 2), keepdim=True).clamp_min(1e-6)
-    velocity_loss = ((predicted_velocity - target_velocity).square() * frame_weights).mean()
+
+    # Keep all loss arithmetic in FP32 even when the denoiser forward runs under
+    # autocast FP16 (train_model/run_distillation_training always enable AMP on
+    # CUDA). Squaring two FP16 velocity predictions can overflow past FP16's
+    # ~65504 max (256**2 alone is already inf) and turn a recoverable large
+    # residual into inf/inf -> NaN, silently corrupting the checkpoint from
+    # then on.
+    predicted_velocity_fp32 = predicted_velocity.float()
+    target_velocity_fp32 = target_velocity.float()
+    frame_weights_fp32 = frame_weights.float()
+    velocity_loss = ((predicted_velocity_fp32 - target_velocity_fp32).square() * frame_weights_fp32).mean()
 
     # Reconstruct x1 from the predicted velocity and explicitly preserve its
     # time/frequency contours. These inexpensive auxiliary terms sharpen vocal
     # onsets and formant movement without changing the CFM sampling equation.
-    predicted_clean = xt + (1.0 - t_unsqueezed) * predicted_velocity
-    reconstruction_loss = ((predicted_clean - x1).abs() * frame_weights).mean()
-    time_delta_loss = F.l1_loss(torch.diff(predicted_clean, dim=1), torch.diff(x1, dim=1))
-    frequency_delta_loss = F.l1_loss(torch.diff(predicted_clean, dim=2), torch.diff(x1, dim=2))
+    x1_fp32 = x1.float()
+    predicted_clean = xt.float() + (1.0 - t_unsqueezed.float()) * predicted_velocity_fp32
+    reconstruction_loss = ((predicted_clean - x1_fp32).abs() * frame_weights_fp32).mean()
+    time_delta_loss = F.l1_loss(torch.diff(predicted_clean, dim=1), torch.diff(x1_fp32, dim=1))
+    frequency_delta_loss = F.l1_loss(torch.diff(predicted_clean, dim=2), torch.diff(x1_fp32, dim=2))
     loss_gt = velocity_loss + 0.15 * reconstruction_loss + 0.05 * (time_delta_loss + frequency_delta_loss)
 
     loss_vocal_aux = None
     total_loss = loss_gt
     if want_vocal_aux:
-        vocal_target_velocity = vocal_mel - x0
-        vocal_frame_energy = vocal_mel.mean(dim=-1)
+        vocal_mel_fp32 = vocal_mel.float()
+        vocal_target_velocity = vocal_mel_fp32 - x0.float()
+        vocal_frame_energy = vocal_mel_fp32.mean(dim=-1)
         vocal_activity_threshold = torch.quantile(vocal_frame_energy.detach(), 0.55, dim=1, keepdim=True)
         vocal_activity = torch.sigmoid((vocal_frame_energy - vocal_activity_threshold) * 2.0)
         vocal_frame_weights = (1.0 + 2.0 * vocal_activity).unsqueeze(-1)
         vocal_frame_weights = vocal_frame_weights / vocal_frame_weights.mean(dim=(1, 2), keepdim=True).clamp_min(1e-6)
-        loss_vocal_aux = ((vocal_aux - vocal_target_velocity).square() * vocal_frame_weights).mean()
+        loss_vocal_aux = ((vocal_aux.float() - vocal_target_velocity).square() * vocal_frame_weights).mean()
         total_loss = total_loss + lambda_vocal * loss_vocal_aux
 
     return total_loss, loss_gt, loss_vocal_aux
