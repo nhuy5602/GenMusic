@@ -20,7 +20,7 @@ from src.integrations.kaggle_auto import (
     write_source_zip,
 )
 
-def _kernel_script_content(dataset_slug: str, epochs: str = "5", batch_size: str = "4", lambda_vocal: str = "1.0") -> str:
+def _kernel_script_content(dataset_slug: str, epochs: str = "5", batch_size: str = "4", lambda_vocal: str = "1.0", save_every_epoch: bool = True, architecture: str = "microdit", max_records: str | None = None, dim: str | None = None, depth: str | None = None, heads: str | None = None) -> str:
     # This script will run on the Kaggle GPU instance and log errors to output files instead of crashing
     # We use pure ASCII characters to prevent Windows cp1252 encoding crashes during kaggle push
     return f'''import os
@@ -128,18 +128,38 @@ try:
 
     print("--- STEP 5: Training model on ALL processed records ---")
     checkpoint_path = Path("/kaggle/working/my_trained_model.pt")
-    subprocess.run([
+    train_command = [
         sys.executable, str(source_root / "cli.py"), "train-self",
         "--dataset", str(processed_dataset),
         "--checkpoint", str(checkpoint_path),
         "--epochs", "{epochs}",
         "--batch-size", "{batch_size}",
         "--lambda-vocal", "{lambda_vocal}",
-        "--device", "cuda"
-    ], check=True)
+        "--architecture", "{architecture}",
+        "--device", "cuda",
+    ]
+    if {max_records is not None}:
+        train_command.extend(["--max-records", "{max_records}"])
+    if {dim is not None}:
+        train_command.extend(["--dim", "{dim}"])
+    if {depth is not None}:
+        train_command.extend(["--depth", "{depth}"])
+    if {heads is not None}:
+        train_command.extend(["--heads", "{heads}"])
+    if {save_every_epoch}:
+        # A validation-gated best checkpoint + early stopping run can span many
+        # epochs; persist raw weights/optimizer/EMA after every epoch so a
+        # session timeout does not lose all progress (see docs/guides on Kaggle
+        # preemption).
+        train_command.append("--save-every-epoch")
+    subprocess.run(train_command, check=True)
 
     print("--- PIPELINE COMPLETED SUCCESSFULLY ---")
     print(f"Model saved to: {{checkpoint_path.resolve()}}")
+    report_path = Path("/kaggle/working/training_report.json")
+    if report_path.is_file():
+        print("--- training_report.json ---")
+        print(report_path.read_text(encoding="utf-8"))
     Path("/kaggle/working/success.txt").write_text("success", encoding="utf-8")
 
 except Exception as e:
@@ -158,6 +178,11 @@ def main():
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--processed-kernel-ref", default=None)
     parser.add_argument("--lambda-vocal", type=float, default=1.0, help="Weight of auxiliary vocal-only prediction loss (Mixed Pro style, 0.0 disables it).")
+    parser.add_argument("--architecture", default="microdit", choices=("microdit", "native_dit"), help="microdit = this project's cross-attention student; native_dit = vendored DiffRhythm2 real DiT at student scale.")
+    parser.add_argument("--max-records", type=int, default=None, help="Limit training to the first N usable records (for cheap smoke tests).")
+    parser.add_argument("--dim", type=int, default=None)
+    parser.add_argument("--depth", type=int, default=None)
+    parser.add_argument("--heads", type=int, default=None)
     args = parser.parse_args()
 
     # Resolved parent because it is located inside the scripts/ directory
@@ -238,7 +263,14 @@ def main():
     kernel_ref = f"{username}/{kernel_slug}"
     
     (kernel_dir / "run_training.py").write_text(
-        _kernel_script_content(processed_dataset_slug, epochs, batch_size, str(args.lambda_vocal)),
+        _kernel_script_content(
+            processed_dataset_slug, epochs, batch_size, str(args.lambda_vocal),
+            architecture=args.architecture,
+            max_records=str(args.max_records) if args.max_records is not None else None,
+            dim=str(args.dim) if args.dim is not None else None,
+            depth=str(args.depth) if args.depth is not None else None,
+            heads=str(args.heads) if args.heads is not None else None,
+        ),
         encoding="utf-8",
     )
     (kernel_dir / "kernel-metadata.json").write_text(json.dumps({
@@ -300,6 +332,31 @@ def main():
             print(f"🎉 SUCCESS! Model checkpoint successfully downloaded to: {final_checkpoint_path.resolve()}")
         else:
             print("❌ Error: Checked completed but 'my_trained_model.pt' not found in kernel outputs.")
+
+        best_checkpoint = download_dir / "my_trained_model.best.pt"
+        if best_checkpoint.exists():
+            final_best_path = project_root / "outputs" / "my_trained_model.best.pt"
+            shutil.copy2(best_checkpoint, final_best_path)
+            print(f"🎯 Validation-gated best checkpoint downloaded to: {final_best_path.resolve()}")
+        else:
+            print("ℹ️  No best_checkpoint saved -- the text-conditioning-sensitivity gate never passed this run.")
+
+        report = download_dir / "training_report.json"
+        if report.exists():
+            final_report_path = job_dir / "training_report.json"
+            shutil.copy2(report, final_report_path)
+            data = json.loads(report.read_text(encoding="utf-8"))
+            print("📊 Kết quả (kiểm soát item 8):")
+            for key in (
+                "record_count", "validation_record_count", "completed_epochs", "requested_epochs",
+                "stopped_early", "best_epoch", "best_validation_loss", "final_validation_loss",
+                "final_text_conditioning_sensitivity", "minimum_text_sensitivity", "final_loss",
+                "elapsed_seconds",
+            ):
+                print(f"   {key}: {data.get(key)}")
+            print(f"   Full report: {final_report_path.resolve()}")
+        else:
+            print("❌ Error: training_report.json not found in kernel outputs.")
     else:
         print("❌ Error: Kernel run did not complete successfully.")
 

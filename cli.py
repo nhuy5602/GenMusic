@@ -100,6 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--ff-mult", type=int, default=4, help="Hệ số feed-forward.")
     train.add_argument("--frames-per-chunk", type=int, default=None, help="Override độ dài crop train; 384 tương đương khoảng bốn giây ở 24 kHz.")
     train.add_argument("--lambda-vocal", type=float, default=1.0, help="Weight of auxiliary vocal-only prediction loss (Mixed Pro style, 0.0 disables it).")
+    train.add_argument("--architecture", default="microdit", choices=("microdit", "native_dit"), help="microdit = this project's cross-attention lyric conditioning; native_dit = DiffRhythm2's real concatenated self-attention DiT, vendored (src/models/diffrhythm2_native.py), trained from scratch at student scale.")
 
     distill = sub.add_parser("train-distill", help="Huấn luyện chưng cất tri thức từ DiffRhythm gốc sang MicroDiT.")
     distill.add_argument("--dataset", required=True, nargs="+", help="Một hoặc nhiều thư mục dataset đã preprocess (kết hợp lại thành một tập huấn luyện).")
@@ -119,6 +120,28 @@ def build_parser() -> argparse.ArgumentParser:
     distill.add_argument("--roberta-model", default="vinai/xphonebert-base", help="Tên model RoBERTa dùng làm Text Encoder.")
     distill.add_argument("--max-records", type=int, default=None, help="Limit training to the first N usable records (for cheap smoke tests).")
     distill.add_argument("--lambda-vocal", type=float, default=1.0, help="Weight of auxiliary vocal-only prediction loss (Mixed Pro style, 0.0 disables it).")
+
+    latent_encoder = sub.add_parser("train-latent-encoder", help="Pretrain một encoder mới (mel/audio -> latent 64 chiều, 5Hz) khớp với decoder BigVGAN thật của DiffRhythm2 (đóng băng, tải từ HuggingFace).")
+    latent_encoder.add_argument("--dataset", required=True)
+    latent_encoder.add_argument("--checkpoint", required=True)
+    latent_encoder.add_argument("--epochs", type=int, default=1)
+    latent_encoder.add_argument("--batch-size", type=int, default=4)
+    latent_encoder.add_argument("--learning-rate", type=float, default=1e-4)
+    latent_encoder.add_argument("--device", default=None)
+    latent_encoder.add_argument("--max-records", type=int, default=None, help="Limit training to the first N usable records (for cheap smoke tests).")
+    latent_encoder.add_argument("--log-every-steps", type=int, default=10)
+    latent_encoder.add_argument("--repo-id", default="ASLP-lab/DiffRhythm2")
+    latent_encoder.add_argument("--crop-seconds", type=float, default=1.0, help="Độ dài đoạn audio train mỗi step (ngắn -- backprop qua cả BigVGAN decoder tốn VRAM nhiều nếu crop dài).")
+    latent_encoder.add_argument("--warmup-steps", type=int, default=200, help="Linear LR warmup steps before cosine decay -- stabilizes early training against the frozen decoder.")
+    latent_encoder.add_argument("--grad-clip-norm", type=float, default=1.0)
+
+    precompute_latent = sub.add_parser("precompute-latent-dataset", help="Chuyển dataset mel đã có sang không gian latent thật của DiffRhythm2 (64 chiều, 5Hz), dùng LatentAudioEncoder đã pretrain.")
+    precompute_latent.add_argument("--source-dataset", required=True)
+    precompute_latent.add_argument("--encoder-checkpoint", required=True)
+    precompute_latent.add_argument("--out", required=True)
+    precompute_latent.add_argument("--device", default=None)
+    precompute_latent.add_argument("--max-records", type=int, default=None)
+    precompute_latent.add_argument("--crop-seconds", type=float, default=4.096)
 
     normalize = sub.add_parser("normalize-lyrics", help="Chuẩn hóa lyric tiếng Việt.")
     normalize.add_argument("--input", required=True)
@@ -215,10 +238,16 @@ def main(argv: list[str] | None = None) -> int:
         upload_report = upload_dataset_to_kaggle(args.out, username=args.username, dataset_ref=args.dataset_ref, timeout_seconds=args.timeout_seconds)
         report = {"status": upload_report["status"], "dataset_report": dataset_report, "upload": upload_report}
     elif args.command == "train-self":
-        report = train_model(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, roberta_model=args.roberta_model, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, frames_per_chunk=args.frames_per_chunk, resume=args.resume, save_every_epoch=args.save_every_epoch, checkpoint_every_steps=args.checkpoint_every_steps, log_every_steps=args.log_every_steps, progress_path=args.progress_file, lambda_vocal=args.lambda_vocal)
+        report = train_model(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, roberta_model=args.roberta_model, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, frames_per_chunk=args.frames_per_chunk, resume=args.resume, save_every_epoch=args.save_every_epoch, checkpoint_every_steps=args.checkpoint_every_steps, log_every_steps=args.log_every_steps, progress_path=args.progress_file, lambda_vocal=args.lambda_vocal, architecture=args.architecture)
     elif args.command == "train-distill":
         from src.training.distill_training import run_distillation_training
         report = run_distillation_training(args.dataset, args.student_checkpoint, args.teacher_checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, alpha_feature=args.alpha_feature, beta_repa=args.beta_repa, repo_id=args.repo_id, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, roberta_model=args.roberta_model, max_records=args.max_records, lambda_vocal=args.lambda_vocal)
+    elif args.command == "train-latent-encoder":
+        from src.training.latent_encoder_training import train_latent_encoder
+        report = train_latent_encoder(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, log_every_steps=args.log_every_steps, repo_id=args.repo_id, crop_seconds=args.crop_seconds, warmup_steps=args.warmup_steps, grad_clip_norm=args.grad_clip_norm)
+    elif args.command == "precompute-latent-dataset":
+        from src.data.precompute_latent_dataset import precompute_latent_dataset
+        report = precompute_latent_dataset(args.source_dataset, args.encoder_checkpoint, args.out, device=args.device, max_records=args.max_records, crop_seconds=args.crop_seconds)
     elif args.command == "normalize-lyrics":
         output = Path(args.out)
         output.parent.mkdir(parents=True, exist_ok=True)

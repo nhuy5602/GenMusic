@@ -528,7 +528,7 @@ def load_reference_conditioning(dataset_dir: str | Path, record_id: str | None =
     """Pulls one record's real backing_mel + style_anchor out of an already-preprocessed
     dataset, for conditioned generation that matches what the model actually saw during
     training -- instead of generate_audio()'s zero-conditioned default (see
-    docs/PROJECT_REPORT.md). Picks the first record if record_id is omitted.
+    docs/project_history.md). Picks the first record if record_id is omitted.
 
     Returns raw (unbatched) tensors: backing_mel is (n_mels, frames) or None if the
     dataset has no separated backing stem; style_anchor is (512,) or None if the
@@ -709,6 +709,7 @@ def train_model(
     minimum_epochs: int = 8,
     early_stopping_min_delta: float = 0.001,
     minimum_text_sensitivity: float | None = None,
+    architecture: str = "microdit",
 ) -> dict[str, Any]:
     torch, _, _, DataLoaderClass = _torch()
 
@@ -736,7 +737,7 @@ def train_model(
         )
     selected_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     arch = {"dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult}
-    arch_to_save = {**arch, "roberta_model": roberta_model}
+    arch_to_save = {**arch, "roberta_model": roberta_model, "architecture": architecture}
     resumed_payload: dict[str, Any] = {}
     start_epoch = 0
     resume_batch_in_epoch = 0
@@ -795,16 +796,28 @@ def train_model(
     else:
         mel_mean, mel_std = estimate_vocal_mel_stats(root, training_records)
         config = replace(config, mel_mean=mel_mean, mel_std=mel_std)
-        from ..models.dit_transformer import MicroDiT
+        if architecture == "native_dit":
+            from ..models.diffrhythm2_native import NativeDiTStudent
 
-        model = MicroDiT(
-            config,
-            roberta_model=roberta_model,
-            dim=dim,
-            depth=depth,
-            heads=heads,
-            ff_mult=ff_mult,
-        ).to(selected_device)
+            model = NativeDiTStudent(
+                config,
+                roberta_model=roberta_model,
+                dim=dim,
+                depth=depth,
+                heads=heads,
+                ff_mult=ff_mult,
+            ).to(selected_device)
+        else:
+            from ..models.dit_transformer import MicroDiT
+
+            model = MicroDiT(
+                config,
+                roberta_model=roberta_model,
+                dim=dim,
+                depth=depth,
+                heads=heads,
+                ff_mult=ff_mult,
+            ).to(selected_device)
 
     # Train only parameters that require gradients (the frozen RoBERTa weights
     # are re-downloaded on load and intentionally omitted from checkpoints).
@@ -1163,6 +1176,6 @@ def train_model(
         training_state=completed_training_state,
     )
     _write_json_atomic(progress_destination, completed_training_state)
-    report = {"status": "complete", "backend": "genmusic-vn-self-diffusion", "dataset": str(root.resolve()), "dataset_dirs": [str(d.resolve()) for d in dataset_dirs], "checkpoint": str(checkpoint.resolve()), "best_checkpoint": str(best_checkpoint.resolve()) if best_checkpoint.is_file() else None, "device": selected_device, "requested_epochs": epoch_count, "completed_epochs": completed_epochs, "stopped_early": stopped_early, "best_epoch": best_epoch, "best_validation_loss": round(best_validation_loss, 6) if math.isfinite(best_validation_loss) else None, "final_validation_loss": round(final_validation_loss, 6) if final_validation_loss is not None else None, "final_text_conditioning_sensitivity": round(final_text_sensitivity, 6) if final_text_sensitivity is not None else None, "validation_record_count": len(validation_records), "resumed_from_epoch": resumed_from_epoch, "resumed_from_batch": resumed_from_batch, "optimizer_state_restored": optimizer_state_restored, "batch_size": batch_size_value, "record_count": len(dataset.records), "excluded_record_count": dataset.excluded_record_count, "additional_record_count": len(additional_records or []), "step_count": len(losses), "global_step": global_step, "checkpoint_every_steps": max(0, int(checkpoint_every_steps)), "final_loss": round(final_loss, 6), "loss_curve": loss_curve, "elapsed_seconds": round(time.perf_counter() - started, 3), "dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult, "frames_per_chunk": config.frames_per_chunk, "chunk_seconds": config.chunk_seconds, "mel_mean": round(config.mel_mean, 6), "mel_std": round(config.mel_std, 6), "warmup_steps": warmup_steps, "ema_decay": trainer.ema_decay, "style_dropout_prob": trainer.style_dropout_prob, "text_dropout_prob": trainer.text_dropout_prob, "text_contrastive_weight": trainer.text_contrastive_weight, "text_contrastive_margin": trainer.text_contrastive_margin, "text_contrastive_prob": trainer.text_contrastive_prob, "text_sensitivity_weight": trainer.text_sensitivity_weight, "text_sensitivity_target": trainer.text_sensitivity_target, "minimum_text_sensitivity": checkpoint_sensitivity_floor, "text_sensitivity_mode": "matched_vs_mismatched_lyrics", "mixed_precision": trainer.use_amp, "lambda_vocal": lambda_vocal}
+    report = {"status": "complete", "backend": "genmusic-vn-self-diffusion", "dataset": str(root.resolve()), "dataset_dirs": [str(d.resolve()) for d in dataset_dirs], "checkpoint": str(checkpoint.resolve()), "best_checkpoint": str(best_checkpoint.resolve()) if best_checkpoint.is_file() else None, "device": selected_device, "requested_epochs": epoch_count, "completed_epochs": completed_epochs, "stopped_early": stopped_early, "best_epoch": best_epoch, "best_validation_loss": round(best_validation_loss, 6) if math.isfinite(best_validation_loss) else None, "final_validation_loss": round(final_validation_loss, 6) if final_validation_loss is not None else None, "final_text_conditioning_sensitivity": round(final_text_sensitivity, 6) if final_text_sensitivity is not None else None, "validation_record_count": len(validation_records), "resumed_from_epoch": resumed_from_epoch, "resumed_from_batch": resumed_from_batch, "optimizer_state_restored": optimizer_state_restored, "batch_size": batch_size_value, "record_count": len(dataset.records), "excluded_record_count": dataset.excluded_record_count, "additional_record_count": len(additional_records or []), "step_count": len(losses), "global_step": global_step, "checkpoint_every_steps": max(0, int(checkpoint_every_steps)), "final_loss": round(final_loss, 6), "loss_curve": loss_curve, "elapsed_seconds": round(time.perf_counter() - started, 3), "dim": dim, "depth": depth, "heads": heads, "ff_mult": ff_mult, "frames_per_chunk": config.frames_per_chunk, "chunk_seconds": config.chunk_seconds, "mel_mean": round(config.mel_mean, 6), "mel_std": round(config.mel_std, 6), "warmup_steps": warmup_steps, "ema_decay": trainer.ema_decay, "style_dropout_prob": trainer.style_dropout_prob, "text_dropout_prob": trainer.text_dropout_prob, "text_contrastive_weight": trainer.text_contrastive_weight, "text_contrastive_margin": trainer.text_contrastive_margin, "text_contrastive_prob": trainer.text_contrastive_prob, "text_sensitivity_weight": trainer.text_sensitivity_weight, "text_sensitivity_target": trainer.text_sensitivity_target, "minimum_text_sensitivity": checkpoint_sensitivity_floor, "text_sensitivity_mode": "matched_vs_mismatched_lyrics", "mixed_precision": trainer.use_amp, "lambda_vocal": lambda_vocal, "architecture": architecture}
     (checkpoint.parent / "training_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report

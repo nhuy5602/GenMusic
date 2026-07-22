@@ -37,6 +37,12 @@ class MusicDiffusionConfig:
     mel_mean: float = 0.0
     mel_std: float = 1.0
     mel_clip: float = 6.0
+    # When True, `vocal_mel_path` already holds the full-mix target precomputed
+    # by a LatentAudioEncoder (src/models/latent_codec.py) against DiffRhythm2's
+    # real frozen decoder -- reconstruct_full_mix's linear-magnitude-mel-sum
+    # formula does not apply to arbitrary learned latent channels, so cfm_loss
+    # uses vocal_mel directly as x1 instead of recombining it with backing_mel.
+    latent_mode: bool = False
 
 
 def _config_from_dict(data: dict) -> "MusicDiffusionConfig":
@@ -83,7 +89,7 @@ def reconstruct_full_mix(vocal_mel_normalized, backing_mel_normalized, config: "
     This is the student's actual generation target: the project's scope is a
     complete song (vocals over accompaniment), matching what DiffRhythm2 (the
     teacher) itself generates -- not an isolated a cappella vocal track (see
-    docs/PROJECT_REPORT.md for the discussion that motivated this). Both
+    docs/project_history.md for the discussion that motivated this). Both
     train-self and train-distill use this as their CFM target `x1`; an
     auxiliary vocal-only prediction head (MicroDiT.vocal_proj_out, "Mixed Pro"
     style, see SongGen arXiv:2502.13128) supervises the model to still track
@@ -167,12 +173,28 @@ def render_mel_to_wav(mel, destination: str | Path, config: MusicDiffusionConfig
     multi-iteration Griffin-Lim mel inversion (``vocoder_type="griffinlim"``),
     never to the old fabricated-phase iSTFT hack (removed: it produced audio with
     ~0.15 correlation to the true spectrogram, i.e. near-noise -- see
-    docs/experiments/vocoder_fix.md).
+    docs/project_history.md §4.1).
     """
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     torch, _ = _torch()
     values = mel.detach().float().cpu() if hasattr(mel, "detach") else torch.as_tensor(np.asarray(mel, dtype=np.float32))
+
+    if config.latent_mode:
+        # `values` here is a real DiffRhythm2-latent (channels, T) -- decode
+        # via the real, frozen BigVGAN decoder instead of Vocos (Vocos expects
+        # log-mel, not learned latent channels; see LatentAudioEncoder's
+        # module docstring for the whole latent-space path).
+        from .latent_codec import load_frozen_decoder
+
+        decoder_device = "cuda" if torch.cuda.is_available() else "cpu"
+        handle = load_frozen_decoder(decoder_device)
+        with torch.no_grad():
+            latent = values.unsqueeze(0).to(decoder_device)
+            chunk_size = min(20, max(1, latent.shape[2]))
+            audio_tensor = handle.decoder.decode_audio(latent, overlap=min(2, chunk_size - 1), chunk_size=chunk_size)
+        audio = audio_tensor.squeeze(0).squeeze(0).cpu().numpy()
+        return _write_wav(audio, destination, handle.sampling_rate)
 
     vocos_native = (
         config.sample_rate == 24_000 and config.n_fft == 1024 and config.hop_length == 256 and config.n_mels == 100
@@ -277,7 +299,6 @@ def load_checkpoint(
     use_ema: bool = True,
 ) -> tuple[Any, MusicDiffusionConfig, dict[str, Any]]:
     torch, _ = _torch()
-    from .dit_transformer import MicroDiT
 
     payload = torch.load(path, map_location=device, weights_only=False)
     config = _config_from_dict(payload["config"])
@@ -295,12 +316,24 @@ def load_checkpoint(
     # "roberta_model" was tracked in arch.
     arch = payload.get("arch") or {}
     resolved_roberta_model = roberta_model or arch.get("roberta_model", "xlm-roberta-base")
-    model = MicroDiT(
-        config, roberta_model=resolved_roberta_model,
-        dim=arch.get("dim", 256), depth=arch.get("depth", 4),
-        heads=arch.get("heads", 4), ff_mult=arch.get("ff_mult", 4),
-        style_dim=arch.get("style_dim", 512),
-    ).to(device)
+    if arch.get("architecture") == "native_dit":
+        from .diffrhythm2_native import NativeDiTStudent
+
+        model = NativeDiTStudent(
+            config, roberta_model=resolved_roberta_model,
+            dim=arch.get("dim", 256), depth=arch.get("depth", 4),
+            heads=arch.get("heads", 4), ff_mult=arch.get("ff_mult", 4),
+            style_dim=arch.get("style_dim", 512),
+        ).to(device)
+    else:
+        from .dit_transformer import MicroDiT
+
+        model = MicroDiT(
+            config, roberta_model=resolved_roberta_model,
+            dim=arch.get("dim", 256), depth=arch.get("depth", 4),
+            heads=arch.get("heads", 4), ff_mult=arch.get("ff_mult", 4),
+            style_dim=arch.get("style_dim", 512),
+        ).to(device)
 
     # strict=False: checkpoints deliberately omit the frozen RoBERTa encoder
     # weights (see save_checkpoint) -- those are already loaded fresh from

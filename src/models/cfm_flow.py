@@ -96,7 +96,11 @@ def cfm_loss(
     device = vocal_mel.device
     batch_size = vocal_mel.shape[0]
 
-    x1 = reconstruct_full_mix(vocal_mel, backing_mel, config)
+    # In latent_mode, vocal_mel already IS the precomputed full-mix target (see
+    # MusicDiffusionConfig.latent_mode's docstring) -- reconstruct_full_mix's
+    # linear-magnitude-mel-sum formula only makes sense for actual log-mel
+    # channels, not arbitrary learned latent channels.
+    x1 = vocal_mel if config.latent_mode else reconstruct_full_mix(vocal_mel, backing_mel, config)
 
     # 1. Sample t uniformly in [0, 1]
     t = torch.rand(batch_size, device=device)
