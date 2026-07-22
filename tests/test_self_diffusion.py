@@ -248,7 +248,7 @@ class SelfDiffusionTests(unittest.TestCase):
         # Without the DiffRhythm2 repo vendored on PYTHONPATH (not the case in this
         # test environment), _load_teacher must return None + a status message --
         # never a silent fake stand-in (the previous "DummyTeacher" behavior this
-        # replaced). See docs/experiments/distillation_fix.md.
+        # replaced). See docs/project_history.md.
         teacher, model_config, status = _load_teacher("ASLP-lab/DiffRhythm2", None, "cpu")
         self.assertIsNone(teacher)
         self.assertIsNone(model_config)
@@ -259,7 +259,7 @@ class SelfDiffusionTests(unittest.TestCase):
         # Regression test for a real bug: to_teacher_mel/from_teacher_mel used to be
         # computed entirely inside train_epoch's torch.no_grad() block, so neither
         # ever received a gradient despite being registered as trainable adapter
-        # params (see docs/experiments/distillation_fix.md). to_teacher_mel is now a
+        # params (see docs/project_history.md). to_teacher_mel is now a
         # fixed deterministic resize (its output feeds the frozen teacher's own
         # no_grad-scoped forward pass, which must stay cheap); from_teacher_mel stays
         # a real trainable adapter and must receive a real gradient.
@@ -300,7 +300,7 @@ class SelfDiffusionTests(unittest.TestCase):
 
     def test_repa_loss_flows_gradient(self) -> None:
         # Regression/smoke test for the REPA-style representation-alignment
-        # auxiliary loss (see src/training/repa.py, docs/PROJECT_REPORT.md): with
+        # auxiliary loss (see src/training/repa.py, docs/project_history.md): with
         # beta_repa > 0, train_epoch must (a) request the student's projected
         # intermediate hidden state via repa_layer_idx, (b) populate loss_repa
         # (not silently skip it), and (c) produce a real, nonzero gradient on

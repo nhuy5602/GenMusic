@@ -33,7 +33,7 @@ tests, but not for evaluating singing quality.
 
 A MuQ-MuLan (`OpenMuQ/MuQ-MuLan-large`) style embedding is also computed once
 per song, from the first 10s of the original mix — this is the real "Audio
-Style Anchor" the model conditions on (see `docs/PROJECT_REPORT.md` §2.1). If
+Style Anchor" the model conditions on (see `docs/architecture.md`). If
 the optional `muq` package isn't installed, this degrades to a zero vector
 rather than failing the whole record.
 
@@ -70,7 +70,21 @@ training), `style`, `bpm`, `frames`, `has_vocal`, `vocal_source`,
 (`charactr/vocos-mel-24khz`: 100 mels, 24kHz, n_fft=1024, hop=256, magnitude mel
 with `power=1`, natural log with a `1e-7` floor, **no** upper clip) — see
 `compute_mel_spectrogram()` in `src/models/text_to_music_diffusion.py` and
-`docs/experiments/vocoder_fix.md` for why this specific format matters: an
+`docs/project_history.md` §4.1 for why this specific format matters: an
 earlier 64-mel/16kHz/log-power convention here was the root cause of severely
 distorted generated audio, fixed this way and verified to restore >0.99
 log-mel correlation on real audio.
+
+## Optional: converting to latent-space (64-dim/5Hz)
+
+The dataset above is mel-space, consumed directly by
+`train-self --architecture microdit` (the default). To instead train the
+student inside DiffRhythm2's own compressed Music VAE latent space
+(`--architecture native_dit`), run `cli.py precompute-latent-dataset` on top of
+this output — it re-decodes each record's mel through Vocos, re-encodes with a
+trained `LatentAudioEncoder`, and writes a new dataset directory with the same
+`records.jsonl`/`config.json` shape but `mels/*.pt` holding 64-dim/5Hz latents
+instead of mel tensors, plus `config.json`'s `latent_mode: true`. See
+`docs/usage.md` and `docs/project_history.md` §4.24 for the full
+procedure (training the encoder first, its known collapse failure mode, and
+the fix).

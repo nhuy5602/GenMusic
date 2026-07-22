@@ -1,7 +1,7 @@
 """REPA-style (representation-alignment) auxiliary loss for the student.
 
 Mirrors DiffRhythm2 teacher's own "Stochastic Block REPA" (see
-docs/PROJECT_REPORT.md, arXiv:2510.22950): align an intermediate transformer
+docs/project_history.md, arXiv:2510.22950): align an intermediate transformer
 hidden state with a frozen, externally pretrained self-supervised audio
 encoder's features, instead of supervising only the final CFM output. The
 motivation is the same as the teacher's: predicting/matching in representation
@@ -9,7 +9,7 @@ space rewards learning abstract structure (e.g. how pitch/melody evolves)
 without spending student capacity on exact spectral reconstruction detail --
 directly targeting this project's recurring failure mode of the student
 collapsing to a near-monotone or condition-invariant output (see
-docs/PROJECT_REPORT.md's attention-distillation and root-cause sections).
+docs/project_history.md's attention-distillation and root-cause sections).
 
 Target features come from MuQ (`OpenMuQ/MuQ-large-msd-iter`), a frozen,
 pretrained self-supervised MUSIC encoder (Wav2Vec2-Conformer, 1024-dim,

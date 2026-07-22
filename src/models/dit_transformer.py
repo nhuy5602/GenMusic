@@ -200,7 +200,7 @@ class AudioStyleEncoder(nn.Module):
     structure and had nothing to do with any learned notion of musical style.
     Using the real MuLan embedding both gives the student a far richer style
     signal and lets the *same* embedding be handed unmodified to the teacher
-    during distillation (see docs/experiments/distillation_fix.md).
+    during distillation (see docs/project_history.md).
     """
     def __init__(self, style_dim: int, dim: int):
         super().__init__()
@@ -260,7 +260,7 @@ class MicroDiT(nn.Module):
         self.input_embed = InputEmbedding(config.n_mels, dim)
         # Projects an intermediate transformer hidden state up to a frozen
         # self-supervised audio encoder's feature dimension (REPA-style
-        # representation-alignment auxiliary loss, see docs/PROJECT_REPORT.md --
+        # representation-alignment auxiliary loss, see docs/project_history.md --
         # mirrors DiffRhythm2's own "Stochastic Block REPA"). Unconditionally
         # constructed (matches this file's existing convention for
         # AudioStyleEncoder/PretrainedPhonemeEncoder); negligible cost, and only
@@ -349,7 +349,7 @@ class MicroDiT(nn.Module):
                 # Hidden state right after this block, before the final
                 # AdaLN/proj_out -- this is the "representation" a REPA-style
                 # loss aligns with a frozen SSL encoder's features (see
-                # docs/PROJECT_REPORT.md), analogous to DiffRhythm2's own
+                # docs/project_history.md), analogous to DiffRhythm2's own
                 # "Stochastic Block REPA" against its DiT's hidden states.
                 repa_hidden_raw = x
 

@@ -2,7 +2,7 @@
 inside a single Kaggle kernel (preprocessing happens once, then each config trains
 independently) -- meant to answer: does real distillation actually help this small
 student converge faster / reach lower ground-truth CFM loss than training it from
-scratch, at equal epoch budget? See docs/experiments/knowledge_distillation_experiment.md
+scratch, at equal epoch budget? See docs/project_history.md
 for the write-up this feeds.
 
 Each config's per-epoch loss_gt (ground-truth CFM loss -- directly comparable whether

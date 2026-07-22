@@ -36,7 +36,7 @@ except ImportError:
 # Mel parameters MUST match Vocos's native "charactr/vocos-mel-24khz" feature
 # extractor exactly (via compute_mel_spectrogram) so that training targets are
 # directly decodable by Vocos at inference with no resampling. See
-# docs/experiments/vocoder_fix.md for why the previous 16kHz/64-mel/log-power
+# docs/project_history.md §4.1 for why the previous 16kHz/64-mel/log-power
 # convention produced badly distorted audio. Unlike an earlier iteration of
 # this file, this is no longer an opt-in mode -- there is no non-Vocos-native
 # mel format anymore, since it was the direct cause of that distortion.
@@ -71,7 +71,7 @@ def _load_mulan(device: str = "cpu"):
 def compute_style_embedding(waveform_24k: np.ndarray, device: str = "cpu") -> torch.Tensor:
     """Real MuQ-MuLan style/genre embedding of a song, computed once at
     preprocess time and reused as the "Audio Style Anchor" for both the student
-    and (during distillation) the teacher -- see docs/experiments/distillation_fix.md.
+    and (during distillation) the teacher -- see docs/project_history.md.
     """
     mulan = _load_mulan(device)
     if mulan is None:

@@ -24,3 +24,5 @@ kaggle.json
 *.egg-info/
 /ckpt/
 /.claude/
+# G2P dictionary auto-downloaded to cwd by text2phonemesequence on first local use
+/vie-c.tsv

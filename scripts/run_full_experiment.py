@@ -8,7 +8,7 @@ downloads everything:
   2. Vocoder round-trip sanity check: decode a REAL song's own mel back to
      audio and measure mel correlation against the original -- this is the
      regression test for the "distorted audio" bug (see
-     docs/experiments/vocoder_fix.md). Should score >0.9 now vs ~0.15 before.
+     docs/project_history.md §4.1). Should score >0.9 now vs ~0.15 before.
   3. Train a baseline MicroDiT (CFM ground-truth loss only, no teacher) --
      establishes whether the fixed pipeline produces clean-sounding audio at
      all, independent of distillation correctness.

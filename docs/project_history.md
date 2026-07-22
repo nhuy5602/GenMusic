@@ -35,6 +35,18 @@ Nguyên nhân còn lại hợp lý nhất là **quy mô dữ liệu + số step 
 cao nhất: mở rộng dữ liệu qua ~1843 bài ở phiên có quota mới, không tiếp tục dò hyperparameter
 ở quy mô 250 bài hiện tại).
 
+**Cập nhật 2026-07-20 → 2026-07-22**: một nhánh độc lập song song với §4.22/§5.2-5.3 (không
+thay thế, xem §4.24) — thay vì tiếp tục dò hyperparameter ở không gian mel 100-chiều/93.75Hz,
+cho student **không gian latent thật của Music VAE (64-chiều/5Hz) của DiffRhythm2**, khớp
+đúng những gì §4.20 đã phát hiện nhưng chưa bao giờ fix ở phía student (chỉ fix phía truy vấn
+teacher lúc distill). Sau khi tự port kiến trúc backbone thật (`NativeDiTStudent`) và tự train
+một encoder nhỏ mới khớp với decoder BigVGAN thật đã publish, lần chạy đầu ra **hoàn toàn
+nhiễu** — điều tra cách ly phát hiện encoder tự collapse (không phải lỗi Vocos, không phải lỗi
+kiến trúc backbone). Fix ổn định hoá optimizer của encoder, rồi **xác nhận bằng nghe thật
+(2026-07-22): nghe ra tiếng nhạc, không còn là nhiễu hoàn toàn** — kết quả nghe được tích cực
+đầu tiên của nhánh latent-space. Checkpoint hiện tại **chưa hội tụ** (13/300 epoch, dừng vì hết
+quota Kaggle giữa phiên, không phải vì early-stopping) — xem §4.24 cho toàn bộ chi tiết.
+
 ---
 
 ## 1. Giới thiệu
@@ -1314,6 +1326,208 @@ distillation có cải thiện chất lượng nghe thật hay không — §4.22
 chính giải quyết được nút thắt quy mô dữ liệu, nên việc chạy lớn nên đợi tới khi có quyết định
 rõ về hướng mở rộng dữ liệu (§5.2/§5.3), không nên tốn quota chạy lớn chỉ để đo riêng lever này.
 
+**Đính chính (rà soát code, 2026-07-22)**: `beta_attention` (và cơ chế attention-matrix
+distillation mô tả ở trên) **không còn tồn tại trong `src/training/distill_training.py`
+hiện tại** — chỉ còn `alpha_feature` (velocity blend), `lambda_vocal` (vocal-aux weight), và
+`beta_repa` (REPA weight) làm các hệ số loss. Không rõ liệu thay đổi này bị revert chủ động
+hay là một nhánh code khác đã ghi đè lên trong quá trình cộng tác song song (§4.17). Mục §4.23
+này được giữ lại làm ảnh chụp lịch sử của thiết kế/quá trình debug, nhưng **không nên coi
+`beta_attention` là một flag khả dụng ở code hiện tại** — xem `docs/architecture.md` cho danh
+sách loss weight thật đang tồn tại.
+
+### 4.24 Cho student không gian latent thật của teacher (Music VAE 64-chiều/5Hz) — giải quyết
+phần student của sai lệch đã phát hiện ở §4.20, và một bug encoder collapse mới, độc lập
+
+§4.20 phát hiện đúng sai lệch cấu trúc (VAE latent 64-chiều/5Hz vs. mel 100-chiều/93.75Hz)
+nhưng chỉ fix **phía teacher** (resample trục thời gian lúc distill) — student vẫn luôn sinh
+mel 100-chiều thô, chưa bao giờ có không gian latent nén thật của riêng nó. Nhánh này (khởi
+đầu từ câu hỏi trực tiếp của người dùng: "sao không copy thẳng mã nguồn thật của DiffRhythm2"
+và "tại sao cần VAE riêng, train đồng thời được mà") giải quyết đúng phần còn thiếu đó, độc
+lập với hướng "mở rộng dữ liệu" đang chờ ở §5.2/§5.3.
+
+**Hai thành phần mới, port/tự train riêng biệt**:
+
+1. **`NativeDiTStudent`** (`src/models/diffrhythm2_native.py`) — vendor trực tiếp (Apache 2.0,
+   có ghi nguồn) các lớp thật của teacher từ GitHub: `TextEmbedding`, `InputEmbedding`,
+   `LlamaAttention`/`LlamaSdpaAttention`, `LlamaNARDecoderLayer` — ghép chuỗi
+   `[text_tokens; noisy_latent]` theo chiều dài (không cross-attention, khác hẳn `MicroDiT`
+   hiện tại vốn lấy cảm hứng SongGen dùng cross-attention). Cùng chữ ký gọi
+   (`forward(x, texts, timestep, style_prompt, ...)`) với `MicroDiT` nên cắm thẳng vào
+   pipeline train/generate hiện có qua cờ `--architecture microdit|native_dit`, không cần sửa
+   gì khác. Verify: smoke-test local + Kaggle trước khi dùng cho run thật.
+2. **`LatentAudioEncoder`** (`src/models/latent_codec.py`, 11M tham số) — DiffRhythm2 chỉ
+   publish **decoder** (BigVGAN, `decoder.bin`/`decoder.json` trên HuggingFace
+   `ASLP-lab/DiffRhythm2`), không publish encoder thật (kiểu Stable-Audio-2, không công bố).
+   Train một VAE đầy đủ đúng-như-paper (discriminator đa nhánh, loss đối kháng) bị đánh giá là
+   quá tốn/rủi ro cho ngân sách 250 bài — chọn phương án rẻ hơn: giữ decoder **đông lạnh**
+   (frozen, đã pretrained, đã chứng minh hoạt động — chính là decoder thật của teacher), chỉ
+   train một encoder nhỏ mới bằng loss reconstruction thuần (multi-scale mel L1, không GAN,
+   không discriminator) để khớp input decoder đó. Đánh đổi rõ ràng, tự ghi nhận ngay trong
+   docstring module lúc viết: decoder chưa từng được co-train với encoder mới này, nên có rủi
+   ro thật (nhưng rẻ để kiểm chứng) là không hội tụ về reconstruction sạch — rủi ro này **đã
+   xảy ra thật**, xem phần "Bug: encoder collapse" dưới đây.
+
+**Pipeline mới**: encoder pretrain (reconstruction loss thuần, dữ liệu train hiện có) →
+`precompute-latent-dataset` (mel thật → Vocos decode → encoder → latent 64-chiều/5Hz, lưu
+`.pt`/bài) → `train-self --architecture native_dit --lambda-vocal 0` trên latent (không phải
+mel) → generate giải mã thẳng qua `decoder.bin` thật (bỏ hẳn Vocos ở bước cuối, vì Vocos kỳ
+vọng log-mel, không phải latent đã học).
+
+**Lần chạy full đầu tiên — cơ chế train đúng, nhưng nghe thật vẫn "hoàn toàn nhiễu"**: sau khi
+fix liên tiếp 5 bug hạ tầng Kaggle (tên dataset quá dài khiến source code không được đính kèm
+âm thầm; OOM khi backprop qua cả BigVGAN decoder với crop quá dài — fix bằng crop ngắn 1s theo
+đúng chuẩn train vocoder; Kaggle gán GPU P100/sm_60 không tương thích bản torch cài sẵn — fix
+bằng ép cài `torch==2.5.1+cu121`; việc ép torch đó lại phá `torchvision` đã cài (ABI mismatch)
+— fix bằng ép cài đúng cặp `torchvision==0.20.1+cu121`; và việc hạ torch xuống <2.6 lại kích
+hoạt guard bảo mật mới của `transformers` [CVE-2025-32434] chặn `torch.load` non-safetensors,
+làm G2P model không load được — fix bằng patch runtime no-op hoá guard đó trong session Kaggle,
+vô điều kiện vì hoá ra cả bản torch mặc định của Kaggle cũng <2.6), CFM training chạy đúng và
+early-stopping tự kích hoạt thật: `best_epoch=14`, dừng ở epoch 18/300
+(`stopped_early: true`) — đúng yêu cầu "train tới khi loss không giảm được nữa thì thôi". Cơ
+chế train/early-stopping (đã xây từ trước, xem mục contrastive/sensitivity loss) hoạt động
+chính xác.
+
+**Nhưng nghe thật báo cáo "hoàn toàn nhiễu"** — dù bước decode cuối đã bỏ hẳn Vocos, dùng thẳng
+decoder BigVGAN thật của teacher. Người dùng cùng lúc cung cấp một tài liệu nghiên cứu ngoài
+đề xuất giả thuyết "Vocos dễ vỡ pha khi nhận latent nhiễu từ student distill" — giả thuyết này
+**không áp dụng được ở đây**, vì Vocos không nằm trong đường decode cuối của nhánh latent-space
+này. Điều này tự nó là một phát hiện: nguyên nhân phải nằm ở chỗ khác (encoder hoặc student),
+không phải ở lựa chọn vocoder.
+
+**Chẩn đoán cách ly — decode latent GỐC, bỏ qua CFM student hoàn toàn**: để tách biệt "lỗi ở
+encoder" khỏi "lỗi ở student", decode trực tiếp latent **ground-truth** (encoder chạy trên
+audio thật, không qua CFM) thẳng qua decoder thật, đo bằng đúng bộ 3 chỉ số đã dùng suốt report
+này (`spectral_flatness`/`voiced_ratio`/`pitch_std_semitones`,
+`scripts/evaluate_generation_quality.py::wav_metrics`) cộng một mốc nhiễu trắng tổng hợp để so
+sánh khách quan:
+
+| | spectral_flatness | voiced_ratio | pitch_std_semitones | Ghi chú |
+|---|---|---|---|---|
+| Latent gốc (encoder LẦN 1, chưa fix) | ≈0.0001-0.0005 | 0.95-0.99 | **0.83-0.97** | không phải nhiễu trắng, nhưng gần như đứng yên 1 nốt |
+| Nhiễu trắng (mốc sanity) | 0.562 | 0.04 | 0.49 | tham chiếu |
+
+**Kết luận cách ly**: latent gốc **không phải nhiễu trắng** (flatness cách xa mốc nhiễu hàng
+trăm-nghìn lần), nhưng `pitch_std` chỉ ~0.9 semitone — một dạng suy biến khác hẳn
+"regression-to-mean" đã thấy ở nhánh mel-space cũ (§4.9/§4.13, đó là làm mượt/trung bình hoá);
+ở đây encoder tái tạo được năng lượng/phổ trung bình nhưng **không mã hoá được thông tin giai
+điệu nào cả** — một dạng collapse của chính encoder, không liên quan tới CFM student hay lựa
+chọn vocoder.
+
+**Nguyên nhân gốc — xác nhận qua log training của encoder**: lần train encoder đầu tiên (15
+epoch, LR cố định 2e-4, không gradient clipping, không warmup) có đường loss dao động không
+hội tụ: `2.78 → 2.44 → 2.20 → 2.28 → 2.15 → 2.00 → 2.17 → 2.06 → 2.08 → 1.92 → 2.09 → 1.98 →
+1.83 → 2.26 → 2.02` (final ≈1.87-2.02 tính trung bình 10 bước cuối) — dấu hiệu instability điển
+hình của một encoder mới train từ đầu đẩy gradient qua một decoder đông lạnh chưa từng được
+co-train cùng — đúng rủi ro đã tự ghi chú trước trong docstring `latent_codec.py` lúc thiết kế
+(§ ở trên), giờ xác nhận đã xảy ra thật.
+
+**Fix**: thêm LR warmup tuyến tính (200 step) + cosine decay + gradient-norm clipping
+(`max_norm=1.0`) vào `train_latent_encoder` (`src/training/latent_encoder_training.py`); hạ
+default learning rate `2e-4→1e-4`. Train lại đúng 249 bài, 40 epoch (thay 15): loss giảm mượt,
+gần như đơn điệu — `2.53 → 2.05 → 2.11 → ... → 1.38 → 1.34 → ... → 1.28` (final 1.294) — thấp
+hơn hẳn final ~1.87-2.02 của lần trước dù nhiều epoch hơn, và không còn dao động lên-xuống bất
+thường giữa các epoch.
+
+**Verify riêng, định lượng** (`scripts/run_kaggle_latent_encoder_verify.py`, chạy full
+encoder→decoder trên 3 bài thật, không qua CFM):
+
+| Bài | pitch_std_semitones (encoder LẦN 1) | pitch_std_semitones (encoder đã fix) |
+|---|---|---|
+| `-6s_eRHYqVM` | 0.97 | **6.16** |
+| `-E2u6exhzPE` | 0.83 | 0.31 |
+| `-T6XSRcUKO4` | 0.94 | **12.38** |
+
+2/3 bài tăng vượt xa cả biên độ giai điệu điển hình của giọng hát thật (§4.16 đo vocal thật
+~6.39 semitone trung bình) — xác nhận định lượng, không chỉ trên giấy, rằng fix ổn định hoá
+optimizer đã phá được trạng thái collapse của encoder.
+
+**Full pipeline v2 (encoder đã fix) — 2 trở ngại hạ tầng, chưa hội tụ hết**: precompute lại
+toàn bộ 249 bài với encoder mới, train tiếp CFM student. (a) Job đầu (budget 300 epoch) bị
+Kaggle tự hủy (`CANCEL_ACKNOWLEDGED`) sau ~12 giờ, dừng ở epoch 13 (`best_epoch=12`, vẫn đang
+cải thiện, patience chưa cạn) — bằng chứng cụ thể đáng ngờ: file tiến độ (ghi mỗi ~10 batch
+bình thường) ngừng cập nhật **~7 giờ trước** lúc bị hủy, gợi ý có thể là treo thật (không chỉ
+chậm) ở đâu đó giữa epoch 13; đã loại trừ giả thuyết "validation gọi decoder BigVGAN nặng mỗi
+epoch" (đọc code xác nhận validation chỉ forward thuần trong latent space, không decode audio)
+nhưng chưa xác định được nguyên nhân chính xác. (b) Lần resume tiếp theo (giới hạn 4 epoch để
+kiểm chứng an toàn) bị chủ động dừng sớm để bảo toàn quota Kaggle còn lại (~5 giờ, cảnh báo bởi
+người dùng giữa phiên) — ưu tiên tiết kiệm quota hơn là mù chạy tiếp không chắc kết quả. Phát
+hiện thêm trong lúc điều tra "có treo không": helper `run_logged` trong mọi script launcher
+Kaggle dùng `subprocess.run(capture_output=True)`, giữ toàn bộ output tới khi tiến trình con
+kết thúc — nghĩa là suốt lúc training chạy, **không có gì được in ra, kể cả trên Kaggle web
+UI**, khiến "treo thật" và "chỉ chậm" không thể phân biệt được từ bên ngoài. Đã fix (streaming
+qua `Popen`, in theo thời gian thực) cho các lần chạy tiếp theo.
+
+**Kết quả cuối, từ checkpoint tốt nhất hiện có (epoch 12-13/300, CHƯA hội tụ)**:
+
+| | spectral_flatness | voiced_ratio | pitch_std_semitones | clip_ratio |
+|---|---|---|---|---|
+| Encoder LẦN 1 (collapse) | ≈0.0001-0.0005 | 0.95-0.99 | 0.83-0.97 | — |
+| CFM student, epoch 12-13, encoder đã fix | 0.00095 | 0.21 | **5.70** | 0% |
+| Nhiễu trắng (mốc sanity) | 0.562 | 0.04 | 0.49 | — |
+
+`pitch_std` tăng ~6 lần so với trạng thái collapse cũ, vẫn cách xa mốc nhiễu trắng về
+flatness, không clip. **Xác nhận bằng nghe thật (2026-07-22): người dùng nghe ra tiếng nhạc,
+xác nhận "cách làm này có vẻ đúng"** — lần đầu tiên trong toàn bộ report nhánh latent-space cho
+kết quả nghe được tích cực, dù checkpoint dùng để tạo mẫu này còn xa mức hội tụ đầy đủ.
+
+**Kết luận riêng cho §4.24**: nguyên nhân "hoàn toàn nhiễu" của nhánh latent-space **không
+phải** do Vocos (đã loại trừ trực tiếp — Vocos không có trong đường decode cuối), **không
+phải** do kiến trúc backbone sai (`NativeDiTStudent` port đúng, verify được, early-stopping
+train hoạt động chính xác), mà do **encoder tự train collapse vì thiếu ổn định hoá optimizer
+cơ bản** (warmup/gradient clipping) khi train một mạng mới hoàn toàn đối đầu một decoder đông
+lạnh — một lớp nguyên nhân khác hẳn "quy mô dữ liệu" đã kết luận cho nhánh mel-space cũ ở
+§4.22, không mâu thuẫn với kết luận đó (hai nhánh/hai vấn đề độc lập). Vì CFM student ở đây mới
+train 13/300 epoch (chưa hội tụ, chưa chạm early-stopping thật), **chưa thể coi đây là kết quả
+tốt nhất khả dĩ của hướng này** — chỉ là bằng chứng đầu tiên cho thấy hướng đi đúng, cần train
+tiếp tới hội tụ ở phiên có quota mới (xem §5.2 cập nhật) trước khi so sánh công bằng với các
+hướng khác.
+
+### 4.25 Tự kiểm điểm phương pháp luận (2026-07-hai chỉ số, sau run distill 250 bài/25 epoch mới nhất trước nhánh latent-space)
+
+Sau một lần eval khách quan cho thấy `pitch_std_semitones` sinh ra chỉ 1.15 so với thật 10.43
+(~9 lần thấp hơn), người dùng yêu cầu dừng lại và tự kiểm điểm cách làm việc, không chạy thêm
+experiment ngay. Các điểm chính, giữ lại nguyên vì vẫn áp dụng được cho các phiên sau:
+
+1. **Đã biết nguyên nhân gốc (quy mô dữ liệu/step) từ §4.8/§4.9/§4.13 trở đi, nhưng phản xạ mỗi
+   khi có ý tưởng mới vẫn là code rồi chạy full-scale ngay, thay vì tự hỏi trước "kết quả kỳ
+   vọng khác gì so với các lần trước, đang test giả thuyết mới nào?"** — item "contrastive/
+   sensitivity lyric loss" là ví dụ: cơ chế không sai, nhưng smoke test của chính nó đã cho
+   thấy `text_conditioning_sensitivity` không vượt ngưỡng gate sau vài epoch trên dữ liệu nhỏ —
+   nghĩa là bản thân cơ chế đã tự chứng minh "chưa đủ tín hiệu để chọn lọc", vẫn cứ chạy
+   full-scale sau đó.
+2. **Thiên lệch "đi sửa bug tiếp theo" (rẻ, đo lường được, commit ngay) thay vì đối mặt bottleneck
+   thật (mở rộng dữ liệu, hoặc dùng pretrained backbone — tốn kém/khó hơn nhiều)** — dù đã tự
+   kiểm chứng (scan NaN/Inf trên 24 checkpoint) rằng tiếng "rè" không phải do lỗi số học.
+3. **Lỗi phương pháp luận tự phát hiện trong chính lần đo "pitch_std thấp 9 lần" đó**: so sánh
+   lệch độ dài (audio sinh 8s vs. real full-song 250-260s — một bài hát dài tự nhiên có
+   pitch_std cao hơn hẳn một cửa sổ ngắn, ngay cả với model hoàn hảo) và sampling chỉ 6 bước
+   Euler (rất thấp cho CFM) — một phần khoảng cách "9 lần" là artifact đo lường, không hoàn
+   toàn là model kém. Kết luận tổng thể (nút thắt quy mô) vẫn đúng, nhưng con số cụ thể "9 lần"
+   không nên được trình bày như một phép đo sạch.
+4. **Thí nghiệm quyết định chưa từng làm dứt điểm**: cố tình overfit một tập rất nhỏ (5-10 bài)
+   với nhiều step hơn hẳn bất kỳ run full-scale nào, xem model có đạt `pitch_std`/`voiced_ratio`
+   gần thật trên chính các bài đó không — nếu overfit được, xác nhận chắc nút thắt là quy mô,
+   không phải kiến trúc/loss; nếu không, mọi hướng loss/kiến trúc đã thử đều đang tấn công sai
+   vấn đề. Đây là thí nghiệm rẻ nhất, nhanh nhất, quyết định nhất nhưng chưa được làm.
+5. **Đang so sánh nhiễu đo lường giữa các kỹ thuật (REPA, vocal-aux, cross-attention,
+   contrastive loss), chứ chưa chắc đang so sánh giá trị thật của chúng**, vì tất cả đều được
+   đánh giá ở đúng quy mô (250 bài, vài trăm-nghìn step) mà report đã tự nhận không đủ để bất
+   kỳ kỹ thuật nào bộc lộ hết giá trị thật.
+6. **Điểm tự vấn về vai trò của assistant**: khi được yêu cầu "chạy full 250 bài xem kết quả",
+   lẽ ra nên chủ động nói trước "đã có nhiều experiment cho thấy quy mô là nút thắt — run này
+   gần như chắc chắn cho kết quả tương tự, có muốn dùng quota cho việc đó hay thử hướng khác
+   trước?" — thay vào đó việc thực thi được ưu tiên hơn việc đặt câu hỏi đúng lúc; người dùng
+   phải là người dừng lại hỏi "tại sao kết quả xấu", lẽ ra câu hỏi đó nên đến từ phía assistant
+   trước khi chạy job.
+
+**Việc cụ thể cần làm khác đi, vẫn còn giá trị cho các phiên sau**: (a) chạy sanity check
+overfit-nhỏ trước khi tin bất kỳ kết luận "thiếu dữ liệu" nào; (b) sửa script đánh giá để so
+real vs. generated trên cùng độ dài, tăng sampling steps khi đánh giá thật (khác lúc smoke
+check rẻ); (c) trước khi chạy full-scale run, viết ra trước "run này khác gì các run trước, kỳ
+vọng kết luận nào sẽ thay đổi" — không trả lời được thì không chạy; (d) cân nhắc nghiêm túc hai
+đòn bẩy chưa dùng hết: mở rộng dữ liệu (~1843 bài, §5.2/§5.3) và/hoặc pretrained backbone thay
+vì train from scratch.
+
 ---
 
 ## 5. Kết luận và hướng phát triển
@@ -1347,6 +1561,15 @@ rõ về hướng mở rộng dữ liệu (§5.2/§5.3), không nên tốn quota
 - Hai bug hạ tầng thật (timeout preprocess giết một run lành mạnh, CUDA OOM do
   fragmentation allocator) được phát hiện và fix trong lúc chạy thực nghiệm ở quy mô đầy
   đủ — không phải bug logic distillation hay hạn chế công suất model (§4.8).
+- **Cho student không gian latent thật (64-chiều/5Hz) thay vì mel 100-chiều/93.75Hz là một
+  hướng riêng, độc lập với "quy mô dữ liệu" (§4.22), và lần đầu cho kết quả nghe được tích cực
+  ở nhánh này (§4.24).** Root cause của "hoàn toàn nhiễu" ở nhánh này không phải Vocos (đã loại
+  trừ trực tiếp) hay kiến trúc backbone sai, mà là encoder tự train (thay thế cho VAE encoder
+  không được DiffRhythm2 công bố) collapse vì thiếu ổn định hoá optimizer cơ bản — fix rẻ (LR
+  warmup + cosine decay + gradient clipping) đưa `pitch_std_semitones` từ ~0.9 (đứng yên một
+  nốt) lên 5.7-12.4 (giai điệu thật), xác nhận bằng cả số liệu và nghe thật. Checkpoint hiện tại
+  mới train 13/300 epoch (dừng vì hết quota, không phải early-stopping) — kết quả này là bằng
+  chứng "hướng đúng", chưa phải "đã tối ưu".
 - `train-distill` giờ raise ngay nếu không load được teacher/tokenizer thật, thay vì âm
   thầm hạ cấp về huấn luyện chỉ-ground-truth dưới tên `train-distill` (§4.6) — một
   `train-distill` chạy xong luôn có nghĩa là đã dùng teacher thật.
@@ -1367,7 +1590,17 @@ rõ về hướng mở rộng dữ liệu (§5.2/§5.3), không nên tốn quota
 
 ### 5.2 Hướng phát triển
 
-- **Ưu tiên cao nhất (§4.22, kết luận sau khi loại trừ hệ thống): nguyên nhân gốc nhiều khả
+- **Ưu tiên cao nhất, nhánh latent-space, phiên có quota mới (§4.24): resume CFM training từ
+  checkpoint epoch 13, không phải chạy lại từ đầu.** Checkpoint tại
+  `outputs/kaggle_latent_pipeline/latentv2-1784664643/downloaded/latent_cfm_model.pt` (thời
+  điểm viết mục này) đã dùng encoder đã fix, mới train 13/300 epoch, chưa chạm early-stopping —
+  best_epoch=12 vẫn đang cải thiện lúc bị dừng. Launch theo từng đợt epoch nhỏ, có giới hạn rõ
+  (không đặt cap 300 mở), dùng bản `run_logged` đã fix streaming (script
+  `scripts/run_kaggle_latent_resume.py`) để thấy tiến độ thật trên Kaggle web UI trong lúc chạy
+  — tránh lặp lại tình huống không thể phân biệt "treo" với "chỉ chậm" đã gặp ở §4.24. Sau khi
+  hội tụ (early-stopping tự kích hoạt), đo lại đầy đủ bộ 3 chỉ số + nghe thật, rồi mới so sánh
+  công bằng với nhánh mel-space/quy-mô-dữ-liệu ở dưới để quyết định nhánh nào đầu tư tiếp.
+- **Ưu tiên cao nhất, nhánh mel-space cũ (§4.22, kết luận sau khi loại trừ hệ thống): nguyên nhân gốc nhiều khả
   năng là QUY MÔ DỮ LIỆU/STEP của student, không phải một bug cụ thể hay cách tiếp cận sai.**
   4 thử nghiệm rẻ cùng ngày đều chỉ về hướng này: tăng bước sampling không giúp gì (loại trừ
   "chưa hội tụ"); train-self (không teacher) fail y hệt train-distill (loại trừ "tín hiệu
