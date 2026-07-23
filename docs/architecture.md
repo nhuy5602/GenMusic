@@ -1,10 +1,12 @@
 # Architecture
 
 GenMusic VN generates Vietnamese vocal audio from a lyric prompt and a style
-description, via Conditional Flow Matching (CFM). It supports two student
-backbones and two feature spaces — pick one axis independently of the other.
-This file is the technical reference; `docs/project_history.md` is the
-narrative of how it got here (bugs found, experiments run, dead ends).
+description, via Conditional Flow Matching (CFM), using a single student
+backbone (`MicroDiT`) that runs over either of two feature spaces (raw mel,
+or DiffRhythm2's own compressed 64-dim/5Hz latent space). This file is the
+technical reference; `docs/project_history.md` is the narrative of how it got
+here (bugs found, experiments run, dead ends) — including a since-retired
+second backbone, `NativeDiTStudent` (see "A retired second backbone" below).
 
 ## Workflow
 
@@ -20,7 +22,7 @@ flowchart TD
     M2 --> F
     S --> F
     F --> G[Dataset validation]
-    G --> I[Student CFM training: train-self --architecture microdit|native_dit]
+    G --> I[Student CFM training: train-self]
     G --> DI[MicroDiT distillation from real DiffRhythm2 teacher: train-distill]
     I --> J[Local sampling + Vocos rendering]
     DI --> J
@@ -36,7 +38,7 @@ backbone" below):
 flowchart TD
     F2[Mel-space dataset, records.jsonl] --> N[train-latent-encoder: LatentAudioEncoder vs. frozen BigVGAN decoder]
     N --> O[precompute-latent-dataset: mel -> Vocos decode -> encoder -> 64-dim/5Hz latent]
-    O --> P[train-self --architecture native_dit --lambda-vocal 0]
+    O --> P[train-self --lambda-vocal 0]
     P --> Q[generate-local: decode via the real frozen BigVGAN decoder, not Vocos]
 ```
 
@@ -52,20 +54,17 @@ flowchart TD
 - `src/models/text_to_music_diffusion.py` — `MusicDiffusionConfig` (including
   `latent_mode`), mel/waveform conversion, `reconstruct_full_mix`, checkpoint
   I/O.
-- `src/models/dit_transformer.py` — `MicroDiT`, the default student backbone.
-- `src/models/diffrhythm2_native.py` — `NativeDiTStudent`, the alternative
-  backbone (selected via `--architecture native_dit`).
+- `src/models/dit_transformer.py` — `MicroDiT`, the sole student backbone.
 - `src/models/latent_codec.py` — `LatentAudioEncoder`, `load_frozen_decoder`,
   `multi_scale_mel_loss`.
 - `src/models/cfm_flow.py` — the CFM loss (`cfm_loss`) and Euler sampler
-  (`sample_cfm`), shared by both backbones.
+  (`sample_cfm`).
 - `src/training/self_diffusion.py` — dataset contract, train/validation
-  split, early-stopping, the training loop used by both `train-self`
-  architectures.
+  split, early-stopping, the `train-self` training loop.
 - `src/training/latent_encoder_training.py` — pretrains `LatentAudioEncoder`
   against the frozen decoder.
 - `src/training/distill_training.py` — `train-distill`'s teacher-matching
-  loss (MicroDiT only).
+  loss (works in both mel-space and `latent_mode`).
 - `src/integrations/kaggle_auto.py` — Kaggle dataset/job staging.
 - `src/evaluation/` — objective audio metrics and report plots.
 - `cli.py` — command-line entry point.
@@ -84,26 +83,40 @@ true`, produced by `precompute-latent-dataset`), the same path instead holds
 a 64-dim/5Hz latent tensor, and `backing_mel_path` is unused (the full mix is
 already baked into the one latent).
 
-## Student backbone 1: MicroDiT (`--architecture microdit`, default)
+## Student backbone: MicroDiT
 
 `MicroDiT` (`src/models/dit_transformer.py`) predicts the CFM velocity field
-for a noisy mel sequence, conditioned on lyrics (cross-attention) and style
-(additive). Default size `dim=256, depth=4, heads=4` (~5.6M trainable
-parameters); configurable via `--dim`/`--depth`/`--heads`/`--ff-mult`.
+for a noisy audio sequence (mel or, in `latent_mode`, the native latent),
+conditioned on lyrics (cross-attention) and style (additive). Default size
+`dim=256, depth=4, heads=4`; configurable via `--dim`/`--depth`/`--heads`/
+`--ff-mult`. `MicroDiT` reads its audio-feature width from
+`config.n_mels` (100 for mel-space, 64 for `latent_mode`) — the same class
+and CLI flags cover both feature spaces, no separate backbone needed.
 
 **Lyric conditioning — cross-attention, not concatenation.** Text is encoded
 by `PretrainedPhonemeEncoder`: `text2phonemesequence` G2P's each lyric string
 into IPA-style phonemes (Vietnamese-aware — this is the step that gives the
 model any real notion of Vietnamese pronunciation/tone), then a **frozen**
 `vinai/xphonebert-base` transformer encodes the phoneme sequence, followed by
-a small trainable 2-layer projection to `dim`. Each `CrossAttentionDecoderLayer`
-in the backbone keeps self-attention restricted to the mel sequence alone
-(so rotary positions and the attention mask are just plain mel-frame
-positions), and adds a dedicated `nn.MultiheadAttention` sublayer where mel
-queries attend to the text keys/values. This replaced an earlier
-"prepend"-style design (text and mel tokens sharing one self-attention
-sequence) after SongGen (arXiv:2502.13128) reported cross-attention lyric
-conditioning clearly beating that (FAD 1.73 vs 3.56, PER 43.34 vs 56.21).
+a small trainable 2-layer projection to `dim`, and then **one trainable
+`TextSelfAttentionLayer`** (a Llama-style self-attention + FFN block, masking
+lyric padding) that refines the frozen+projected embedding for this specific
+task before it's ever read by the audio side. This exists because
+XPhoneBERT's own self-attention was learned for general phoneme/prosody
+prediction, not singing conditioning, and is permanently frozen — the extra
+trainable layer gives the model a small amount of task-adapted lyric context
+without re-learning phoneme understanding from scratch on a ~250-song budget
+(the mistake the retired `NativeDiTStudent` backbone made, see below). Each
+`CrossAttentionDecoderLayer` in the backbone then keeps self-attention
+restricted to the audio sequence alone (so rotary positions and the
+attention mask are just plain frame positions), and adds a dedicated
+`nn.MultiheadAttention` sublayer where audio queries attend to the refined
+text keys/values. This replaced an earlier "prepend"-style design (text and
+audio tokens sharing one self-attention sequence) after SongGen
+(arXiv:2502.13128) reported cross-attention lyric conditioning clearly
+beating that (FAD 1.73 vs 3.56, PER 43.34 vs 56.21) — and after this
+project's own `NativeDiTStudent` experiment independently re-confirmed the
+same conclusion at matched size/epoch (see below).
 
 **No backing-track conditioning.** `InputEmbedding` only ever sees the mel
 tensor (`x_proj = proj_x(x)`, then style/time added additively) — there is no
@@ -131,43 +144,42 @@ intermediate hidden state to 1024-dim) but it's a no-op unless a caller
 passes `repa_layer_idx` — used only by `train-distill`'s optional REPA loss
 (see below), not by `train-self`.
 
-## Student backbone 2: `NativeDiTStudent` (`--architecture native_dit`)
+## A retired second backbone: `NativeDiTStudent`
 
-`src/models/diffrhythm2_native.py` is a vendored (Apache 2.0, attributed)
-port of DiffRhythm2's *own* backbone shape, for use as an alternative
-student — same call signature as `MicroDiT`, same CLI flags
-(`--dim/--depth/--heads/--ff-mult`), same `cfm_loss`/training loop.
+Earlier revisions of this project also had a second backbone,
+`NativeDiTStudent` (`src/models/diffrhythm2_native.py`, selected via
+`--architecture native_dit`) — a vendored (Apache 2.0, attributed) port of
+DiffRhythm2's *own* backbone shape: text and audio shared **one concatenated
+self-attention sequence** instead of cross-attention, and lyrics were
+embedded by a **from-scratch-trained** `nn.Embedding` rather than frozen
+XPhoneBERT. It was used for the first positive latent-space listening result
+(`docs/project_history.md` §4.24, §4.25) and the mel-vs-latent comparison in
+the report's Experiments chapter.
 
-Mechanically the opposite conditioning choice from `MicroDiT`: text and audio
-share **one concatenated self-attention sequence** instead of cross-attention.
-Forward pass:
-1. G2P + tokenize lyrics (same `text2phonemesequence` step as `MicroDiT`, but
-   feeding a **from-scratch-trained** `nn.Embedding` rather than a frozen
-   pretrained transformer).
-2. `text_emb = TextEmbedding(token_ids)` → `(B, text_len, 512)`;
-   `audio_emb = latent_embed(x)` → `(B, audio_len, 512)`.
-3. `combined = cat([text_emb, audio_emb], dim=1)` — the shared sequence.
-4. Time: text positions get a sentinel `-1.0`; audio positions get the real
-   per-sample CFM timestep. Position ids are **two independent `0..N-1`
-   ranges** (text and audio each restart at 0), matching DiffRhythm2's own
-   first-inference-block behavior.
-5. Attention mask is fully bidirectional over `[text; audio]`, masking only
-   text padding — no block-wise clean/noisy split (that mechanism exists only
-   in `train-distill`'s teacher-replication path, see below).
-6. `depth` × `LlamaNARDecoderLayer` (standard pre-norm Llama block with a
-   learned per-head RMSNorm on Q/K on top of RoPE self-attention), one shared
-   `LlamaRotaryEmbedding` for the whole stack.
-7. `AdaLayerNormZero_Final` modulated by the timestep embedding only (style
-   was already added once, at step 3's projection); `proj_out`; **text
-   positions' outputs are discarded**, only the audio slice is returned.
+It has since been merged/retired, based on evidence gathered across several
+sessions:
+- At matched size/epoch, the concatenated-self-attention design did not
+  improve ground-truth CFM loss over `MicroDiT`'s cross-attention, while
+  being **~4.4x slower** per step — `MicroDiT`'s narrower self-attention
+  (audio-only, no padding) can use a faster fused attention kernel, whereas
+  the concatenated design must pass an explicit dense padding mask into
+  attention, which forces a slower fallback kernel on top of the strictly
+  larger $O((L{+}T)^2)$ attention cost (`docs/project_history.md` §4.19).
+- Training a lyric embedding table from scratch throws away XPhoneBERT's
+  pretrained phonetic/tonal knowledge for no measured benefit, and is a
+  needless overfitting risk on a ~250-song budget.
+- `train-distill` never supported `native_dit` at all — folding everything
+  into one backbone means every training path (`train-self`, `train-distill`)
+  and both feature spaces (mel, `latent_mode`) now share the same model
+  class.
 
-Cost/benefit measured empirically (`docs/project_history.md` §4.19): at
-matched size/epoch, this sequence-concatenation design does not improve
-ground-truth CFM loss over `MicroDiT`, is **~4.4x slower** per step
-(attention over a longer combined sequence, plus G2P running on CPU each
-batch), but does shift output statistics (`voiced_ratio` down, `pitch_std`/
-spectral flatness closer to real vocals) — a real trade-off, not a clear win,
-independent of the native-latent-space work below.
+`MicroDiT`'s cross-attention design already reads `config.n_mels` generically
+and needed no changes to run in `latent_mode` — the only genuinely new
+addition from the `NativeDiTStudent` experiment is the `TextSelfAttentionLayer`
+described above. Historical results attributed to `NativeDiTStudent` in
+`docs/project_history.md` and the report remain accurate accounts of what was
+actually run at the time; they describe a backbone that no longer exists in
+the current codebase.
 
 ## Native latent backbone and encoder (`latent_mode`)
 
@@ -249,11 +261,11 @@ Sampling (`sample_cfm`) is fixed-step Euler integration (default `--steps
 32`), with optional classifier-free guidance (`--guidance-scale`, an extra
 unconditional forward pass extrapolated against the conditional one).
 
-## Training loop, validation, and early stopping (`train-self`, both architectures)
+## Training loop, validation, and early stopping (`train-self`)
 
-`src/training/self_diffusion.py`'s `train_model()` drives both backbones
-identically — same loss, same optimizer/scheduler/EMA, same early-stopping
-machinery; only the model class differs.
+`src/training/self_diffusion.py`'s `train_model()` drives `MicroDiT` in
+either feature space identically — same loss, same
+optimizer/scheduler/EMA, same early-stopping machinery.
 
 - **Song-level train/validation split** (`split_training_records`): each
   record is assigned to train or validation by a deterministic hash of
@@ -283,25 +295,34 @@ machinery; only the model class differs.
   by calling `train_model()` directly if you need something other than the
   defaults above.
 
-## Distillation (`train-distill`, MicroDiT only)
+## Distillation (`train-distill`)
 
 `src/training/distill_training.py` replicates DiffRhythm2's real teacher call
 contract — `KnowledgeDistillationTrainer` always instantiates a `MicroDiT`
-student (there is currently no `native_dit` option for distillation).
+student, in either feature space.
 
-- **Teacher-rate bridging**: `_resample_time_dimension` linearly resamples
-  between the student's 93.75Hz and the teacher's native 5Hz before/after the
-  teacher call (a real out-of-distribution bug once existed here — the
-  teacher was being fed sequences ~19x longer than anything in its own
-  training distribution — see `docs/project_history.md` §4.20).
-  `_build_block_attn_mask` replicates the teacher's block-autoregressive
-  attention pattern over a `[Text, Clean, Noisy]` layout (clean context
-  attends causally by block; noisy queries attend only to strictly-earlier
-  clean blocks and their own block's noisy frames) — this is the mechanism
-  `NativeDiTStudent` deliberately avoids by using one single global timestep
-  instead of a block-wise clean/noisy split.
-- **Mel-dim bridge**: `_resize_mel_bins` (fixed linear interpolation, not
-  trained) resamples 100↔64 mel bins for the teacher call; a trainable
+- **Teacher-rate bridging, skipped entirely in `latent_mode`**:
+  `_resample_time_dimension` linearly resamples between the student's rate
+  and the teacher's native 5Hz before/after the teacher call — but only in
+  mel-space, where the student runs at 93.75Hz (a real out-of-distribution
+  bug once existed here — the teacher was being fed sequences ~19x longer
+  than anything in its own training distribution — see
+  `docs/project_history.md` §4.20). In `latent_mode`, the student's tensors
+  are already the real 64-dim/5Hz DiffRhythm2 latent (via
+  `precompute-latent-dataset`), i.e. already at the teacher's native rate —
+  `KnowledgeDistillationTrainer._teacher_velocity` checks
+  `config.latent_mode` and skips the resample entirely rather than resampling
+  an already-5Hz sequence through the mel-space formula (which would
+  silently corrupt it). `_build_block_attn_mask` replicates the teacher's
+  block-autoregressive attention pattern over a `[Text, Clean, Noisy]` layout
+  (clean context attends causally by block; noisy queries attend only to
+  strictly-earlier clean blocks and their own block's noisy frames) in both
+  feature spaces.
+- **Mel-dim bridge, also a no-op in `latent_mode`**: `_resize_mel_bins`
+  (fixed linear interpolation, not trained) resamples 100↔64 mel bins for the
+  teacher call in mel-space; `needs_mel_resize` is `teacher_mel_dim !=
+  config.n_mels`, which is already `False` in `latent_mode` (both are 64) —
+  no separate branch needed there. In mel-space, a trainable
   `from_teacher_mel: Linear(64,100)` maps the teacher's output back into the
   student's space for the loss (kept outside `torch.no_grad()` deliberately
   — wrapping it would silently zero its gradient, a bug this project hit
@@ -345,8 +366,13 @@ unavailable or the config doesn't match. In `latent_mode`, neither is used —
 
 `save_checkpoint` excludes frozen, re-downloadable weights (XPhoneBERT) from
 the saved file — a checkpoint is the trainable weights plus enough metadata
-(`roberta_model`, `architecture`, mel config) to reconstruct the exact model
-on load. This keeps checkpoints around 50-100MB instead of >1GB.
+(`roberta_model`, `dim`/`depth`/`heads`/`ff_mult`, mel config) to reconstruct
+the exact model on load. This keeps checkpoints around 50-100MB instead of
+>1GB. Checkpoints saved before the `NativeDiTStudent` retirement may carry an
+`"architecture": "native_dit"` key in their `arch` metadata; this key is no
+longer read by `load_checkpoint` (always instantiates `MicroDiT` now), so
+loading such a checkpoint today will load few or none of its weights
+correctly — expected, not a bug, since that backbone no longer exists.
 
 ## Important evaluation boundary
 

@@ -1,7 +1,8 @@
 """Full latent-space pipeline: given an already-trained `LatentAudioEncoder`
 checkpoint (see `run_kaggle_latent_encoder.py`), precompute the full dataset's
-latent representation, train the CFM student (`native_dit`) inside that latent
-space until early-stopping decides it's done, then generate one sample.
+latent representation, train the CFM student (MicroDiT, on the 64-dim/5Hz
+latent instead of mel) inside that latent space until early-stopping decides
+it's done, then generate one sample.
 
 Does not train the encoder itself -- run `run_kaggle_latent_encoder.py` first
 (and sanity-check it, see `docs/architecture.md`'s "Native latent backbone"
@@ -160,7 +161,6 @@ else:
         "--dim", "{dim}",
         "--depth", "{depth}",
         "--heads", "{heads}",
-        "--architecture", "native_dit",
         "--lambda-vocal", "0",
         "--device", "cuda",
         "--save-every-epoch",

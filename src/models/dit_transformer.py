@@ -190,6 +190,48 @@ class CrossAttentionDecoderLayer(nn.Module):
         return hidden_states
 
 
+class TextSelfAttentionLayer(nn.Module):
+    """A single trainable Llama-style self-attention block over the lyric
+    token sequence only, applied right after the frozen XPhoneBERT projection
+    and before cross-attention consumes it.
+
+    XPhoneBERT's own 12 self-attention layers already contextualize phonemes
+    against each other, but that context was learned for general phoneme/
+    prosody prediction, not for this project's singing-conditioning task, and
+    it is frozen (never adapted). This adds a small amount of *trainable*
+    self-attention capacity on top of the frozen+projected embedding so the
+    model can refine lyric context for its own task, without re-learning
+    phoneme understanding from scratch on a 250-song budget (the mistake the
+    now-removed `NativeDiTStudent` backbone made with its from-scratch
+    `nn.Embedding`, see docs/project_history.md).
+    """
+    def __init__(self, config: LlamaConfig):
+        super().__init__()
+        self.self_attn = LlamaAttention(config=config, layer_idx=0)
+        self.mlp = LlamaMLP(config)
+        self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+    ) -> torch.Tensor:
+        residual = hidden_states
+        normed = self.input_layernorm(hidden_states)
+        attn_result = self.self_attn(
+            hidden_states=normed, position_embeddings=position_embeddings, attention_mask=attention_mask,
+        )
+        attn_out = attn_result[0] if isinstance(attn_result, tuple) else attn_result
+        hidden_states = residual + attn_out
+
+        residual = hidden_states
+        normed = self.post_attention_layernorm(hidden_states)
+        hidden_states = residual + self.mlp(normed)
+        return hidden_states
+
+
 class AudioStyleEncoder(nn.Module):
     """Projects a precomputed MuQ-MuLan audio/style embedding (the same 512-dim
     contrastive audio-style space DiffRhythm2's teacher itself conditions on)
@@ -289,6 +331,9 @@ class MicroDiT(nn.Module):
             [CrossAttentionDecoderLayer(llama_config, layer_idx=i) for i in range(depth)]
         )
         self.rotary_emb = LlamaRotaryEmbedding(config=llama_config)
+        # Trainable self-attention refinement over the (frozen+projected) lyric
+        # embedding, see TextSelfAttentionLayer's docstring.
+        self.text_refine = TextSelfAttentionLayer(llama_config)
         
         self.norm_out = AdaLayerNormZeroFinal(dim, self.cond_dim)
         self.proj_out = nn.Linear(dim, config.n_mels)
@@ -315,8 +360,18 @@ class MicroDiT(nn.Module):
         device = x.device
         batch_size, seq_len = x.shape[0], x.shape[1]
 
-        # 1. Encode text via RoBERTa (frozen) -- kept as cross-attention keys/values
+        # 1. Encode text via XPhoneBERT (frozen) -- kept as cross-attention keys/values
         text_embeds, text_mask = self.text_encoder(texts, device) # (batch_size, text_seq_len, dim)
+
+        # 1b. Refine with a small trainable self-attention layer (see
+        # TextSelfAttentionLayer) before it's used as cross-attention K/V.
+        text_len = text_embeds.shape[1]
+        text_pos_ids = torch.arange(text_len, device=device).unsqueeze(0).repeat(batch_size, 1)
+        text_rotary_embed = self.rotary_emb(text_embeds, text_pos_ids)
+        text_attn_bias = torch.zeros(batch_size, 1, 1, text_len, device=device, dtype=text_embeds.dtype)
+        text_attn_bias = text_attn_bias.masked_fill(~text_mask[:, None, None, :], torch.finfo(text_embeds.dtype).min)
+        text_embeds = self.text_refine(text_embeds, attention_mask=text_attn_bias, position_embeddings=text_rotary_embed)
+
         mask = text_mask.unsqueeze(-1).to(text_embeds.dtype)
         pooled_text = (text_embeds * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
 

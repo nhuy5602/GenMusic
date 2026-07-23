@@ -367,13 +367,20 @@ class KnowledgeDistillationTrainer:
         text_time = torch.full((batch_size, text_len), -1.0, device=self.device, dtype=xt.dtype)
         text_position_ids = torch.arange(text_len, device=self.device).unsqueeze(0).repeat(batch_size, 1)
 
-        # 1. Downsample the time dimension of student's Mel to match the teacher's VAE 5 Hz frame rate
-        student_fps = self.config.sample_rate / self.config.hop_length  # 93.75 Hz
+        # 1. Downsample the time dimension of student's Mel to match the teacher's VAE 5 Hz frame rate.
+        # In latent_mode the student's own tensors are already the real 64-dim/5Hz
+        # DiffRhythm2 latent (see precompute-latent-dataset / LatentAudioEncoder,
+        # docs/architecture.md), i.e. already at the teacher's native rate -- no
+        # resampling needed, and none of the 93.75Hz mel-frame-rate math applies.
         teacher_fps = 5.0
-        teacher_seq_len = max(1, round(seq_len * (teacher_fps / student_fps)))
-
-        teacher_xt = _resample_time_dimension(xt, teacher_seq_len)
-        teacher_x1 = _resample_time_dimension(x1, teacher_seq_len)
+        if self.config.latent_mode:
+            teacher_seq_len = seq_len
+            teacher_xt, teacher_x1 = xt, x1
+        else:
+            student_fps = self.config.sample_rate / self.config.hop_length  # 93.75 Hz
+            teacher_seq_len = max(1, round(seq_len * (teacher_fps / student_fps)))
+            teacher_xt = _resample_time_dimension(xt, teacher_seq_len)
+            teacher_x1 = _resample_time_dimension(x1, teacher_seq_len)
         
         # 2. Resize the frequency dimension from 100 to 64
         teacher_xt = _resize_mel_bins(teacher_xt, self.teacher_mel_dim) if self.needs_mel_resize else teacher_xt
@@ -422,7 +429,9 @@ class KnowledgeDistillationTrainer:
             teacher_velocity = self.from_teacher_mel(teacher_velocity)  # (B, teacher_seq_len, 100)
 
         # 4. Upsample the teacher's predicted velocity back to student's original sequence length
-        teacher_velocity = _resample_time_dimension(teacher_velocity, seq_len)  # (B, seq_len, 100)
+        # (no-op in latent_mode, where teacher_seq_len == seq_len already).
+        if teacher_seq_len != seq_len:
+            teacher_velocity = _resample_time_dimension(teacher_velocity, seq_len)  # (B, seq_len, 100)
         return teacher_velocity
 
     def train_epoch(self, dataloader) -> list[dict[str, float | None]]:

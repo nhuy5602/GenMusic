@@ -47,6 +47,19 @@ kiến trúc backbone). Fix ổn định hoá optimizer của encoder, rồi **x
 đầu tiên của nhánh latent-space. Checkpoint hiện tại **chưa hội tụ** (13/300 epoch, dừng vì hết
 quota Kaggle giữa phiên, không phải vì early-stopping) — xem §4.24 cho toàn bộ chi tiết.
 
+**Cập nhật 2026-07-23**: một control chưa từng chạy trước đó — giải mã nhiễu ngẫu nhiên thuần
+qua chính decoder BigVGAN (không qua encoder/CFM) — cho thấy 2/3 chỉ số dùng suốt report
+(`spectral_flatness`, `voiced_ratio`) **không phân biệt được** CFM student với nhiễu ngẫu
+nhiên; chỉ `pitch_std_semitones` còn cho tín hiệu thật, và tín hiệu đó được xác nhận nhất
+quán qua 8 seed khác, không chỉ mẫu gốc (§4.26). Cùng phiên, sau khi phân tích tại sao
+`NativeDiTStudent` chậm hơn MicroDiT (§4.19) và tại sao nó học lyric embedding từ đầu thay vì
+dùng XPhoneBERT, quyết định gộp hai backbone lại thành một: `NativeDiTStudent` đã bị xoá khỏi
+mã nguồn, phần đáng giữ (self-attention riêng cho lyric embedding) được thêm vào MicroDiT
+dưới dạng `TextSelfAttentionLayer`, và `train-distill` giờ chạy trực tiếp trên latent\_mode
+không cần bridging (§4.27). Hệ quả: mọi kết quả latent-space tính đến giờ (§4.24-4.26) đều từ
+một backbone không còn tồn tại trong mã nguồn hiện tại; chưa có lần train MicroDiT trực tiếp
+trên latent\_mode.
+
 ---
 
 ## 1. Giới thiệu
@@ -1527,6 +1540,80 @@ check rẻ); (c) trước khi chạy full-scale run, viết ra trước "run nà
 vọng kết luận nào sẽ thay đổi" — không trả lời được thì không chạy; (d) cân nhắc nghiêm túc hai
 đòn bẩy chưa dùng hết: mở rộng dữ liệu (~1843 bài, §5.2/§5.3) và/hoặc pretrained backbone thay
 vì train from scratch.
+
+### 4.26 Kiểm định lại kết quả latent-space bằng một control chưa từng chạy: giải mã nhiễu ngẫu nhiên qua chính decoder
+
+Sau khi người dùng nghi ngờ liệu kết quả "nghe ra tiếng nhạc" ở §4.24/§4.25 có thực sự do
+CFM student học được gì, hay chỉ do decoder BigVGAN (một GAN, có thiên hướng kiến trúc tạo
+âm thanh tonal/harmonic) tự "ảo giác" ra cấu trúc từ bất kỳ input nào — một control chưa
+từng chạy trước đó: giải mã trực tiếp $x\sim\mathcal{N}(0,I)$ (đúng shape latent thật, không
+qua encoder hay CFM) qua cùng decoder, đo bằng đúng bộ 3 chỉ số đã dùng suốt report, N=13 lần
+chạy độc lập:
+
+| | spectral\_flatness | voiced\_ratio | pitch\_std\_semitones |
+|---|---|---|---|
+| Nhiễu ngẫu nhiên qua BigVGAN (N=13, mean/range) | 0,0013 (0,0005–0,0030) | 0,24 (0,09–0,41) | 1,56 (0,41–2,96) |
+| Nhiễu trắng thô (mốc cũ dùng suốt report) | 0,562 | 0,04 | 0,49 |
+| CFM student, checkpoint 13/300 epoch (mẫu §4.24, seed gốc) | 0,00095 | 0,21 | 5,70 |
+
+**Kết quả quan trọng**: `spectral_flatness` và `voiced_ratio` — hai trong ba chỉ số dùng
+suốt report — **không phân biệt được** CFM student với nhiễu ngẫu nhiên thuần qua decoder;
+cả hai đều cách xa mốc "nhiễu trắng thô" như nhau, vì bản thân kiến trúc BigVGAN đủ để tạo ra
+thứ "trông tonal" từ bất kỳ input nào. Mốc "nhiễu trắng thô" dùng suốt report **sai làm
+baseline cho nhánh latent-space** — baseline đúng phải là nhiễu ngẫu nhiên qua chính decoder,
+không phải nhiễu trắng thô ở domain waveform.
+
+Chạy thêm 8 seed khác từ checkpoint CFM thật (không chỉ 1 mẫu như §4.24) để kiểm tra mẫu gốc
+có phải ăn may: `pitch_std` trung bình 8 mẫu là 3,16 (khoảng 0,67–6,68), so với nhiễu ngẫu
+nhiên trung bình 1,56 (tối đa 2,96) — 3/8 mẫu CFM vượt hẳn mức tối đa của nhiễu ngẫu nhiên;
+kiểm định hạng thô (Mann-Whitney) cho xác suất ~81% một mẫu CFM ngẫu nhiên có `pitch_std` cao
+hơn một mẫu nhiễu ngẫu nhiên. **Kết luận cân bằng**: có tín hiệu thật, nhất quán (không phải
+một lần ăn may), nhưng chỉ ở `pitch_std`, không phải ở 2/3 chỉ số còn lại — kết luận "nghe ra
+nhạc thật" ở §4.24/§4.25 cần được đọc lại với giới hạn này, không nên coi ba chỉ số đều ủng
+hộ như cách report ban đầu trình bày. `docs/main.tex` Thí nghiệm 4 nên được cập nhật để phản
+ánh đúng giới hạn này ở lần sửa report tiếp theo.
+
+### 4.27 Gộp `NativeDiTStudent` vào `MicroDiT`, xoá khỏi mã nguồn; `train-distill` hỗ trợ `latent_mode` trực tiếp
+
+Sau một loạt câu hỏi thiết kế (tại sao `NativeDiTStudent` học lyric embedding từ đầu thay vì
+dùng XPhoneBERT như MicroDiT; tại sao cần self-attention riêng cho text; MicroDiT có tự chạy
+được trên latent\_mode không), quyết định gộp hai backbone thành một, dựa trên bằng chứng đã
+có từ §4.19 (cross-attention không kém `loss_gt`, nhanh hơn 4,4 lần) cộng phân tích kernel-level
+mới (attention mask tường minh của thiết kế nối-chuỗi buộc SDPA dùng kernel chậm hơn, ngoài
+chi phí bậc hai của việc tự-attend trên chuỗi dài hơn):
+
+1. **`src/models/dit_transformer.py`**: thêm `TextSelfAttentionLayer` — một lớp self-attention
+   Llama-style trainable, áp dụng lên $E_l$ (đã qua XPhoneBERT đóng băng + MLP chiếu) trước khi
+   dùng làm key/value cho cross-attention. Đây là phần duy nhất thật sự đáng giữ lại từ ý tưởng
+   ban đầu của `NativeDiTStudent` (cho model khả năng tự tinh chỉnh ngữ cảnh lời theo tác vụ) —
+   nhưng đặt trên nền XPhoneBERT đã pretrain, không học từ đầu.
+2. **`src/training/distill_training.py`**: `KnowledgeDistillationTrainer._teacher_velocity`
+   giờ kiểm tra `config.latent_mode` — nếu true, bỏ qua hẳn `_resample_time_dimension` (dữ liệu
+   đã ở đúng 5~Hz của teacher, resample theo công thức mel-space 93,75~Hz sẽ làm hỏng nó thêm
+   lần nữa) và `needs_mel_resize` tự động là `False` (64 == 64). Có nghĩa distillation giờ chạy
+   trực tiếp trên dataset latent\_mode mà không cần bridging nào — khoảng lệch phân phối
+   18,75 lần mô tả ở §4.20 không còn tồn tại khi cả hai phía đã cùng biểu diễn từ đầu. Verify
+   bằng một fake-teacher test (không tải teacher 1,1 tỷ tham số thật): xác nhận
+   `needs_mel_resize=False` và không resample xảy ra ở latent\_mode, còn mel-space vẫn bridging
+   như cũ.
+3. Xoá `src/models/diffrhythm2_native.py`, `--architecture` (mọi giá trị) khỏi `cli.py` và các
+   script Kaggle liên quan (`run_kaggle_training.py`, `run_kaggle_latent_pipeline.py`,
+   `run_kaggle_latent_resume.py`). `load_checkpoint` không còn nhánh `native_dit` — luôn dựng
+   `MicroDiT`. 29/29 unit test vẫn pass sau khi sửa một lỗi sót (`NameError: architecture`) lộ
+   ra đúng lúc chạy test suite.
+
+**Hệ quả cho checkpoint cũ**: checkpoint đã lưu với `arch["architecture"]=="native_dit"` (nếu
+còn ai giữ) sẽ không load đúng nữa — `load_checkpoint` không còn đọc field này, luôn dựng
+`MicroDiT`, nên hầu hết trọng số sẽ không khớp `state_dict`. Đây là hệ quả có chủ đích của việc
+gộp kiến trúc, không phải bug — các checkpoint `native_dit` (bao gồm checkpoint 13/300 epoch ở
+§4.24/§4.26) vẫn dùng được nếu chạy trên bản mã nguồn TRƯỚC lần gộp này.
+
+**Việc chưa làm, còn để ngỏ cho phiên sau**: chưa có lần train `MicroDiT` (cross-attention)
+trực tiếp trên latent\_mode — mọi kết quả latent-space tính đến giờ (§4.24-4.26) đều từ
+`NativeDiTStudent` đã bị gộp/xoá. Thí nghiệm hợp lý tiếp theo: `train-self` (không cần
+`--architecture` nữa) trên đúng dataset latent\_mode đã có, so `loss_gt`/`pitch_std` với
+checkpoint `NativeDiTStudent` cũ ở cùng epoch budget — tách được biến số kiến trúc khỏi biến
+số representation lần đầu tiên cho nhánh latent.
 
 ---
 

@@ -133,7 +133,6 @@ else:
         "--dim", "{dim}",
         "--depth", "{depth}",
         "--heads", "{heads}",
-        "--architecture", "native_dit",
         "--lambda-vocal", "0",
         "--device", "cuda",
         "--save-every-epoch",

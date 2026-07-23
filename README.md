@@ -2,15 +2,15 @@
 
 GenMusic VN generates Vietnamese vocal audio from a lyric prompt and a style
 description, via Conditional Flow Matching (CFM), distilled/inspired by
-DiffRhythm2. Two student backbones are available
-(`--architecture microdit|native_dit`) and two feature spaces (raw mel, or
-DiffRhythm2's own compressed 64-dim/5Hz latent space) — see
-[docs/architecture.md](docs/architecture.md) for the technical reference.
+DiffRhythm2. A single student backbone (`MicroDiT`) runs over either of two
+feature spaces (raw mel, or DiffRhythm2's own compressed 64-dim/5Hz latent
+space) — see [docs/architecture.md](docs/architecture.md) for the technical
+reference.
 
 ## Documentation
 
-- [docs/architecture.md](docs/architecture.md) — system design: both student
-  backbones, the CFM loss, distillation, the native latent encoder.
+- [docs/architecture.md](docs/architecture.md) — system design: the student
+  backbone, the CFM loss, distillation, the native latent encoder.
 - [docs/data_preparation.md](docs/data_preparation.md) — the preprocessing
   pipeline (Demucs, Whisper, MuQ-MuLan) and dataset format.
 - [docs/usage.md](docs/usage.md) — practical run instructions, local and on
@@ -26,7 +26,7 @@ DiffRhythm2's own compressed 64-dim/5Hz latent space) — see
 GenMusic/
 ├── src/                # Core Python package (data processing, model, training)
 │   ├── data/           # Audio preprocessing, Whisper ASR, Demucs split, latent-dataset conversion
-│   ├── models/         # MicroDiT, NativeDiTStudent, CFM loss, LatentAudioEncoder
+│   ├── models/         # MicroDiT, CFM loss, LatentAudioEncoder
 │   ├── training/       # Training loops: self, distillation, latent-encoder
 │   ├── evaluation/     # Objective evaluation metrics for audio spectrograms
 │   └── integrations/   # Kaggle API cloud integrations and job submitters

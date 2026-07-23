@@ -316,24 +316,14 @@ def load_checkpoint(
     # "roberta_model" was tracked in arch.
     arch = payload.get("arch") or {}
     resolved_roberta_model = roberta_model or arch.get("roberta_model", "xlm-roberta-base")
-    if arch.get("architecture") == "native_dit":
-        from .diffrhythm2_native import NativeDiTStudent
+    from .dit_transformer import MicroDiT
 
-        model = NativeDiTStudent(
-            config, roberta_model=resolved_roberta_model,
-            dim=arch.get("dim", 256), depth=arch.get("depth", 4),
-            heads=arch.get("heads", 4), ff_mult=arch.get("ff_mult", 4),
-            style_dim=arch.get("style_dim", 512),
-        ).to(device)
-    else:
-        from .dit_transformer import MicroDiT
-
-        model = MicroDiT(
-            config, roberta_model=resolved_roberta_model,
-            dim=arch.get("dim", 256), depth=arch.get("depth", 4),
-            heads=arch.get("heads", 4), ff_mult=arch.get("ff_mult", 4),
-            style_dim=arch.get("style_dim", 512),
-        ).to(device)
+    model = MicroDiT(
+        config, roberta_model=resolved_roberta_model,
+        dim=arch.get("dim", 256), depth=arch.get("depth", 4),
+        heads=arch.get("heads", 4), ff_mult=arch.get("ff_mult", 4),
+        style_dim=arch.get("style_dim", 512),
+    ).to(device)
 
     # strict=False: checkpoints deliberately omit the frozen RoBERTa encoder
     # weights (see save_checkpoint) -- those are already loaded fresh from

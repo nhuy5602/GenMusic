@@ -44,10 +44,9 @@ uv run python scripts/run_kaggle_preprocess_all.py --max-files 40
 
 ## 3. Train the student
 
-Two independent choices: which **architecture** (`--architecture
-microdit|native_dit`, default `microdit`), and which **feature space** (raw
-mel, the default; or the native latent space, §3b below). Ground-truth-only
-training (no teacher):
+One independent choice: which **feature space** (raw mel, the default; or
+the native latent space, §3b below) — the student backbone (`MicroDiT`) is
+the same either way. Ground-truth-only training (no teacher):
 ```powershell
 uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/my_model.pt --epochs 60 --dim 256 --depth 4 --heads 4
 ```
@@ -84,11 +83,12 @@ processed-dataset reference your own account can access
 — produce one first with `scripts/run_kaggle_preprocess_all.py` if you don't
 have one yet.
 
-### 3b. Native latent backbone (optional — gives the student the teacher's own 64-dim/5Hz space)
+### 3b. Native latent space (optional — gives the student the teacher's own 64-dim/5Hz space)
 
 Three steps on top of an existing mel-space dataset (see
-`docs/architecture.md`'s "Native latent backbone" section for why, and
-`docs/project_history.md` §4.24 for the bugs found/fixed along the way):
+`docs/architecture.md`'s "Native latent backbone and encoder" section for
+why, and `docs/project_history.md` §4.24 for the bugs found/fixed along the
+way). Same `MicroDiT` backbone as mel-space, no architecture flag needed:
 
 ```powershell
 # 1. Pretrain a small encoder against the real, frozen BigVGAN decoder (reconstruction loss only)
@@ -98,21 +98,23 @@ uv run python cli.py train-latent-encoder --dataset dataset/diff_rhythm_dataset 
 uv run python cli.py precompute-latent-dataset --source-dataset dataset/diff_rhythm_dataset --encoder-checkpoint outputs/latent_encoder.pt --out dataset/latent_dataset
 
 # 3. Train the CFM student inside that latent space
-uv run python cli.py train-self --dataset dataset/latent_dataset --checkpoint outputs/latent_cfm_model.pt --architecture native_dit --lambda-vocal 0 --epochs 300 --batch-size 8
+uv run python cli.py train-self --dataset dataset/latent_dataset --checkpoint outputs/latent_cfm_model.pt --lambda-vocal 0 --epochs 300 --batch-size 8
 
 # 4. Generate -- decodes via the real frozen BigVGAN decoder automatically (config.latent_mode=True), not Vocos
 uv run python cli.py generate-local --text "..." --style "..." --checkpoint outputs/latent_cfm_model.pt --out outputs/latent_demo
 ```
 
-`--architecture native_dit` requires the DiffRhythm2 repo cloned onto
-`PYTHONPATH` (same requirement as distillation above), since `bigvgan` is not
-a pip package — needed by both `train-latent-encoder` and step 3's
-`train-self`. **Before trusting a freshly (re)trained encoder**, verify it
-didn't collapse (a real failure mode hit once already — flat/oscillating
-loss curve, near-zero `pitch_std_semitones` when ground-truth latents are
-decoded directly, bypassing the CFM student — see
-`scripts/evaluate_generation_quality.py` and `docs/project_history.md`
-§4.24's before/after numbers).
+Steps 1 and 4 require the DiffRhythm2 repo cloned onto `PYTHONPATH` (same
+requirement as distillation above), since `bigvgan` is not a pip package —
+needed to load the real frozen decoder they both call. **Before trusting a
+freshly (re)trained encoder**, verify it didn't collapse (a real failure
+mode hit once already — flat/oscillating loss curve, near-zero
+`pitch_std_semitones` when ground-truth latents are decoded directly,
+bypassing the CFM student — see `scripts/evaluate_generation_quality.py` and
+`docs/project_history.md` §4.24's before/after numbers). Distillation
+(`train-distill`, §3a) also works directly on a `latent_dataset`: since the
+student's latent is already at the teacher's own 64-dim/5Hz rate, the
+mel-bin/frame-rate bridging described in §3a is automatically skipped.
 
 On Kaggle, in order (see `scripts/README.md` for the full list):
 ```powershell
@@ -219,7 +221,7 @@ correct, not a bug (see §3a above).
   new launcher, do the same.
 - **Launch long training runs in small, bounded epoch increments** rather
   than one open-ended "run until early-stopping" call, especially on a
-  feature/architecture combination that hasn't been run start-to-finish
+  feature-space/size combination that hasn't been run start-to-finish
   before. A bounded run either completes (proving health) or fails fast;
   an unbounded one can silently consume most of a GPU-quota budget before
   anyone notices something is wrong — this happened for real, twice, in

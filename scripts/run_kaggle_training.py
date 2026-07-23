@@ -20,7 +20,7 @@ from src.integrations.kaggle_auto import (
     write_source_zip,
 )
 
-def _kernel_script_content(dataset_slug: str, epochs: str = "5", batch_size: str = "4", lambda_vocal: str = "1.0", save_every_epoch: bool = True, architecture: str = "microdit", max_records: str | None = None, dim: str | None = None, depth: str | None = None, heads: str | None = None) -> str:
+def _kernel_script_content(dataset_slug: str, epochs: str = "5", batch_size: str = "4", lambda_vocal: str = "1.0", save_every_epoch: bool = True, max_records: str | None = None, dim: str | None = None, depth: str | None = None, heads: str | None = None) -> str:
     # This script will run on the Kaggle GPU instance and log errors to output files instead of crashing
     # We use pure ASCII characters to prevent Windows cp1252 encoding crashes during kaggle push
     return f'''import os
@@ -135,7 +135,6 @@ try:
         "--epochs", "{epochs}",
         "--batch-size", "{batch_size}",
         "--lambda-vocal", "{lambda_vocal}",
-        "--architecture", "{architecture}",
         "--device", "cuda",
     ]
     if {max_records is not None}:
@@ -178,7 +177,6 @@ def main():
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--processed-kernel-ref", default=None)
     parser.add_argument("--lambda-vocal", type=float, default=1.0, help="Weight of auxiliary vocal-only prediction loss (Mixed Pro style, 0.0 disables it).")
-    parser.add_argument("--architecture", default="microdit", choices=("microdit", "native_dit"), help="microdit = this project's cross-attention student; native_dit = vendored DiffRhythm2 real DiT at student scale.")
     parser.add_argument("--max-records", type=int, default=None, help="Limit training to the first N usable records (for cheap smoke tests).")
     parser.add_argument("--dim", type=int, default=None)
     parser.add_argument("--depth", type=int, default=None)
@@ -265,7 +263,6 @@ def main():
     (kernel_dir / "run_training.py").write_text(
         _kernel_script_content(
             processed_dataset_slug, epochs, batch_size, str(args.lambda_vocal),
-            architecture=args.architecture,
             max_records=str(args.max_records) if args.max_records is not None else None,
             dim=str(args.dim) if args.dim is not None else None,
             depth=str(args.depth) if args.depth is not None else None,
