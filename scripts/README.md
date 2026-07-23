@@ -7,7 +7,7 @@ that all lives in `src/` and is reached via `cli.py`. See
 `docs/usage.md` for the full walkthrough; this file is just "which script do
 I run for X."
 
-## Mel-space pipeline (`--architecture microdit`, the default)
+## Mel-space pipeline (the default feature space)
 
 - **`run_kaggle_preprocess_all.py`** — batch preprocess raw audio (Demucs +
   Whisper + MuQ-MuLan) into a training dataset.
@@ -32,14 +32,20 @@ I run for X."
 - **`run_pipeline.py`** — local (no Kaggle) end-to-end smoke test:
   preprocess → train → sample, for verifying your environment before
   spending any Kaggle GPU time.
+- **`run_kaggle_preprocess_raw_audio.py`** — same preprocessing, but
+  `--raw-audio` (skips mel, keeps `waveforms/*.pt` raw 24kHz tensors instead)
+  — see `docs/data_preparation.md`'s "`--raw-audio`" section. Not yet
+  consumable by `train-self`/`train-latent-encoder` (still expect a mel
+  dataset); this is for a planned follow-up letting `LatentAudioEncoder`
+  train on the pristine original recording instead of a Vocos reconstruction.
 
-## Native latent pipeline (`--architecture native_dit`)
+## Native latent pipeline (same `MicroDiT` backbone, `latent_mode` dataset)
 
 Gives the student DiffRhythm2's own compressed 64-dim/5Hz Music VAE latent
 space instead of raw mel — see `docs/architecture.md`'s "Native latent
-backbone" section for why, and `docs/project_history.md` §4.24 for what went
-wrong the first time (a collapsed encoder) and how it was fixed. Run in this
-order:
+backbone and encoder" section for why, and `docs/project_history.md` §4.24
+for what went wrong the first time (a collapsed encoder) and how it was
+fixed. Run in this order:
 
 1. **`run_kaggle_latent_encoder.py`** — pretrain `LatentAudioEncoder` against
    the real, frozen BigVGAN decoder (reconstruction loss only). Sanity-check
@@ -47,7 +53,7 @@ order:
    oscillating loss curve or near-zero `pitch_std_semitones` on decoded
    ground-truth latents means retrain with more epochs, not move on.
 2. **`run_kaggle_latent_pipeline.py`** — precompute the latent dataset with
-   that encoder, train the CFM student (`native_dit`), generate one sample.
+   that encoder, train the CFM student, generate one sample.
 3. **`run_kaggle_latent_resume.py`** — if step 2 gets cut off partway (Kaggle
    sessions have a wall-clock limit), resume CFM training from the
    downloaded checkpoint instead of restarting from scratch. Launch with a

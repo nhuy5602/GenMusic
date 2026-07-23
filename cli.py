@@ -100,7 +100,6 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--ff-mult", type=int, default=4, help="Hệ số feed-forward.")
     train.add_argument("--frames-per-chunk", type=int, default=None, help="Override độ dài crop train; 384 tương đương khoảng bốn giây ở 24 kHz.")
     train.add_argument("--lambda-vocal", type=float, default=1.0, help="Weight of auxiliary vocal-only prediction loss (Mixed Pro style, 0.0 disables it).")
-    train.add_argument("--architecture", default="microdit", choices=("microdit", "native_dit"), help="microdit = this project's cross-attention lyric conditioning; native_dit = DiffRhythm2's real concatenated self-attention DiT, vendored (src/models/diffrhythm2_native.py), trained from scratch at student scale.")
 
     distill = sub.add_parser("train-distill", help="Huấn luyện chưng cất tri thức từ DiffRhythm gốc sang MicroDiT.")
     distill.add_argument("--dataset", required=True, nargs="+", help="Một hoặc nhiều thư mục dataset đã preprocess (kết hợp lại thành một tập huấn luyện).")
@@ -181,6 +180,7 @@ def build_parser() -> argparse.ArgumentParser:
     preprocess.add_argument("--skip-asr", action="store_true", help="Bỏ Whisper ASR và dùng nhãn text mặc định.")
     preprocess.add_argument("--demucs-device", default="auto", choices=("auto", "cuda", "cpu"))
     preprocess.add_argument("--whisper-device", default="auto", choices=("auto", "cpu", "cuda"))
+    preprocess.add_argument("--raw-audio", action="store_true", help="Lưu vocal/backing dưới dạng waveform 24kHz thô (waveforms/*.pt) thay vì mel-spectrogram -- dùng để train LatentAudioEncoder trực tiếp trên audio gốc, không qua Vocos decode.")
 
     return parser
 
@@ -238,7 +238,7 @@ def main(argv: list[str] | None = None) -> int:
         upload_report = upload_dataset_to_kaggle(args.out, username=args.username, dataset_ref=args.dataset_ref, timeout_seconds=args.timeout_seconds)
         report = {"status": upload_report["status"], "dataset_report": dataset_report, "upload": upload_report}
     elif args.command == "train-self":
-        report = train_model(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, roberta_model=args.roberta_model, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, frames_per_chunk=args.frames_per_chunk, resume=args.resume, save_every_epoch=args.save_every_epoch, checkpoint_every_steps=args.checkpoint_every_steps, log_every_steps=args.log_every_steps, progress_path=args.progress_file, lambda_vocal=args.lambda_vocal, architecture=args.architecture)
+        report = train_model(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, roberta_model=args.roberta_model, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, frames_per_chunk=args.frames_per_chunk, resume=args.resume, save_every_epoch=args.save_every_epoch, checkpoint_every_steps=args.checkpoint_every_steps, log_every_steps=args.log_every_steps, progress_path=args.progress_file, lambda_vocal=args.lambda_vocal)
     elif args.command == "train-distill":
         from src.training.distill_training import run_distillation_training
         report = run_distillation_training(args.dataset, args.student_checkpoint, args.teacher_checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, alpha_feature=args.alpha_feature, beta_repa=args.beta_repa, repo_id=args.repo_id, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, roberta_model=args.roberta_model, max_records=args.max_records, lambda_vocal=args.lambda_vocal)
@@ -286,6 +286,7 @@ def main(argv: list[str] | None = None) -> int:
             transcribe=not args.skip_asr,
             demucs_device=args.demucs_device,
             whisper_device=args.whisper_device,
+            raw_audio=args.raw_audio,
         )
     else:  # pragma: no cover - argparse enforces command choices
         raise ValueError(args.command)

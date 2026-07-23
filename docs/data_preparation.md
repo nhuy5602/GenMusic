@@ -77,10 +77,9 @@ log-mel correlation on real audio.
 
 ## Optional: converting to latent-space (64-dim/5Hz)
 
-The dataset above is mel-space, consumed directly by
-`train-self --architecture microdit` (the default). To instead train the
-student inside DiffRhythm2's own compressed Music VAE latent space
-(`--architecture native_dit`), run `cli.py precompute-latent-dataset` on top of
+The dataset above is mel-space, consumed directly by `train-self` (the
+default). To instead train the student inside DiffRhythm2's own compressed
+Music VAE latent space, run `cli.py precompute-latent-dataset` on top of
 this output — it re-decodes each record's mel through Vocos, re-encodes with a
 trained `LatentAudioEncoder`, and writes a new dataset directory with the same
 `records.jsonl`/`config.json` shape but `mels/*.pt` holding 64-dim/5Hz latents
@@ -88,3 +87,33 @@ instead of mel tensors, plus `config.json`'s `latent_mode: true`. See
 `docs/usage.md` and `docs/project_history.md` §4.24 for the full
 procedure (training the encoder first, its known collapse failure mode, and
 the fix).
+
+## Optional: `--raw-audio` (keep raw waveform, skip mel entirely)
+
+`preprocess-raw --raw-audio` skips `compute_mel_spectrogram()` entirely and
+saves the separated vocal/backing stems as raw 24kHz waveform tensors
+instead — `waveforms/<song>_{vocal,backing}.pt` (shape `(samples,)`, not
+`(n_mels, frames)`), plus `config.json`'s `raw_audio_mode: true`. Whisper
+transcription and the MuQ-MuLan style embedding still run exactly as in the
+default pipeline (neither depends on mel), so `records.jsonl`'s `text`/
+`segments`/`style_embed_path` fields are unchanged; only the audio path keys
+become `vocal_wav_path`/`backing_wav_path`.
+
+This exists for `LatentAudioEncoder` (`src/models/latent_codec.py`), which
+already takes raw waveform as input (`Conv1d(1, ...)`, not mel) — but
+`train-latent-encoder`/`precompute-latent-dataset` currently only have
+access to *mel* datasets, so they reconstruct an approximation of the raw
+audio by decoding mel back through Vocos first. A `--raw-audio` dataset lets
+the encoder train directly on the pristine original recording instead,
+removing that Vocos round trip from the encoder's training data entirely.
+**As of this writing, `train-latent-encoder`/`precompute-latent-dataset`
+still expect a mel dataset** — reading a `raw_audio_mode: true` dataset
+directly is a follow-up change, not yet wired up.
+
+```powershell
+uv run python cli.py preprocess-raw --input dataset/vietnamese_songs --output dataset/raw_audio_dataset --whisper-model base --raw-audio
+```
+
+On Kaggle: `scripts/run_kaggle_preprocess_raw_audio.py` (same flags/flow as
+`run_kaggle_preprocess_all.py`, minus the `vocos`/`encodec` dependencies,
+which this mode never needs).

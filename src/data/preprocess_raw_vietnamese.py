@@ -181,12 +181,22 @@ def process_file(
     demucs_device: str = "auto",
     device: str = "cpu",
     whisper_backend: str = "openai",
+    raw_audio: bool = False,
 ) -> dict:
+    """`raw_audio=True` skips `compute_mel_spectrogram` entirely and saves the
+    separated vocal/backing as raw 24kHz waveform tensors instead (under
+    `waveforms/`, not `mels/`) -- for feeding `LatentAudioEncoder`
+    (`src/models/latent_codec.py`) directly, without the current
+    mel->Vocos-decode->waveform round trip `precompute-latent-dataset` has to
+    do today because no raw audio survives the mel-only preprocessing output
+    (see docs/project_history.md for why that round trip exists and its
+    downside: the encoder never sees the pristine original recording, only a
+    Vocos reconstruction of it)."""
     sample_id = audio_path.stem
     print(f"\n==================== PROCESSING {sample_id} ====================", flush=True)
 
     separated_dir = output_dir / "separated"
-    mels_dir = output_dir / "mels"
+    mels_dir = output_dir / ("waveforms" if raw_audio else "mels")
     for d in (separated_dir, mels_dir):
         d.mkdir(parents=True, exist_ok=True)
 
@@ -210,8 +220,12 @@ def process_file(
         y_backing, sr = librosa.load(audio_path, sr=SAMPLE_RATE)
         vocals_wav = None
 
-    backing_tensor = compute_mel_spectrogram(y_backing, _MEL_CONFIG)
-    frames = backing_tensor.shape[1]
+    if raw_audio:
+        backing_tensor = torch.from_numpy(y_backing).float()
+        frames = backing_tensor.shape[0]  # sample count, not mel frame count
+    else:
+        backing_tensor = compute_mel_spectrogram(y_backing, _MEL_CONFIG)
+        frames = backing_tensor.shape[1]
 
     backing_pt_path = mels_dir / f"{sample_id}_backing.pt"
     torch.save(backing_tensor, backing_pt_path)
@@ -308,10 +322,15 @@ def process_file(
                     if str(segment.get("text", "")).strip()
                 ]
 
-        vocal_tensor = compute_mel_spectrogram(y_vocal[: frames * HOP_LENGTH], _MEL_CONFIG)
-        vocal_tensor = vocal_tensor[:, :frames]
-        if vocal_tensor.shape[1] < frames:
-            vocal_tensor = torch.nn.functional.pad(vocal_tensor, (0, frames - vocal_tensor.shape[1]))
+        if raw_audio:
+            vocal_tensor = torch.from_numpy(y_vocal[:frames]).float()
+            if vocal_tensor.shape[0] < frames:
+                vocal_tensor = torch.nn.functional.pad(vocal_tensor, (0, frames - vocal_tensor.shape[0]))
+        else:
+            vocal_tensor = compute_mel_spectrogram(y_vocal[: frames * HOP_LENGTH], _MEL_CONFIG)
+            vocal_tensor = vocal_tensor[:, :frames]
+            if vocal_tensor.shape[1] < frames:
+                vocal_tensor = torch.nn.functional.pad(vocal_tensor, (0, frames - vocal_tensor.shape[1]))
 
     # Save outputs
     vocal_pt_path = mels_dir / f"{sample_id}_vocal.pt"
@@ -323,6 +342,8 @@ def process_file(
         if song_folder.exists() and song_folder.name == sample_id:
             shutil.rmtree(song_folder, ignore_errors=True)
 
+    folder_name = "waveforms" if raw_audio else "mels"
+    path_key_suffix = "wav_path" if raw_audio else "mel_path"
     return {
         "id": sample_id,
         "text": lyrics,
@@ -333,9 +354,9 @@ def process_file(
         "has_vocal": has_vocal,
         "vocal_source": "demucs" if has_vocal else ("raw_mix_fallback" if not use_demucs else "silence_fallback"),
         "demucs_separated": has_backing_stem,
-        "backing_mel_path": f"mels/{sample_id}_backing.pt",
-        "vocal_mel_path": f"mels/{sample_id}_vocal.pt",
-        "style_embed_path": f"mels/{sample_id}_style.pt",
+        f"backing_{path_key_suffix}": f"{folder_name}/{sample_id}_backing.pt",
+        f"vocal_{path_key_suffix}": f"{folder_name}/{sample_id}_vocal.pt",
+        "style_embed_path": f"{folder_name}/{sample_id}_style.pt",
     }
 
 
@@ -350,6 +371,7 @@ def preprocess_raw_audio(
     transcribe: bool = True,
     demucs_device: str = "auto",
     whisper_device: str = "auto",
+    raw_audio: bool = False,
 ) -> dict:
     raw_dir = Path(input_path)
     output_dir = Path(output_path)
@@ -417,7 +439,7 @@ def preprocess_raw_audio(
                 record = process_file(
                     f, output_dir, whisper_model, keep_separated=(idx <= keep_separated_count),
                     use_demucs=use_demucs, transcribe=transcribe, demucs_device=demucs_device, device=style_device,
-                    whisper_backend=whisper_backend,
+                    whisper_backend=whisper_backend, raw_audio=raw_audio,
                 )
                 records.append(record)
             except Exception as e:
@@ -438,12 +460,17 @@ def preprocess_raw_audio(
     if failures:
         (output_dir / "preprocess_failures.json").write_text(json.dumps(failures, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # Write dataset config
+    # Write dataset config. raw_audio_mode=true tells downstream tools (see
+    # docs/data_preparation.md) that vocal_wav_path/backing_wav_path hold raw
+    # waveform tensors (samples,), not mel tensors -- n_mels/n_fft/hop_length
+    # are irrelevant to this dataset but kept for schema-compatibility with
+    # code that reads MusicDiffusionConfig defaults.
     config_data = {
         "sample_rate": SAMPLE_RATE,
         "n_mels": N_MELS,
         "n_fft": N_FFT,
         "hop_length": HOP_LENGTH,
+        "raw_audio_mode": raw_audio,
     }
     (output_dir / "config.json").write_text(json.dumps(config_data, indent=2), encoding="utf-8")
 
@@ -476,12 +503,14 @@ def main():
     parser.add_argument("--skip-asr", action="store_true", help="Bỏ Whisper ASR và dùng nhãn text mặc định.")
     parser.add_argument("--demucs-device", default="auto", choices=("auto", "cuda", "cpu"))
     parser.add_argument("--whisper-device", default="auto", choices=("auto", "cpu", "cuda"))
+    parser.add_argument("--raw-audio", action="store_true", help="Save vocal/backing as raw 24kHz waveform tensors instead of mel-spectrograms.")
     args = parser.parse_args()
 
     preprocess_raw_audio(
         args.input, args.output, args.whisper_model,
         use_demucs=not args.skip_demucs, transcribe=not args.skip_asr,
         demucs_device=args.demucs_device, whisper_device=args.whisper_device,
+        raw_audio=args.raw_audio,
     )
 
 
