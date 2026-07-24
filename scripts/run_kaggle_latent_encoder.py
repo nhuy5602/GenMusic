@@ -31,11 +31,13 @@ from src.integrations.kaggle_dataset_refs import PROCESSED_RAW_AUDIO_KERNELS
 def _kernel_script_content(
     epochs: str = "1", batch_size: str = "4", learning_rate: str = "2e-4",
     max_records: str | None = None, max_records_per_dataset: str | None = None,
+    warmup_steps: str | None = None,
 ) -> str:
     max_records_line = f'        "--max-records", "{max_records}",\n' if max_records is not None else ""
     max_records_per_dataset_line = (
         f'        "--max-records-per-dataset", "{max_records_per_dataset}",\n' if max_records_per_dataset is not None else ""
     )
+    warmup_steps_line = f'        "--warmup-steps", "{warmup_steps}",\n' if warmup_steps is not None else ""
     return f'''import os
 import shutil
 import subprocess
@@ -121,7 +123,7 @@ try:
         "--batch-size", "{batch_size}",
         "--learning-rate", "{learning_rate}",
         "--device", "cuda",
-{max_records_line}{max_records_per_dataset_line}    ], "train_latent_encoder")
+{max_records_line}{max_records_per_dataset_line}{warmup_steps_line}    ], "train_latent_encoder")
 
     print("LATENT ENCODER PRETRAINING COMPLETED SUCCESSFULLY!")
     print("Checkpoint saved at: /kaggle/working/latent_encoder.pt")
@@ -147,6 +149,7 @@ def main() -> None:
     parser.add_argument("--learning-rate", type=float, default=2e-4)
     parser.add_argument("--max-records", type=int, default=None, help="Limit the combined dataset to the first N usable records overall (for cheap smoke tests).")
     parser.add_argument("--max-records-per-dataset", type=int, default=None, help="Limit each attached processed dataset to its first N usable records before combining (e.g. 1 audio from each of several parts).")
+    parser.add_argument("--warmup-steps", type=int, default=None, help="Override train-latent-encoder's default (200) -- e.g. raise proportionally for a larger dataset/step count.")
     parser.add_argument("--processed-kernel-ref", type=str, default=None, nargs="+", help="Override KAGGLE_PROCESSED_KERNEL_REF for this run. Accepts multiple refs to combine several processed datasets into one training run.")
     parser.add_argument(
         "--raw-audio-part", type=int, default=None, nargs="+", choices=sorted(PROCESSED_RAW_AUDIO_KERNELS),
@@ -211,6 +214,7 @@ def main() -> None:
             str(args.epochs), str(args.batch_size), str(args.learning_rate),
             str(args.max_records) if args.max_records is not None else None,
             str(args.max_records_per_dataset) if args.max_records_per_dataset is not None else None,
+            str(args.warmup_steps) if args.warmup_steps is not None else None,
         ),
         encoding="utf-8",
     )
