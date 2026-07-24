@@ -15,23 +15,14 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from scripts.run_kaggle_preprocess_raw_audio import _kernel_script_content
 from src.integrations.kaggle_auto import (
-    kaggle_access_token,
     kaggle_auth_available,
     kaggle_auth_environment,
+    kaggle_cli_command,
     load_kaggle_api_tokens,
     resolve_kaggle_username,
     write_source_zip,
 )
-
-# Danh sách mặc định các tập dữ liệu Kaggle cần tiền xử lý
-RAW_DATASETS = [
-    "https://www.kaggle.com/datasets/sonlest/vietnamese-music-dataset-version3-part1",
-    "https://www.kaggle.com/datasets/sonlest/vietnamese-music-dataset-version3-part2",
-    "https://www.kaggle.com/datasets/sonlest/vietnamese-music-dataset-version3-part3",
-    "https://www.kaggle.com/datasets/sonlest/vietnamese-music-dataset-version3-part4",
-    "https://www.kaggle.com/datasets/sonlest/vietnamese-music-dataset-version3-part5",
-    "https://www.kaggle.com/datasets/sonlest/vietnamese-music-dataset-version3-part6",
-]
+from src.integrations.kaggle_dataset_refs import RAW_DATASETS  # noqa: F401 (kept as this module's public name)
 
 DATASET_SLUG_RE = re.compile(r"-part(\d+)$", re.IGNORECASE)
 
@@ -47,17 +38,6 @@ def _parse_dataset_ref(value: str) -> str:
     if len(parts) >= 2:
         return f"{parts[0]}/{parts[1]}"
     return text
-
-
-def _old_kaggle_cli(tokens: dict[str, str] | None = None) -> list[str]:
-    """Select a CLI compatible with either modern access-token or legacy auth."""
-    if kaggle_access_token(tokens):
-        return [sys.executable, "-m", "kaggle"]
-    import shutil
-    uvx = shutil.which("uvx")
-    if not uvx:
-        raise RuntimeError("uvx was not found; install uv before submitting Kaggle jobs")
-    return [uvx, "--from", "kaggle==1.7.4.5", "kaggle"]
 
 
 def _run_cli(cli: list[str], args: list[str], env: dict[str, str], *, timeout: int = 900) -> subprocess.CompletedProcess[str]:
@@ -186,7 +166,7 @@ def main() -> None:
     source_dir.mkdir(parents=True, exist_ok=True)
     kernels_dir.mkdir(parents=True, exist_ok=True)
 
-    cli = _old_kaggle_cli(tokens)
+    cli = kaggle_cli_command()
     source_slug = f"genmusic-source-dataprep-{int(time.time())}"
     source_ref = f"{username}/{source_slug}"
 

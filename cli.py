@@ -121,13 +121,14 @@ def build_parser() -> argparse.ArgumentParser:
     distill.add_argument("--lambda-vocal", type=float, default=1.0, help="Weight of auxiliary vocal-only prediction loss (Mixed Pro style, 0.0 disables it).")
 
     latent_encoder = sub.add_parser("train-latent-encoder", help="Pretrain một encoder mới (mel/audio -> latent 64 chiều, 5Hz) khớp với decoder BigVGAN thật của DiffRhythm2 (đóng băng, tải từ HuggingFace).")
-    latent_encoder.add_argument("--dataset", required=True)
+    latent_encoder.add_argument("--dataset", required=True, nargs="+", help="Một hoặc nhiều thư mục dataset đã preprocess (kết hợp lại thành một tập huấn luyện).")
     latent_encoder.add_argument("--checkpoint", required=True)
     latent_encoder.add_argument("--epochs", type=int, default=1)
     latent_encoder.add_argument("--batch-size", type=int, default=4)
     latent_encoder.add_argument("--learning-rate", type=float, default=1e-4)
     latent_encoder.add_argument("--device", default=None)
-    latent_encoder.add_argument("--max-records", type=int, default=None, help="Limit training to the first N usable records (for cheap smoke tests).")
+    latent_encoder.add_argument("--max-records", type=int, default=None, help="Limit the combined dataset to the first N usable records overall (for cheap smoke tests).")
+    latent_encoder.add_argument("--max-records-per-dataset", type=int, default=None, help="Limit each --dataset dir to its first N usable records before combining (e.g. 1 audio from each of several dataset parts).")
     latent_encoder.add_argument("--log-every-steps", type=int, default=10)
     latent_encoder.add_argument("--repo-id", default="ASLP-lab/DiffRhythm2")
     latent_encoder.add_argument("--crop-seconds", type=float, default=1.0, help="Độ dài đoạn audio train mỗi step (ngắn -- backprop qua cả BigVGAN decoder tốn VRAM nhiều nếu crop dài).")
@@ -244,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:
         report = run_distillation_training(args.dataset, args.student_checkpoint, args.teacher_checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, alpha_feature=args.alpha_feature, beta_repa=args.beta_repa, repo_id=args.repo_id, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, roberta_model=args.roberta_model, max_records=args.max_records, lambda_vocal=args.lambda_vocal)
     elif args.command == "train-latent-encoder":
         from src.training.latent_encoder_training import train_latent_encoder
-        report = train_latent_encoder(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, log_every_steps=args.log_every_steps, repo_id=args.repo_id, crop_seconds=args.crop_seconds, warmup_steps=args.warmup_steps, grad_clip_norm=args.grad_clip_norm)
+        report = train_latent_encoder(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, max_records_per_dataset=args.max_records_per_dataset, log_every_steps=args.log_every_steps, repo_id=args.repo_id, crop_seconds=args.crop_seconds, warmup_steps=args.warmup_steps, grad_clip_norm=args.grad_clip_norm)
     elif args.command == "precompute-latent-dataset":
         from src.data.precompute_latent_dataset import precompute_latent_dataset
         report = precompute_latent_dataset(args.source_dataset, args.encoder_checkpoint, args.out, device=args.device, max_records=args.max_records, crop_seconds=args.crop_seconds)

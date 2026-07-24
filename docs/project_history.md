@@ -60,6 +60,15 @@ không cần bridging (§4.27). Hệ quả: mọi kết quả latent-space tính
 một backbone không còn tồn tại trong mã nguồn hiện tại; chưa có lần train MicroDiT trực tiếp
 trên latent\_mode.
 
+**Cập nhật 2026-07-24**: `train-latent-encoder`/`precompute-latent-dataset` giờ đọc được dataset
+`--raw-audio` trực tiếp (cộng thẳng `vocal_wav_path`+`backing_wav_path`, bỏ hẳn vòng
+mel→Vocos-decode chỉ để lấy lại waveform); `train-latent-encoder` cũng nhận nhiều dataset dir
+cùng lúc như `train-self` đã có. Verify thật trên Kaggle: truy cập được cả 6 phần raw-audio đã
+preprocess trước đó (1843 bài), train thử 1 epoch với 1 bài/phần × 6 phần trong một lần chạy
+— không lỗi. Log VRAM mới thêm cho thấy batch=4 (đang dùng) đã gần chạm giới hạn 16GB của T4;
+batch=8 (từng được đề xuất để tăng tốc) sẽ OOM — xem §4.28. Chưa có lần train thật (nhiều epoch)
+trên dữ liệu raw-audio mới; encoder hiện tại vẫn là checkpoint train trên mel→Vocos cũ (§4.24).
+
 ---
 
 ## 1. Giới thiệu
@@ -1614,6 +1623,61 @@ trực tiếp trên latent\_mode — mọi kết quả latent-space tính đến
 `--architecture` nữa) trên đúng dataset latent\_mode đã có, so `loss_gt`/`pitch_std` với
 checkpoint `NativeDiTStudent` cũ ở cùng epoch budget — tách được biến số kiến trúc khỏi biến
 số representation lần đầu tiên cho nhánh latent.
+
+### 4.28 `--raw-audio` cho `train-latent-encoder`: bỏ hẳn vòng lặp qua Vocos, mở rộng sang nhiều dataset cùng lúc
+
+`precompute-latent-dataset`/`train-latent-encoder` trước đây luôn phải giải mã mel-space dataset
+ngược lại thành waveform qua Vocos trước khi đưa vào `LatentAudioEncoder` (`Conv1d(1, ...)`, nhận
+waveform thô) — dù bản thân encoder không cần mel, chỉ vì dataset chưa từng lưu waveform gốc.
+`preprocess-raw --raw-audio` (phiên trước) đã tạo được dataset lưu thẳng waveform
+(`waveforms/*.pt`, `config.json`'s `raw_audio_mode: true`), nhưng hai lệnh trên vẫn chưa đọc được
+nó (`MusicDiffusionConfig(**config.json)` còn chưa có field `raw_audio_mode` — sẽ crash). Phiên
+này wire nốt phần còn thiếu:
+
+1. Thêm field `raw_audio_mode: bool = False` vào `MusicDiffusionConfig`. `train_latent_encoder`
+   và `precompute_latent_dataset` giờ rẽ nhánh: nếu `raw_audio_mode`, cộng thẳng
+   `vocal_wav_path` + `backing_wav_path` (đã cùng chiều dài từ bước preprocess) thành full-mix
+   waveform, bỏ hoàn toàn `reconstruct_full_mix`/`denormalize_mel`/`vocos.decode()`.
+2. `train_latent_encoder`'s `dataset_dir` giờ nhận một hoặc nhiều thư mục (`str | Path |
+   list[...]`), giống convention `MusicDiffusionDataset` đã có ở `train-self`/`train-distill` —
+   thêm `--max-records-per-dataset` (cắt N record ở MỖI dataset TRƯỚC khi ghép, khác
+   `--max-records` cắt tổng SAU khi ghép) để có thể lấy đúng N bài từ mỗi phần một cách chủ
+   động, không phụ thuộc thứ tự ghép.
+3. Thêm log `peak_vram_gb` (`torch.cuda.max_memory_allocated`) vào mỗi step + report cuối —
+   không tốn gì thêm, nhưng cho dữ liệu thật để trả lời câu hỏi "tăng batch_size có an toàn
+   không" thay vì đoán.
+
+**Verify trên Kaggle thật** (không thể test local: `bigvgan` chỉ import được sau khi clone repo
+DiffRhythm2, việc launcher script tự làm trên Kaggle):
+- Kiểm tra khả năng truy cập cả 6 phần dataset raw-audio đã preprocess trước đó (tổng 1843
+  record) bằng cách tải riêng `records.jsonl` + 1-2 file waveform mỗi phần qua
+  `KaggleApi.kernels_output(file_pattern=...)` (regex lọc file, không tải nguyên output GB) —
+  cả 6 phần đọc được, tensor hợp lệ, không NaN.
+- Job nhỏ #1: 2 record từ 1 dataset (part 6), 1 epoch, batch=1 — `raw_audio_mode: true` detect
+  đúng, loss tính được, 4,15s, `peak_vram_gb=4.33`.
+- Job nhỏ #2: 6 record, MỖI record từ 1 trong 6 dataset khác nhau
+  (`--raw-audio-part 1 2 3 4 5 6 --max-records-per-dataset 1`), 1 epoch, batch=2 — report's
+  `"datasets"` list đủ cả 6 kernel ref, `record_count: 6`, 3 step, 11,3s, `peak_vram_gb=7,985`.
+
+**Phát hiện phụ quan trọng từ 2 số đo VRAM trên** (batch=1 → 4,33GB; batch=2 → 7,985GB): ngoại
+suy tuyến tính (fixed overhead ≈0,68GB + ≈3,66GB/sample) cho batch=4 ≈15,3GB (rất sát giới hạn
+16GB của T4 — khớp với thực tế batch=4 đã dùng ổn định trong các lần train thật trước đó, §4.24)
+và batch=8 ≈30GB — **chắc chắn OOM**. Một gợi ý trước đó (tăng `batch_size` lên 8 để tăng tốc
+Tensor Core) do vậy không áp dụng được ở `crop_seconds` hiện tại; batch=4 đã gần ngưỡng an toàn.
+
+**Dọn code liên quan cùng phiên**: xoá `_old_kaggle_cli()` (hàm tự dò auth cũ/mới, dead code từ
+khi `.env` chỉ còn account token mới) trong script submit multi-part, đổi tên
+`prepare_kaggle_datasets.py` → `run_kaggle_multi_part_preprocess_raw_audio.py` (khớp convention
+`run_kaggle_*.py` của mọi script khác, giống cặp `run_kaggle_training.py`/
+`run_kaggle_multi_part_training.py`), và tách `RAW_DATASETS`/`PROCESSED_RAW_AUDIO_KERNELS` ra
+`src/integrations/kaggle_dataset_refs.py` làm nguồn tham chiếu chung, thay cho việc mỗi script tự
+khai báo lại hoặc phụ thuộc vào state file bị gitignore.
+
+**Việc chưa làm**: `precompute-latent-dataset` vẫn chưa đọc trực tiếp `raw_audio_mode` dataset
+nhiều-nguồn cùng lúc (chỉ `train-latent-encoder` có); và encoder hiện tại (checkpoint đã fix ở
+§4.24, xác nhận bằng tai) vẫn được train trên dữ liệu mel→Vocos cũ, chưa có lần train thật nào
+trên dữ liệu raw-audio pristine mới — đây là bước tiếp theo hợp lý, có thể chạy trên toàn bộ 1843
+bài của cả 6 phần nhờ hạ tầng vừa verify ở trên.
 
 ---
 

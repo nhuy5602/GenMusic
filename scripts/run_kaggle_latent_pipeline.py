@@ -31,6 +31,7 @@ from src.integrations.kaggle_auto import (
     resolve_kaggle_username,
     write_source_zip,
 )
+from src.integrations.kaggle_dataset_refs import PROCESSED_RAW_AUDIO_KERNELS
 
 
 def _kernel_script_content(cfm_epochs: str, cfm_batch_size: str, dim: str, depth: str, heads: str, gen_text: str, gen_style: str, gen_duration: str) -> str:
@@ -203,7 +204,14 @@ def main() -> None:
     parser.add_argument("--gen-style", default="soft Vietnamese ballad")
     parser.add_argument("--gen-duration", type=float, default=8.0)
     parser.add_argument("--processed-kernel-ref", type=str, default=None)
+    parser.add_argument(
+        "--raw-audio-part", type=int, default=None, choices=sorted(PROCESSED_RAW_AUDIO_KERNELS),
+        help="Shortcut for --processed-kernel-ref: look up part N in PROCESSED_RAW_AUDIO_KERNELS "
+        "(src/integrations/kaggle_dataset_refs.py) instead of pasting a kernel ref by hand.",
+    )
     args = parser.parse_args()
+    if args.raw_audio_part is not None and not args.processed_kernel_ref:
+        args.processed_kernel_ref = PROCESSED_RAW_AUDIO_KERNELS[args.raw_audio_part]
 
     project_root = Path(__file__).resolve().parents[1]
     tokens = kaggle_auth_environment(load_kaggle_api_tokens())

@@ -8,6 +8,13 @@ resulting compressed latent space (see the conversation notes in
 src/models/latent_codec.py's module docstring for why -- this project's
 student has always generated raw, uncompressed mel directly, at ~19x the
 frame rate DiffRhythm2's own DiT was actually designed around).
+
+Accepts either a mel dataset (reconstructs the full mix in log-mel space,
+decodes it through Vocos to get a target waveform -- an approximation, since
+that decode never happened during recording) or a `--raw-audio` dataset
+(`config.json`'s `raw_audio_mode: true` -- sums the already-separated vocal/
+backing waveform tensors directly, no Vocos involved, so the encoder trains
+on the pristine original recording).
 """
 
 from __future__ import annotations
@@ -58,8 +65,38 @@ class _ReconstructionDataset:
         return {"vocal_mel": vocal_crop.transpose(0, 1), "backing_mel": backing_crop.transpose(0, 1)}
 
 
+class _RawAudioReconstructionDataset:
+    """Fixed-length crops of the full-mix raw waveform (vocal + backing summed
+    sample-for-sample), for a `--raw-audio` preprocessed dataset. Skips the
+    mel round trip entirely -- no Vocos decode needed since the pristine
+    24kHz recording is already on disk."""
+
+    def __init__(self, records: list[dict[str, Any]], crop_samples: int):
+        self.records = records
+        self.crop_samples = crop_samples
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+    def __getitem__(self, index: int):
+        torch, _ = _torch()
+        record = self.records[index]
+        vocal_wav = torch.load(Path(record["vocal_wav_path"]), map_location="cpu", weights_only=True)
+        backing_wav = torch.load(Path(record["backing_wav_path"]), map_location="cpu", weights_only=True)
+        samples = self.crop_samples
+        available = min(vocal_wav.shape[-1], backing_wav.shape[-1])
+        if available <= samples:
+            vocal_crop = torch.nn.functional.pad(vocal_wav, (0, samples - available + 1))[: samples + 1][:samples]
+            backing_crop = torch.nn.functional.pad(backing_wav, (0, samples - available + 1))[: samples + 1][:samples]
+        else:
+            start = torch.randint(0, available - samples, (1,)).item()
+            vocal_crop = vocal_wav[start : start + samples]
+            backing_crop = backing_wav[start : start + samples]
+        return {"full_mix": vocal_crop + backing_crop}
+
+
 def train_latent_encoder(
-    dataset_dir: str | Path,
+    dataset_dir: str | Path | list[str | Path],
     checkpoint_path: str | Path,
     *,
     epochs: int = 1,
@@ -67,13 +104,22 @@ def train_latent_encoder(
     learning_rate: float = 1e-4,
     device: str | None = None,
     max_records: int | None = None,
+    max_records_per_dataset: int | None = None,
     log_every_steps: int = 10,
     repo_id: str = "ASLP-lab/DiffRhythm2",
     crop_seconds: float = 1.0,
     warmup_steps: int = 200,
     grad_clip_norm: float = 1.0,
 ) -> dict[str, Any]:
-    """crop_seconds is deliberately short (1s default, not this project's usual
+    """dataset_dir accepts either one path or a list of paths -- multiple
+    independently-preprocessed datasets (e.g. different raw-data parts) are
+    combined into a single training set, matching MusicDiffusionDataset's
+    convention (self_diffusion.py). max_records_per_dataset caps each
+    individual dir BEFORE combining (e.g. 1 record from each of several
+    parts, for a smoke test that exercises every part); max_records caps the
+    combined total AFTER that.
+
+    crop_seconds is deliberately short (1s default, not this project's usual
     ~4s CFM crop): backprop through the full BigVGAN decoder (1536 initial
     channels, 6 transposed-conv upsample stages) on a multi-second segment
     exhausted a T4's 16GB VRAM even at batch_size=2 (confirmed via a real OOM
@@ -94,10 +140,16 @@ def train_latent_encoder(
     torch, DataLoaderClass = _torch()
     from ..models.latent_codec import LatentAudioEncoder, load_frozen_decoder, multi_scale_mel_loss
 
-    root = Path(dataset_dir)
+    dataset_dirs = [Path(dataset_dir)] if isinstance(dataset_dir, (str, Path)) else [Path(d) for d in dataset_dir]
+    if not dataset_dirs:
+        raise ValueError("dataset_dir must contain at least one path")
+    root = dataset_dirs[0]
     config = MusicDiffusionConfig(**json.loads((root / "config.json").read_text(encoding="utf-8")))
-    crop_frames = max(1, round(crop_seconds * config.sample_rate / config.hop_length))
-    records = [_with_absolute_paths(root, record) for record in _filter_training_records(_read_records(root))]
+    raw_audio_mode = config.raw_audio_mode
+    records = []
+    for d in dataset_dirs:
+        usable = [_with_absolute_paths(d, record) for record in _filter_training_records(_read_records(d))]
+        records.extend(usable[:max_records_per_dataset] if max_records_per_dataset is not None else usable)
     if max_records is not None:
         records = records[:max_records]
     if not records:
@@ -108,20 +160,30 @@ def train_latent_encoder(
     encoder = LatentAudioEncoder().to(selected_device)
     decoder_handle = load_frozen_decoder(selected_device, repo_id=repo_id)
 
-    from vocos import Vocos
-
-    vocos = Vocos.from_pretrained("charactr/vocos-mel-24khz").to(selected_device).eval()
-    for param in vocos.parameters():
-        param.requires_grad = False
-
     optimizer = torch.optim.AdamW(encoder.parameters(), lr=learning_rate)
-    dataset = _ReconstructionDataset(records, config, crop_frames)
 
-    def collate_fn(batch):
-        return {
-            "vocal_mel": torch.stack([item["vocal_mel"] for item in batch]),
-            "backing_mel": torch.stack([item["backing_mel"] for item in batch]),
-        }
+    if raw_audio_mode:
+        # Pristine 24kHz recording already on disk -- no mel, no Vocos decode.
+        crop_samples = max(1, round(crop_seconds * config.sample_rate))
+        dataset = _RawAudioReconstructionDataset(records, crop_samples)
+
+        def collate_fn(batch):
+            return {"full_mix": torch.stack([item["full_mix"] for item in batch])}
+    else:
+        from vocos import Vocos
+
+        vocos = Vocos.from_pretrained("charactr/vocos-mel-24khz").to(selected_device).eval()
+        for param in vocos.parameters():
+            param.requires_grad = False
+
+        crop_frames = max(1, round(crop_seconds * config.sample_rate / config.hop_length))
+        dataset = _ReconstructionDataset(records, config, crop_frames)
+
+        def collate_fn(batch):
+            return {
+                "vocal_mel": torch.stack([item["vocal_mel"] for item in batch]),
+                "backing_mel": torch.stack([item["backing_mel"] for item in batch]),
+            }
 
     dataloader = DataLoaderClass(dataset, batch_size=max(1, int(batch_size)), shuffle=True, collate_fn=collate_fn)
 
@@ -145,19 +207,24 @@ def train_latent_encoder(
     for epoch in range(max(1, int(epochs))):
         epoch_losses: list[float] = []
         for batch in dataloader:
-            vocal_mel = batch["vocal_mel"].to(selected_device)
-            backing_mel = batch["backing_mel"].to(selected_device)
-            full_mix_normalized = reconstruct_full_mix(vocal_mel, backing_mel, config)
+            if raw_audio_mode:
+                target_24k = batch["full_mix"].to(selected_device)  # (B, samples), already the pristine recording
+            else:
+                vocal_mel = batch["vocal_mel"].to(selected_device)
+                backing_mel = batch["backing_mel"].to(selected_device)
+                full_mix_normalized = reconstruct_full_mix(vocal_mel, backing_mel, config)
+
+                with torch.no_grad():
+                    # (B, T, n_mels) -> (B, n_mels, T), Vocos convention.
+                    log_mel = denormalize_mel(full_mix_normalized, config).transpose(1, 2)
+                    # Vocos.decode() runs under torch.inference_mode() internally, which
+                    # produces tensors that can NEVER re-enter an autograd graph even
+                    # after this block exits (stricter than plain no_grad) -- clone to a
+                    # normal tensor before the encoder (a real, gradient-tracked module)
+                    # consumes it below.
+                    target_24k = vocos.decode(log_mel).clone()  # (B, samples) at config.sample_rate (24kHz)
 
             with torch.no_grad():
-                # (B, T, n_mels) -> (B, n_mels, T), Vocos convention.
-                log_mel = denormalize_mel(full_mix_normalized, config).transpose(1, 2)
-                # Vocos.decode() runs under torch.inference_mode() internally, which
-                # produces tensors that can NEVER re-enter an autograd graph even
-                # after this block exits (stricter than plain no_grad) -- clone to a
-                # normal tensor before the encoder (a real, gradient-tracked module)
-                # consumes it below.
-                target_24k = vocos.decode(log_mel).clone()  # (B, samples) at config.sample_rate (24kHz)
                 target_48k = torch.nn.functional.interpolate(
                     target_24k.unsqueeze(1), scale_factor=decoder_handle.sampling_rate / config.sample_rate,
                     mode="linear", align_corners=False,
@@ -180,7 +247,10 @@ def train_latent_encoder(
             epoch_losses.append(loss_value)
             global_step += 1
             if log_every_steps > 0 and global_step % log_every_steps == 0:
-                print(f"epoch={epoch + 1} step={global_step} lr={_lr_at(global_step):.7f} loss={loss_value:.6f}", flush=True)
+                vram_note = ""
+                if selected_device.startswith("cuda"):
+                    vram_note = f" peak_vram_gb={torch.cuda.max_memory_allocated(selected_device) / 1e9:.2f}"
+                print(f"epoch={epoch + 1} step={global_step} lr={_lr_at(global_step):.7f} loss={loss_value:.6f}{vram_note}", flush=True)
 
         avg_loss = sum(epoch_losses) / max(1, len(epoch_losses))
         loss_curve.append({"epoch": epoch + 1, "loss": avg_loss})
@@ -194,7 +264,8 @@ def train_latent_encoder(
     report = {
         "status": "complete",
         "backend": "genmusic-vn-latent-encoder",
-        "dataset": str(root.resolve()),
+        "datasets": [str(d.resolve()) for d in dataset_dirs],
+        "raw_audio_mode": raw_audio_mode,
         "checkpoint": str(destination.resolve()),
         "device": selected_device,
         "record_count": len(records),
@@ -204,6 +275,7 @@ def train_latent_encoder(
         "final_loss": round(final_loss, 6),
         "loss_curve": loss_curve,
         "elapsed_seconds": round(time.perf_counter() - started, 3),
+        "peak_vram_gb": round(torch.cuda.max_memory_allocated(selected_device) / 1e9, 3) if selected_device.startswith("cuda") else None,
         "decoder_repo_id": repo_id,
         "decoder_sampling_rate": decoder_handle.sampling_rate,
         "decoder_fps": decoder_handle.fps,

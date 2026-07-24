@@ -43,6 +43,11 @@ class MusicDiffusionConfig:
     # formula does not apply to arbitrary learned latent channels, so cfm_loss
     # uses vocal_mel directly as x1 instead of recombining it with backing_mel.
     latent_mode: bool = False
+    # When True, `vocal_wav_path`/`backing_wav_path` (not `*_mel_path`) hold raw
+    # 24kHz waveform tensors -- see preprocess-raw --raw-audio in
+    # docs/data_preparation.md. Lets LatentAudioEncoder train directly on the
+    # pristine recording instead of a Vocos-decoded reconstruction of a mel.
+    raw_audio_mode: bool = False
 
 
 def _config_from_dict(data: dict) -> "MusicDiffusionConfig":

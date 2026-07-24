@@ -100,15 +100,13 @@ default pipeline (neither depends on mel), so `records.jsonl`'s `text`/
 become `vocal_wav_path`/`backing_wav_path`.
 
 This exists for `LatentAudioEncoder` (`src/models/latent_codec.py`), which
-already takes raw waveform as input (`Conv1d(1, ...)`, not mel) — but
-`train-latent-encoder`/`precompute-latent-dataset` currently only have
-access to *mel* datasets, so they reconstruct an approximation of the raw
-audio by decoding mel back through Vocos first. A `--raw-audio` dataset lets
-the encoder train directly on the pristine original recording instead,
-removing that Vocos round trip from the encoder's training data entirely.
-**As of this writing, `train-latent-encoder`/`precompute-latent-dataset`
-still expect a mel dataset** — reading a `raw_audio_mode: true` dataset
-directly is a follow-up change, not yet wired up.
+already takes raw waveform as input (`Conv1d(1, ...)`, not mel). Given a mel
+dataset, `train-latent-encoder`/`precompute-latent-dataset` reconstruct an
+approximation of the raw audio by decoding mel back through Vocos first.
+Given a `--raw-audio` dataset (`config.json`'s `raw_audio_mode: true`), both
+instead sum the already-separated `vocal_wav_path`/`backing_wav_path` tensors
+directly and skip Vocos entirely — the encoder trains on the pristine
+original recording, not a Vocos reconstruction of it.
 
 ```powershell
 uv run python cli.py preprocess-raw --input dataset/vietnamese_songs --output dataset/raw_audio_dataset --whisper-model base --raw-audio
@@ -116,4 +114,22 @@ uv run python cli.py preprocess-raw --input dataset/vietnamese_songs --output da
 
 On Kaggle: `scripts/run_kaggle_preprocess_raw_audio.py` (same flags/flow as
 `run_kaggle_preprocess_all.py`, minus the `vocos`/`encodec` dependencies,
-which this mode never needs).
+which this mode never needs). To preprocess every part of the raw corpus
+(`RAW_DATASETS`, `src/integrations/kaggle_dataset_refs.py`) instead of one at
+a time, use `scripts/run_kaggle_multi_part_preprocess_raw_audio.py` — submits
+up to `--max-new-jobs` kernels (Kaggle allows 2 concurrent batch GPU
+sessions), tracks what's already been submitted in
+`outputs/kaggle_datasets_preparation/submitted_state.json` so reruns don't
+duplicate work, and `--wait-and-loop` chains through the rest of the parts
+automatically.
+
+`cli.py train-latent-encoder --dataset` accepts more than one of these
+output directories at once (combined into a single training set, like
+`train-self`) — `--max-records-per-dataset` caps each dir's contribution
+*before* combining. `scripts/run_kaggle_latent_encoder.py` exposes both
+through `--processed-kernel-ref`/`--max-records-per-dataset`, plus a
+`--raw-audio-part 1 2 3 4 5 6` shortcut that looks the kernel refs up in
+`PROCESSED_RAW_AUDIO_KERNELS` instead of pasting them by hand, e.g.
+`--raw-audio-part 1 2 3 4 5 6 --max-records-per-dataset 1` for a 6-record
+smoke test with one song from each part. `precompute-latent-dataset` does
+not yet support multiple source dataset dirs.

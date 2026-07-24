@@ -569,7 +569,10 @@ def _resolve_record_path(root: Path, path_str: str) -> Path:
     path = Path(path_str)
     return path if path.is_absolute() else root / path
 
-_MEL_PATH_FIELDS = ("mel_path", "backing_mel_path", "vocal_mel_path", "style_embed_path")
+_MEL_PATH_FIELDS = (
+    "mel_path", "backing_mel_path", "vocal_mel_path",
+    "backing_wav_path", "vocal_wav_path", "style_embed_path",
+)
 
 def _with_absolute_paths(root: Path, record: dict[str, Any]) -> dict[str, Any]:
     """Rewrite a record's mel/style path fields to absolute paths under its own

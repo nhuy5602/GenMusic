@@ -37,6 +37,7 @@ backbone" below):
 ```mermaid
 flowchart TD
     F2[Mel-space dataset, records.jsonl] --> N[train-latent-encoder: LatentAudioEncoder vs. frozen BigVGAN decoder]
+    F3[--raw-audio dataset, raw_audio_mode: true] --> N
     N --> O[precompute-latent-dataset: mel -> Vocos decode -> encoder -> 64-dim/5Hz latent]
     O --> P[train-self --lambda-vocal 0]
     P --> Q[generate-local: decode via the real frozen BigVGAN decoder, not Vocos]
@@ -207,6 +208,17 @@ student that same compressed space (rather than only resampling the
   wire an existing mel dataset into this space; `render_mel_to_wav()`
   branches on `latent_mode` to decode through the frozen BigVGAN decoder
   directly instead of Vocos.
+- **`train-latent-encoder` also accepts a `--raw-audio` dataset**
+  (`config.json`'s `raw_audio_mode: true`) instead of a mel dataset —
+  `LatentAudioEncoder` already takes raw waveform (`Conv1d(1, ...)`), so this
+  sums the already-separated `vocal_wav_path`/`backing_wav_path` tensors
+  directly, skipping the mel→Vocos-decode round trip entirely (the encoder
+  trains on the pristine recording, not a Vocos reconstruction of it). Also
+  accepts several dataset dirs at once (like `train-self`), each optionally
+  capped via `--max-records-per-dataset` before combining — used to
+  smoke-test the 6-part raw corpus with 1 record from each part in a single
+  run. `precompute-latent-dataset` does not yet read a `raw_audio_mode`
+  dataset directly (still expects mel).
 
 **Failure mode hit once already, worth knowing before retraining this
 encoder**: with a flat learning rate and no gradient clipping, the loss

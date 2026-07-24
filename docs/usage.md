@@ -189,9 +189,13 @@ uv run python scripts/run_kaggle_experiment_matrix.py --max-files 40 --whisper-m
 For training across the full multi-part raw corpus rather than a single
 dataset part:
 ```powershell
-uv run python scripts/run_kaggle_all_parts.py
 uv run python scripts/run_kaggle_multi_part_training.py
 ```
+(there is currently no mel-space multi-part *preprocessing* script -- the
+`--raw-audio` corpus has one, `scripts/run_kaggle_multi_part_preprocess_raw_audio.py`,
+see `docs/data_preparation.md`'s "`--raw-audio`" section, but it produces a
+raw-waveform dataset, not the mel dataset `run_kaggle_multi_part_training.py`
+expects.)
 
 Before any of the above, a quick local smoke test (no Kaggle, ~2-3 minutes
 on CPU) confirms your environment is set up correctly:

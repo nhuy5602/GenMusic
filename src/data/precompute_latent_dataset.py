@@ -10,10 +10,14 @@ unchanged, just with MusicDiffusionConfig.latent_mode=True (see that field's
 docstring: skips reconstruct_full_mix since the full-mix combination already
 happened here, in mel space, before encoding).
 
-Each record's full-mix mel (vocal + backing, combined the same way training
-always has) is decoded to real 24kHz audio via the frozen Vocos vocoder, then
-encoded through the trained LatentAudioEncoder -- NOT reconstruct_full_mix'd
-in latent space, since that formula only holds for log-mel channels.
+Each record's full-mix (vocal + backing, combined the same way training
+always has) is encoded through the trained LatentAudioEncoder -- NOT
+reconstruct_full_mix'd in latent space, since that formula only holds for
+log-mel channels. For a mel source dataset, the full mix is decoded to real
+24kHz audio via the frozen Vocos vocoder first (an approximation, since that
+decode never happened during recording); for a `--raw-audio` source dataset
+(`config.json`'s `raw_audio_mode: true`), the already-separated vocal/backing
+waveform tensors are summed directly instead -- no Vocos involved.
 """
 
 from __future__ import annotations
@@ -34,7 +38,6 @@ def precompute_latent_dataset(
     crop_seconds: float = 4.096,
 ) -> dict[str, Any]:
     import torch
-    from vocos import Vocos
 
     from ..models.latent_codec import DECODER_FPS, DECODER_IN_CHANNELS, LatentAudioEncoder
     from ..models.text_to_music_diffusion import MusicDiffusionConfig, denormalize_mel, reconstruct_full_mix
@@ -45,6 +48,7 @@ def precompute_latent_dataset(
     (output_root / "mels").mkdir(parents=True, exist_ok=True)
 
     source_config = MusicDiffusionConfig(**json.loads((source_root / "config.json").read_text(encoding="utf-8")))
+    raw_audio_mode = source_config.raw_audio_mode
     records = [_with_absolute_paths(source_root, record) for record in _filter_training_records(_read_records(source_root))]
     if max_records is not None:
         records = records[:max_records]
@@ -58,18 +62,28 @@ def precompute_latent_dataset(
     encoder.load_state_dict(payload["encoder"])
     encoder.eval()
 
-    vocos = Vocos.from_pretrained("charactr/vocos-mel-24khz").to(selected_device).eval()
+    vocos = None
+    if not raw_audio_mode:
+        from vocos import Vocos
+
+        vocos = Vocos.from_pretrained("charactr/vocos-mel-24khz").to(selected_device).eval()
 
     output_records = []
     frames_per_chunk = max(1, round(crop_seconds * DECODER_FPS))
     with torch.no_grad():
         for record in records:
-            vocal_mel = _load_mel(Path(record["vocal_mel_path"])).unsqueeze(0).to(selected_device)
-            backing_mel = _load_mel(Path(record["backing_mel_path"])).unsqueeze(0).to(selected_device)
-            # (1, n_mels, T) -> (1, T, n_mels) to match reconstruct_full_mix's expected layout
-            full_mix_normalized = reconstruct_full_mix(vocal_mel.transpose(1, 2), backing_mel.transpose(1, 2), source_config)
-            log_mel = denormalize_mel(full_mix_normalized, source_config).transpose(1, 2)  # (1, n_mels, T), Vocos convention
-            waveform_24k = vocos.decode(log_mel).clone()  # (1, samples)
+            if raw_audio_mode:
+                vocal_wav = torch.load(Path(record["vocal_wav_path"]), map_location=selected_device, weights_only=True)
+                backing_wav = torch.load(Path(record["backing_wav_path"]), map_location=selected_device, weights_only=True)
+                length = min(vocal_wav.shape[-1], backing_wav.shape[-1])
+                waveform_24k = (vocal_wav[:length] + backing_wav[:length]).unsqueeze(0)  # (1, samples)
+            else:
+                vocal_mel = _load_mel(Path(record["vocal_mel_path"])).unsqueeze(0).to(selected_device)
+                backing_mel = _load_mel(Path(record["backing_mel_path"])).unsqueeze(0).to(selected_device)
+                # (1, n_mels, T) -> (1, T, n_mels) to match reconstruct_full_mix's expected layout
+                full_mix_normalized = reconstruct_full_mix(vocal_mel.transpose(1, 2), backing_mel.transpose(1, 2), source_config)
+                log_mel = denormalize_mel(full_mix_normalized, source_config).transpose(1, 2)  # (1, n_mels, T), Vocos convention
+                waveform_24k = vocos.decode(log_mel).clone()  # (1, samples)
 
             latent = encoder(waveform_24k).squeeze(0).transpose(0, 1).cpu()  # (T_latent, DECODER_IN_CHANNELS)
 
@@ -112,6 +126,7 @@ def precompute_latent_dataset(
         "status": "complete",
         "backend": "genmusic-vn-latent-dataset",
         "source_dataset": str(source_root.resolve()),
+        "source_raw_audio_mode": raw_audio_mode,
         "output_dataset": str(output_root.resolve()),
         "record_count": len(output_records),
         "frames_per_chunk": frames_per_chunk,

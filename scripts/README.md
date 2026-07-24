@@ -25,19 +25,26 @@ I run for X."
 - **`run_kaggle_experiment_matrix.py`** (→ remotely runs
   `run_experiment_matrix.py`) — baseline vs. several `alpha_feature` values
   vs. a smaller architecture, against one shared preprocessed dataset.
-- **`run_kaggle_all_parts.py`** / **`run_kaggle_multi_part_training.py`** —
-  preprocess and train across multiple dataset parts (for scaling past a
-  single-part corpus), a deliberately separate workflow from the
-  single-dataset scripts above.
+- **`run_kaggle_multi_part_training.py`** — preprocess and train across
+  multiple dataset parts (for scaling past a single-part corpus), a
+  deliberately separate workflow from the single-dataset scripts above.
 - **`run_pipeline.py`** — local (no Kaggle) end-to-end smoke test:
   preprocess → train → sample, for verifying your environment before
   spending any Kaggle GPU time.
 - **`run_kaggle_preprocess_raw_audio.py`** — same preprocessing, but
   `--raw-audio` (skips mel, keeps `waveforms/*.pt` raw 24kHz tensors instead)
-  — see `docs/data_preparation.md`'s "`--raw-audio`" section. Not yet
-  consumable by `train-self`/`train-latent-encoder` (still expect a mel
-  dataset); this is for a planned follow-up letting `LatentAudioEncoder`
-  train on the pristine original recording instead of a Vocos reconstruction.
+  — see `docs/data_preparation.md`'s "`--raw-audio`" section. Consumable by
+  `train-latent-encoder`/`precompute-latent-dataset` (both detect
+  `raw_audio_mode: true` and sum the vocal/backing waveform tensors directly,
+  skipping Vocos); still NOT consumable by `train-self` (that path still
+  expects a mel dataset).
+- **`run_kaggle_multi_part_preprocess_raw_audio.py`** — the `--raw-audio`
+  analogue of `run_kaggle_multi_part_training.py`: submits
+  `run_kaggle_preprocess_raw_audio.py`'s kernel across every part in
+  `RAW_DATASETS` (`src/integrations/kaggle_dataset_refs.py`), respecting
+  Kaggle's 2-concurrent-batch-GPU-session limit, with `--wait-and-loop` to
+  auto-chain through the rest and a `submitted_state.json` dedup tracker so
+  reruns skip already-submitted parts.
 
 ## Native latent pipeline (same `MicroDiT` backbone, `latent_mode` dataset)
 
@@ -51,9 +58,16 @@ fixed. Run in this order:
    the real, frozen BigVGAN decoder (reconstruction loss only). Sanity-check
    the result before proceeding (see `docs/architecture.md`) — a flat/
    oscillating loss curve or near-zero `pitch_std_semitones` on decoded
-   ground-truth latents means retrain with more epochs, not move on.
+   ground-truth latents means retrain with more epochs, not move on. Accepts
+   several `--processed-kernel-ref`s at once (combined into one training set,
+   `N` usable records from each via `--max-records-per-dataset`) — or the
+   shortcut `--raw-audio-part 1 2 3 4 5 6` to look them up in
+   `PROCESSED_RAW_AUDIO_KERNELS` (`src/integrations/kaggle_dataset_refs.py`)
+   instead of pasting kernel refs by hand.
 2. **`run_kaggle_latent_pipeline.py`** — precompute the latent dataset with
-   that encoder, train the CFM student, generate one sample.
+   that encoder, train the CFM student, generate one sample. Also has the
+   `--raw-audio-part` shortcut, but only a single one (`precompute-latent-dataset`
+   doesn't yet combine multiple source datasets the way `train-latent-encoder` does).
 3. **`run_kaggle_latent_resume.py`** — if step 2 gets cut off partway (Kaggle
    sessions have a wall-clock limit), resume CFM training from the
    downloaded checkpoint instead of restarting from scratch. Launch with a

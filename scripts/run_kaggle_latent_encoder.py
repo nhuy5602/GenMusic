@@ -25,10 +25,17 @@ from src.integrations.kaggle_auto import (
     resolve_kaggle_username,
     write_source_zip,
 )
+from src.integrations.kaggle_dataset_refs import PROCESSED_RAW_AUDIO_KERNELS
 
 
-def _kernel_script_content(epochs: str = "1", batch_size: str = "4", learning_rate: str = "2e-4", max_records: str | None = None) -> str:
+def _kernel_script_content(
+    epochs: str = "1", batch_size: str = "4", learning_rate: str = "2e-4",
+    max_records: str | None = None, max_records_per_dataset: str | None = None,
+) -> str:
     max_records_line = f'        "--max-records", "{max_records}",\n' if max_records is not None else ""
+    max_records_per_dataset_line = (
+        f'        "--max-records-per-dataset", "{max_records_per_dataset}",\n' if max_records_per_dataset is not None else ""
+    )
     return f'''import os
 import shutil
 import subprocess
@@ -38,13 +45,13 @@ import urllib.request
 from pathlib import Path
 
 try:
-    print("--- STEP 1: Locating preprocessed dataset ---")
+    print("--- STEP 1: Locating preprocessed dataset(s) ---")
     input_dir = Path("/kaggle/input")
-    records_file = next(input_dir.rglob("records.jsonl"), None)
-    if not records_file:
-        raise RuntimeError(f"Could not find the processed dataset in /kaggle/input (looked in {{input_dir}}).")
-    processed_dataset = records_file.parent
-    print(f"Using processed dataset: {{processed_dataset.resolve()}}")
+    processed_datasets = sorted({{f.parent for f in input_dir.rglob("records.jsonl")}})
+    if not processed_datasets:
+        raise RuntimeError(f"Could not find any processed dataset in /kaggle/input (looked in {{input_dir}}).")
+    for d in processed_datasets:
+        print(f"Using processed dataset: {{d.resolve()}}")
 
     print("--- STEP 2: Setting up source code ---")
     source_dataset_dir = next(
@@ -88,13 +95,13 @@ try:
     checkpoint_path = Path("/kaggle/working/latent_encoder.pt")
     train_result = subprocess.run([
         sys.executable, str(source_root / "cli.py"), "train-latent-encoder",
-        "--dataset", str(processed_dataset),
+        "--dataset", *[str(d) for d in processed_datasets],
         "--checkpoint", str(checkpoint_path),
         "--epochs", "{epochs}",
         "--batch-size", "{batch_size}",
         "--learning-rate", "{learning_rate}",
         "--device", "cuda",
-{max_records_line}    ], env=os.environ, capture_output=True, text=True)
+{max_records_line}{max_records_per_dataset_line}    ], env=os.environ, capture_output=True, text=True)
     Path("/kaggle/working/train_latent_encoder_stdout.txt").write_text(train_result.stdout, encoding="utf-8")
     Path("/kaggle/working/train_latent_encoder_stderr.txt").write_text(train_result.stderr, encoding="utf-8")
     train_result.check_returncode()
@@ -121,9 +128,18 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=2e-4)
-    parser.add_argument("--max-records", type=int, default=None, help="Limit training to the first N usable records (for cheap smoke tests).")
-    parser.add_argument("--processed-kernel-ref", type=str, default=None, help="Override KAGGLE_PROCESSED_KERNEL_REF for this run.")
+    parser.add_argument("--max-records", type=int, default=None, help="Limit the combined dataset to the first N usable records overall (for cheap smoke tests).")
+    parser.add_argument("--max-records-per-dataset", type=int, default=None, help="Limit each attached processed dataset to its first N usable records before combining (e.g. 1 audio from each of several parts).")
+    parser.add_argument("--processed-kernel-ref", type=str, default=None, nargs="+", help="Override KAGGLE_PROCESSED_KERNEL_REF for this run. Accepts multiple refs to combine several processed datasets into one training run.")
+    parser.add_argument(
+        "--raw-audio-part", type=int, default=None, nargs="+", choices=sorted(PROCESSED_RAW_AUDIO_KERNELS),
+        help="Shortcut for --processed-kernel-ref: look up one or more part numbers in PROCESSED_RAW_AUDIO_KERNELS "
+        "(src/integrations/kaggle_dataset_refs.py) instead of pasting kernel refs by hand, e.g. --raw-audio-part 1 2 3 4 5 6.",
+    )
     args = parser.parse_args()
+    processed_kernel_refs = args.processed_kernel_ref or (
+        [PROCESSED_RAW_AUDIO_KERNELS[p] for p in args.raw_audio_part] if args.raw_audio_part else None
+    )
 
     project_root = Path(__file__).resolve().parents[1]
     tokens = kaggle_auth_environment(load_kaggle_api_tokens())
@@ -177,12 +193,15 @@ def main() -> None:
         _kernel_script_content(
             str(args.epochs), str(args.batch_size), str(args.learning_rate),
             str(args.max_records) if args.max_records is not None else None,
+            str(args.max_records_per_dataset) if args.max_records_per_dataset is not None else None,
         ),
         encoding="utf-8",
     )
 
-    processed_kernel_ref = args.processed_kernel_ref or tokens.get("KAGGLE_PROCESSED_KERNEL_REF")
-    processed_dataset_ref = None if processed_kernel_ref else tokens.get(
+    processed_kernel_refs = processed_kernel_refs or (
+        [tokens["KAGGLE_PROCESSED_KERNEL_REF"]] if tokens.get("KAGGLE_PROCESSED_KERNEL_REF") else None
+    )
+    processed_dataset_ref = None if processed_kernel_refs else tokens.get(
         "KAGGLE_PROCESSED_DATASET_REF", f"{username}/vietnamese-music-processed-dataset"
     )
 
@@ -197,7 +216,7 @@ def main() -> None:
         "enable_tpu": False,
         "enable_internet": True,
         "dataset_sources": [source_dataset_ref] + ([processed_dataset_ref] if processed_dataset_ref else []),
-        "kernel_sources": [processed_kernel_ref] if processed_kernel_ref else [],
+        "kernel_sources": processed_kernel_refs or [],
         "competition_sources": [],
     }, indent=2))
 
