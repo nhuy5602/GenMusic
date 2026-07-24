@@ -110,6 +110,7 @@ def train_latent_encoder(
     crop_seconds: float = 1.0,
     warmup_steps: int = 200,
     grad_clip_norm: float = 1.0,
+    num_workers: int = 4,
 ) -> dict[str, Any]:
     """dataset_dir accepts either one path or a list of paths -- multiple
     independently-preprocessed datasets (e.g. different raw-data parts) are
@@ -185,7 +186,19 @@ def train_latent_encoder(
                 "backing_mel": torch.stack([item["backing_mel"] for item in batch]),
             }
 
-    dataloader = DataLoaderClass(dataset, batch_size=max(1, int(batch_size)), shuffle=True, collate_fn=collate_fn)
+    # Raw waveform records are ~2.56x the bytes of the equivalent mel tensor
+    # (hop_length=256 samples collapsed to 1 mel frame across n_mels=100
+    # channels -- 256/100 = 2.56, confirmed exactly against real files on
+    # disk). num_workers>0 lets the next batch's torch.load()s happen on a
+    # background process while the GPU is still busy with the current
+    # batch's forward/backward, hiding most of that extra I/O behind compute
+    # instead of adding it serially (the default num_workers=0 blocks on
+    # every batch's load before any GPU work starts).
+    dataloader = DataLoaderClass(
+        dataset, batch_size=max(1, int(batch_size)), shuffle=True, collate_fn=collate_fn,
+        num_workers=max(0, int(num_workers)), pin_memory=selected_device.startswith("cuda"),
+        persistent_workers=num_workers > 0,
+    )
 
     total_steps = max(1, len(dataloader) * max(1, int(epochs)))
     effective_warmup = min(max(0, int(warmup_steps)), max(1, total_steps - 1))

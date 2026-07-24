@@ -876,6 +876,51 @@ loss giảm mượt, và giải mã latent ground-truth cho \texttt{pitch\_std\_
 $6{,}16$--$12{,}38$ (tuỳ bài) — bằng chứng định lượng fix có tác dụng thật. Chi tiết đầy đủ
 (bảng số liệu trước/sau, log training) ở \texttt{docs/project\_history.md} \S4.24.
 
+\subsection{Loại bỏ vòng lặp qua Vocos khỏi dữ liệu huấn luyện encoder}
+\label{sec:raw_audio_encoder}
+
+Lần train encoder ở trên (\S4.24) vẫn nhận đầu vào qua một vòng gián tiếp: dataset gốc chỉ
+lưu mel, nên trước khi đưa vào \texttt{LatentAudioEncoder} (nhận waveform thô, không nhận
+mel), hệ thống phải giải mã ngược mel về waveform bằng Vocos (\texttt{vocos.decode}) — dù
+bản thân encoder không cần mel ở bước nào. Vòng giải mã này là một xấp xỉ (mất pha, giới hạn
+bởi chính chất lượng Vocos) của bản ghi gốc, không phải bản ghi gốc.
+
+Để loại bỏ hoàn toàn xấp xỉ này, \texttt{preprocess-raw} được bổ sung chế độ
+\texttt{--raw-audio}: bỏ qua \texttt{compute\_mel\_spectrogram} và lưu trực tiếp waveform
+24~kHz đã tách vocal/backing (\texttt{waveforms/*.pt}), giữ nguyên Whisper transcript và
+MuQ-MuLan style embedding (không phụ thuộc mel). \texttt{train-latent-encoder} và
+\texttt{precompute-latent-dataset} được sửa để nhận diện trường \texttt{raw\_audio\_mode:
+true} trong \texttt{config.json} và cộng thẳng \texttt{vocal\_wav\_path}+\texttt{backing\_wav\_path}
+thành full-mix waveform, bỏ hẳn \texttt{vocos.decode()} — encoder giờ train trực tiếp trên
+bản ghi gốc, không qua một bộ vocoder trung gian nào. \texttt{train-latent-encoder} cũng
+được mở rộng để nhận nhiều thư mục dataset cùng lúc (giống \texttt{train-self}), cho phép
+gộp toàn bộ 6 phần của corpus gốc (\texttt{sonlest/vietnamese-music-dataset-version3},
+1843 bài sau lọc chất lượng) thành một lần huấn luyện duy nhất, thay vì chỉ 249 bài của một
+phần như lần train ở \S4.24.
+
+Hạ tầng này được kiểm chứng trên GPU Kaggle thật trước khi dùng cho huấn luyện quy mô đầy
+đủ: (1) truy cập và đọc thử tensor từ cả 6 phần dataset (1843 record, không NaN, đúng
+schema); (2) một lần train nhỏ với đúng 1 bài lấy từ mỗi phần trong cùng 1 epoch, xác nhận
+việc gộp nhiều dataset hoạt động đúng trên dữ liệu thật.
+
+\textbf{Chi tiết vận hành đáng ghi lại}: file waveform thô nặng hơn file mel tương ứng
+đúng $256/100=2{,}56$ lần (đo trực tiếp trên cùng một bài: 24,27~MB so với 9,48~MB) — hệ
+quả trực tiếp của việc không còn nén qua hop length/mel-bin. Lần chạy đầu tiên trên toàn
+bộ 6 phần đo được $\approx4$ giây/step (so với $\approx1{,}3$ giây/step ở benchmark
+dataset đơn cũ), vì \texttt{DataLoader} mặc định (\texttt{num\_workers=0}) đọc tuần tự,
+không chồng lấp I/O với tính toán GPU. Thêm \texttt{num\_workers=4} + \texttt{pin\_memory}
+(prefetch batch kế tiếp trong lúc GPU còn đang xử lý batch hiện tại) đưa tốc độ trở lại gần
+mức benchmark cũ.
+
+\textbf{Kết quả huấn luyện lại trên toàn bộ 1843 bài} (thực ra 1839 bài sau lọc chất lượng,
+10 epoch, batch size 4, learning rate $10^{-4}$, 4600 step, $\approx98$ phút thuần huấn
+luyện): loss giảm đơn điệu và mượt qua từng epoch —
+$2{,}105\to1{,}734\to1{,}612\to1{,}495\to1{,}421\to1{,}352\to1{,}299\to1{,}261\to1{,}245\to
+\mathbf{1{,}239}$ — thấp hơn cả kết quả tốt nhất trước đó trên 249 bài qua vòng Vocos
+(final loss $1{,}28$, \S4.24), dù không gian dữ liệu lớn hơn 7,4 lần. \texttt{peak\_vram\_gb}
+đo được $15{,}30$ trên T4 (16~GB) — xác nhận \texttt{batch\_size=4} đã gần chạm giới hạn an
+toàn, không nên tăng thêm ở \texttt{crop\_seconds} hiện tại.
+
 \section{DiffRhythm2 Distillation}
 \label{sec:distillation_chapter}
 
@@ -1244,13 +1289,25 @@ bản. Kết quả sơ bộ sau khi fix — dù checkpoint CFM mới chỉ huấ
 được, thay vì đơn điệu hoặc nhiễu. Đây là kết quả đáng khích lệ nhưng chưa hội tụ,
 và là hướng ưu tiên để tiếp tục ngay khi có thêm ngân sách GPU.
 
+Tiếp nối hướng này, đề tài đã loại bỏ được vòng giải mã Vocos trung gian khỏi dữ
+liệu huấn luyện encoder (\S\ref{sec:raw_audio_encoder}) và mở rộng quy mô dữ liệu
+từ 249 bài (một phần của corpus) lên toàn bộ 1843 bài (6 phần), sau khi kiểm chứng
+hạ tầng đọc/gộp nhiều dataset trên GPU Kaggle thật. Encoder đang được huấn luyện lại
+trên toàn bộ dữ liệu này tại thời điểm viết báo cáo; đây là bước điều kiện tiên
+quyết trước khi resume CFM training tới hội tụ như đã đề ra ở lần viết report trước.
+
 \section{Hướng phát triển}
 
 Dựa trên tiến độ và kết quả, đề tài ưu tiên các hướng phát triển như sau:
 \begin{enumerate}[label=\arabic*)]
-    \item Huấn luyện tiếp nhánh latent-space (\S\ref{sec:latent_space}) tới khi
-      early stopping tự kích hoạt thật, thay vì bị cắt ngang do hết quota Kaggle,
-      rồi điền lại số liệu ở bảng \ref{tab:mel_vs_latent} và \S\ref{sec:exp4_mel_vs_latent}.
+    \item Đã hoàn thành: mở rộng dữ liệu encoder từ 249 lên 1843 bài và loại bỏ vòng
+      giải mã Vocos trung gian (\S\ref{sec:raw_audio_encoder}). Đang thực hiện: huấn
+      luyện lại \texttt{LatentAudioEncoder} trên toàn bộ 1843 bài; sau khi sanity-check
+      (giải mã latent ground-truth, đúng quy trình \S4.24) xác nhận encoder ổn định,
+      huấn luyện tiếp \texttt{MicroDiT} bằng CFM trên không gian latent này tới khi
+      early stopping tự kích hoạt thật, thay vì bị cắt ngang do hết quota Kaggle như
+      lần chạy trước (checkpoint \texttt{NativeDiTStudent}, \S\ref{sec:exp4_mel_vs_latent}),
+      rồi điền lại số liệu ở bảng \ref{tab:mel_vs_latent}.
     \item Nâng cao số lượng và chất lượng của tập dữ liệu nhạc Việt Nam.
     \item Tổ chức các phương pháp đánh giá chủ quan như MOS/CMOS với người nghe và đánh giá độ rõ lời tiếng Việt.
     \item Mở rộng mô hình, tích hợp các yếu tố khác như thanh điệu, alignment và pitch/F0 hoặc melody.

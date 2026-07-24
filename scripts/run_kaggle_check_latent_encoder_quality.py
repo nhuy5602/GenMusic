@@ -1,18 +1,21 @@
-"""Kaggle launcher for `cli.py train-latent-encoder` -- pretrains the new
-`LatentAudioEncoder` (src/models/latent_codec.py) against DiffRhythm2's real,
-frozen, pretrained BigVGAN decoder (`decoder.bin`, downloaded from
-ASLP-lab/DiffRhythm2 on HuggingFace) on this project's own processed dataset.
+"""Kaggle launcher for `scripts/check_latent_encoder_quality.py` -- sanity-checks a
+`LatentAudioEncoder` checkpoint (encode real ground-truth audio, decode through the
+real frozen BigVGAN decoder, report pitch_std_semitones) before trusting it for any
+downstream CFM training. See that script's own docstring and
+docs/architecture.md's "Native latent backbone and encoder" section for why this
+check exists (the collapsed-encoder failure mode from docs/project_history.md §4.24).
 
-Mirrors scripts/run_kaggle_distill.py's structure (same DiffRhythm2 repo
-clone, since `bigvgan` is only importable that way -- not a pip package).
+Mirrors run_kaggle_latent_pipeline.py's structure (uploads the checkpoint as its own
+small dataset, attaches one or more --raw-audio-part kernel outputs as data sources).
 """
 
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
 import time
-import subprocess
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -28,14 +31,7 @@ from src.integrations.kaggle_auto import (
 from src.integrations.kaggle_dataset_refs import PROCESSED_RAW_AUDIO_KERNELS
 
 
-def _kernel_script_content(
-    epochs: str = "1", batch_size: str = "4", learning_rate: str = "2e-4",
-    max_records: str | None = None, max_records_per_dataset: str | None = None,
-) -> str:
-    max_records_line = f'        "--max-records", "{max_records}",\n' if max_records is not None else ""
-    max_records_per_dataset_line = (
-        f'        "--max-records-per-dataset", "{max_records_per_dataset}",\n' if max_records_per_dataset is not None else ""
-    )
+def _kernel_script_content(max_records: str) -> str:
     return f'''import os
 import shutil
 import subprocess
@@ -45,10 +41,6 @@ import urllib.request
 from pathlib import Path
 
 def run_logged(command, label):
-    # Streams output live (visible on the Kaggle web UI as it happens) instead
-    # of buffering the whole subprocess and printing it only after it exits --
-    # capture_output=True gave zero visibility into a multi-hour training run,
-    # which is exactly what made a real stall indistinguishable from "just slow".
     process = subprocess.Popen(
         command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace", bufsize=1,
@@ -65,7 +57,7 @@ def run_logged(command, label):
     return process
 
 try:
-    print("--- STEP 1: Locating preprocessed dataset(s) ---")
+    print("--- STEP 1: Locating preprocessed dataset(s), source code, encoder checkpoint ---")
     input_dir = Path("/kaggle/input")
     processed_datasets = sorted({{f.parent for f in input_dir.rglob("records.jsonl")}})
     if not processed_datasets:
@@ -73,7 +65,6 @@ try:
     for d in processed_datasets:
         print(f"Using processed dataset: {{d.resolve()}}")
 
-    print("--- STEP 2: Setting up source code ---")
     source_dataset_dir = next(
         (d for d in input_dir.rglob("*") if d.is_dir() and "genmusic-source-" in d.name.lower()),
         None
@@ -83,7 +74,16 @@ try:
     source_root = Path("/kaggle/working/GenMusic")
     shutil.copytree(source_dataset_dir, source_root, dirs_exist_ok=True)
 
-    print("--- STEP 2.5: Downloading DiffRhythm2 official repository (needed for the `bigvgan` package) ---")
+    ckpt_dataset_dir = next(
+        (d for d in input_dir.rglob("*") if d.is_dir() and "genmusic-encckpt-" in d.name.lower()),
+        None
+    )
+    if not ckpt_dataset_dir:
+        raise RuntimeError("Could not find the encoder checkpoint dataset directory.")
+    encoder_checkpoint = str(next(ckpt_dataset_dir.glob("*.pt")))
+    print(f"Using encoder checkpoint: {{encoder_checkpoint}}")
+
+    print("--- STEP 2: Downloading DiffRhythm2 official repository (needed for `bigvgan`) ---")
     diffrhythm2_tar = "/kaggle/working/diffrhythm2.tar.gz"
     urllib.request.urlretrieve("https://github.com/ASLP-lab/DiffRhythm2/archive/refs/heads/main.tar.gz", diffrhythm2_tar)
     with tarfile.open(diffrhythm2_tar) as tar:
@@ -92,7 +92,7 @@ try:
 
     print("--- STEP 3: Installing dependencies ---")
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", str(source_root / "DiffRhythm2-main/requirements.txt")], check=True)
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "vocos"], check=True)
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "vocos", "soundfile"], check=True)
 
     os.environ["PYTHONPATH"] = str(source_root) + os.pathsep + str(source_root / "DiffRhythm2-main") + os.pathsep + os.environ.get("PYTHONPATH", "")
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -111,26 +111,23 @@ try:
         if repaired_probe.returncode != 0 or "available=True" not in repaired_output:
             raise RuntimeError("CUDA is unavailable after P100 Torch repair.")
 
-    print("--- STEP 4: Running latent encoder pretraining ---")
-    checkpoint_path = Path("/kaggle/working/latent_encoder.pt")
+    print("--- STEP 4: Running latent encoder quality check ---")
     run_logged([
-        sys.executable, str(source_root / "cli.py"), "train-latent-encoder",
+        sys.executable, str(source_root / "scripts" / "check_latent_encoder_quality.py"),
         "--dataset", *[str(d) for d in processed_datasets],
-        "--checkpoint", str(checkpoint_path),
-        "--epochs", "{epochs}",
-        "--batch-size", "{batch_size}",
-        "--learning-rate", "{learning_rate}",
+        "--encoder-checkpoint", encoder_checkpoint,
+        "--out", "/kaggle/working/quality_check",
+        "--max-records", "{max_records}",
         "--device", "cuda",
-{max_records_line}{max_records_per_dataset_line}    ], "train_latent_encoder")
+    ], "check_latent_encoder_quality")
 
-    print("LATENT ENCODER PRETRAINING COMPLETED SUCCESSFULLY!")
-    print("Checkpoint saved at: /kaggle/working/latent_encoder.pt")
-    report_path = Path("/kaggle/working/latent_encoder_report.json")
+    print("QUALITY CHECK COMPLETED SUCCESSFULLY!")
+    report_path = Path("/kaggle/working/quality_check/latent_encoder_quality_report.json")
     if report_path.is_file():
-        print("--- latent_encoder_report.json ---")
+        print("--- latent_encoder_quality_report.json ---")
         print(report_path.read_text(encoding="utf-8"))
     Path("/kaggle/working/success.txt").write_text("success", encoding="utf-8")
-except Exception as e:
+except Exception:
     import traceback
     tb = traceback.format_exc()
     print("ERROR OCCURRED DURING KERNEL EXECUTION:")
@@ -142,21 +139,19 @@ except Exception as e:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--learning-rate", type=float, default=2e-4)
-    parser.add_argument("--max-records", type=int, default=None, help="Limit the combined dataset to the first N usable records overall (for cheap smoke tests).")
-    parser.add_argument("--max-records-per-dataset", type=int, default=None, help="Limit each attached processed dataset to its first N usable records before combining (e.g. 1 audio from each of several parts).")
-    parser.add_argument("--processed-kernel-ref", type=str, default=None, nargs="+", help="Override KAGGLE_PROCESSED_KERNEL_REF for this run. Accepts multiple refs to combine several processed datasets into one training run.")
+    parser.add_argument("--encoder-checkpoint", required=True, help="Path to the local latent_encoder.pt to sanity-check.")
+    parser.add_argument("--max-records", type=int, default=5)
+    parser.add_argument("--processed-kernel-ref", type=str, default=None, nargs="+")
     parser.add_argument(
         "--raw-audio-part", type=int, default=None, nargs="+", choices=sorted(PROCESSED_RAW_AUDIO_KERNELS),
-        help="Shortcut for --processed-kernel-ref: look up one or more part numbers in PROCESSED_RAW_AUDIO_KERNELS "
-        "(src/integrations/kaggle_dataset_refs.py) instead of pasting kernel refs by hand, e.g. --raw-audio-part 1 2 3 4 5 6.",
+        help="Shortcut for --processed-kernel-ref: look up one or more part numbers in PROCESSED_RAW_AUDIO_KERNELS.",
     )
     args = parser.parse_args()
     processed_kernel_refs = args.processed_kernel_ref or (
         [PROCESSED_RAW_AUDIO_KERNELS[p] for p in args.raw_audio_part] if args.raw_audio_part else None
     )
+    if not processed_kernel_refs:
+        raise RuntimeError("Must pass --processed-kernel-ref or --raw-audio-part.")
 
     project_root = Path(__file__).resolve().parents[1]
     tokens = kaggle_auth_environment(load_kaggle_api_tokens())
@@ -165,80 +160,75 @@ def main() -> None:
     if not username or not kaggle_auth_available(tokens) or not cli:
         raise RuntimeError("Missing KAGGLE_USERNAME or Kaggle auth (KAGGLE_API_TOKEN=KGAT_... / legacy KAGGLE_KEY)")
 
-    run_id = f"latentenc-{int(time.time())}"
-    job_dir = project_root / "outputs" / "kaggle_latent_encoder" / run_id
-    dataset_dir = job_dir / "dataset"
+    run_id = f"encquality-{int(time.time())}"
+    job_dir = project_root / "outputs" / "kaggle_check_latent_encoder_quality" / run_id
+    source_dir = job_dir / "source_dataset"
+    ckpt_dir = job_dir / "ckpt_dataset"
     kernel_dir = job_dir / "kernel"
-    for d in (dataset_dir, kernel_dir):
+    for d in (source_dir, ckpt_dir, kernel_dir):
         d.mkdir(parents=True, exist_ok=True)
 
     print("=" * 70)
-    print(f"Initializing Kaggle Latent Encoder Job: {run_id}")
+    print(f"Initializing Kaggle Latent Encoder Quality Check Job: {run_id}")
     print("=" * 70)
 
-    print("Zipping local source code...")
-    write_source_zip(project_root, dataset_dir / "genmusic_vn_source.zip")
+    shutil.copy2(args.encoder_checkpoint, ckpt_dir / "latent_encoder.pt")
 
-    source_dataset_slug = f"genmusic-source-{run_id}"
-    source_dataset_ref = f"{username}/{source_dataset_slug}"
-    (dataset_dir / "dataset-metadata.json").write_text(json.dumps({
-        "title": f"GenMusic LatentEnc {run_id}",
-        "id": source_dataset_ref,
-        "licenses": [{"name": "other"}],
+    print("Zipping local source code...")
+    write_source_zip(project_root, source_dir / "genmusic_vn_source.zip")
+    source_dataset_ref = f"{username}/genmusic-source-{run_id}"
+    (source_dir / "dataset-metadata.json").write_text(json.dumps({
+        "title": f"GenMusic Source {run_id}", "id": source_dataset_ref, "licenses": [{"name": "other"}],
     }, indent=2))
 
-    print(f"Uploading source code to Kaggle Dataset '{source_dataset_ref}'...")
+    ckpt_dataset_ref = f"{username}/genmusic-encckpt-{run_id}"
+    (ckpt_dir / "dataset-metadata.json").write_text(json.dumps({
+        "title": f"GenMusic EncCkpt {run_id}", "id": ckpt_dataset_ref, "licenses": [{"name": "other"}],
+    }, indent=2))
+
+    print(f"Uploading source code to '{source_dataset_ref}'...")
     try:
-        subprocess.run(cli + ["datasets", "create", "-p", str(dataset_dir), "-r", "zip"], env={**os.environ, **tokens}, check=True)
+        subprocess.run(cli + ["datasets", "create", "-p", str(source_dir), "-r", "zip"], env={**os.environ, **tokens}, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"[WARNING] Kaggle dataset creation returned an error (often transient): {e}. Proceeding anyway...")
+    print(f"Uploading encoder checkpoint to '{ckpt_dataset_ref}'...")
+    try:
+        subprocess.run(cli + ["datasets", "create", "-p", str(ckpt_dir), "-r", "zip"], env={**os.environ, **tokens}, check=True)
     except subprocess.CalledProcessError as e:
         print(f"[WARNING] Kaggle dataset creation returned an error (often transient): {e}. Proceeding anyway...")
 
-    print("Waiting for source dataset to be ready...")
-    time.sleep(20)
-    for _ in range(60):
-        try:
-            res = subprocess.run(cli + ["datasets", "status", source_dataset_ref], env={**os.environ, **tokens}, capture_output=True, text=True, check=False)
+    print("Waiting for datasets to be ready...")
+    time.sleep(25)
+    for ref in (source_dataset_ref, ckpt_dataset_ref):
+        for _ in range(60):
+            res = subprocess.run(cli + ["datasets", "status", ref], env={**os.environ, **tokens}, capture_output=True, text=True, check=False)
             if "ready" in res.stdout.lower():
                 break
-        except Exception:
-            pass
-        time.sleep(10)
+            time.sleep(10)
 
-    kernel_slug = f"genmusic-latentenc-{int(time.time())}"
+    kernel_slug = f"genmusic-encquality-{int(time.time())}"
     kernel_ref = f"{username}/{kernel_slug}"
-    (kernel_dir / "run_latent_encoder.py").write_text(
-        _kernel_script_content(
-            str(args.epochs), str(args.batch_size), str(args.learning_rate),
-            str(args.max_records) if args.max_records is not None else None,
-            str(args.max_records_per_dataset) if args.max_records_per_dataset is not None else None,
-        ),
+    (kernel_dir / "run_quality_check.py").write_text(
+        _kernel_script_content(str(args.max_records)),
         encoding="utf-8",
     )
-
-    processed_kernel_refs = processed_kernel_refs or (
-        [tokens["KAGGLE_PROCESSED_KERNEL_REF"]] if tokens.get("KAGGLE_PROCESSED_KERNEL_REF") else None
-    )
-    processed_dataset_ref = None if processed_kernel_refs else tokens.get(
-        "KAGGLE_PROCESSED_DATASET_REF", f"{username}/vietnamese-music-processed-dataset"
-    )
-
     (kernel_dir / "kernel-metadata.json").write_text(json.dumps({
         "id": kernel_ref,
         "title": kernel_slug,
-        "code_file": "run_latent_encoder.py",
+        "code_file": "run_quality_check.py",
         "language": "python",
         "kernel_type": "script",
         "is_private": True,
         "enable_gpu": True,
         "enable_tpu": False,
         "enable_internet": True,
-        "dataset_sources": [source_dataset_ref] + ([processed_dataset_ref] if processed_dataset_ref else []),
-        "kernel_sources": processed_kernel_refs or [],
+        "dataset_sources": [source_dataset_ref, ckpt_dataset_ref],
+        "kernel_sources": processed_kernel_refs,
         "competition_sources": [],
     }, indent=2))
 
-    print(f"Pushing Latent Encoder Kernel to Kaggle: {kernel_ref}...")
-    time.sleep(20)
+    print(f"Pushing Quality Check Kernel to Kaggle: {kernel_ref}...")
+    time.sleep(15)
     for attempt in range(3):
         try:
             subprocess.run(cli + ["kernels", "push", "-p", str(kernel_dir)], env={**os.environ, **tokens}, check=True)

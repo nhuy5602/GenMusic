@@ -84,6 +84,14 @@ fixed. Run in this order:
   (spectral flatness, voiced ratio, pitch-std semitones) used by
   `run_kaggle_evaluate.py` and referenced throughout `docs/project_history.md`.
   Can also be run standalone against any local checkpoint/wav.
+- **`check_latent_encoder_quality.py`** — sanity-check a `LatentAudioEncoder`
+  checkpoint (from `run_kaggle_latent_encoder.py`) BEFORE trusting any
+  downstream CFM training on its latents: encodes real ground-truth audio
+  (no CFM involved), decodes through the real frozen decoder, and reports
+  `pitch_std_semitones` via `evaluate_generation_quality.py`'s `wav_metrics`
+  — catches the collapsed-encoder failure mode from `docs/project_history.md`
+  §4.24 without a one-off script each time. Needs the real decoder (`bigvgan`
+  on PYTHONPATH), so only runs on Kaggle.
 - **`check_kernel_progress.py`** — tails a *running* Kaggle kernel's log via
   the SSE log-stream endpoint (`kaggle kernels output` only returns files
   once a kernel finishes, so this is the only way to see live progress).
