@@ -1679,6 +1679,38 @@ nhiều-nguồn cùng lúc (chỉ `train-latent-encoder` có); và encoder hiệ
 trên dữ liệu raw-audio pristine mới — đây là bước tiếp theo hợp lý, có thể chạy trên toàn bộ 1843
 bài của cả 6 phần nhờ hạ tầng vừa verify ở trên.
 
+### 4.29 Train thật trên toàn bộ 1843 bài raw-audio: loss hội tụ đẹp nhưng encoder collapse lại — sanity-check cứu đúng lúc
+
+Chạy `train-latent-encoder` thật trên 1839 bài (sau lọc, cả 6 phần), 10 epoch, batch 4, LR
+$10^{-4}$, đúng warmup(200)/cosine-decay/grad-clip(1,0) đã fix ở §4.24. Phát hiện phụ trong lúc
+chạy: file waveform thô nặng hơn mel đúng $256/100=2{,}56$ lần (đo trực tiếp cùng một bài: 24,27MB
+so với 9,48MB) — tốc độ đo được lần đầu $\approx4$s/step (so với $\approx1{,}3$s/step benchmark
+dataset đơn cũ) vì `DataLoader` mặc định `num_workers=0` không chồng lấp I/O với GPU. Thêm
+`num_workers=4`+`pin_memory` đưa tốc độ về gần bình thường; hoàn thành 4600 step trong
+$\approx98$ phút.
+
+**Loss giảm mượt, đơn điệu, trông rất tốt**: $2{,}105\to1{,}734\to\ldots\to\mathbf{1{,}239}$
+(epoch 10) — thấp hơn cả kết quả tốt nhất trước đó (1,28 trên 249 bài qua vòng Vocos).
+`peak_vram_gb=15{,}30`, khớp chính xác ngoại suy VRAM ở §4.28.
+
+**Nhưng sanity-check (`scripts/check_latent_encoder_quality.py`, mới viết) cho kết quả xấu**:
+giải mã 5 latent ground-truth (part 6) cho `pitch_std_semitones` chỉ **0,20–0,69** (trung bình
+**0,44**) so với chính audio thật cùng 5 bài đó (**6,22–11,46**, trung bình **9,46**) — **encoder
+đã collapse**, cùng dấu hiệu định lượng như lỗi gốc ở §4.24 (trước fix: $\approx0{,}9$), dù dùng
+đúng công thức đã fix. Đây là bằng chứng thứ hai, độc lập, cho đúng bài học đã rút ra:
+**loss reconstruction giảm mượt hoàn toàn không đảm bảo encoder khoẻ** — một encoder collapse vẫn
+có thể tối thiểu hoá tốt L1-trên-log-mel trung bình bằng cách sinh ra một xấp xỉ "an toàn", phẳng
+về cao độ. Sanity-check ground-truth-decode (không qua CFM) là bước bắt buộc, không phải tuỳ chọn
+— nếu bỏ qua bước này, checkpoint tưởng-tốt-vì-loss-thấp này đã bị dùng nhầm cho huấn luyện CFM
+tiếp theo.
+
+Nguyên nhân khả dĩ nhất: công thức warmup/LR/grad-clip đã fix được tinh chỉnh cho 249 bài/40
+epoch/2520 step (mel-detour, dữ liệu đã qua một lớp làm mượt của Vocos); ở quy mô 1839 bài/10
+epoch/4600 step (raw-audio pristine, đa dạng hơn, không làm mượt), tỉ lệ warmup tương đối thấp
+hơn ($200/4600\approx4{,}3\%$ so với $200/2520\approx7{,}9\%$) và cùng learning rate có thể không
+đủ ổn định. Đang thử lại với warmup dài hơn theo tỉ lệ và learning rate thấp hơn (xem tiếp
+\S5 nếu chưa kịp cập nhật số liệu trước hạn báo cáo).
+
 ---
 
 ## 5. Kết luận và hướng phát triển

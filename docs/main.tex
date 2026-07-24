@@ -921,6 +921,20 @@ $2{,}105\to1{,}734\to1{,}612\to1{,}495\to1{,}421\to1{,}352\to1{,}299\to1{,}261\t
 đo được $15{,}30$ trên T4 (16~GB) — xác nhận \texttt{batch\_size=4} đã gần chạm giới hạn an
 toàn, không nên tăng thêm ở \texttt{crop\_seconds} hiện tại.
 
+\textbf{Sanity-check (bắt buộc, \texttt{scripts/check\_latent\_encoder\_quality.py}) phát hiện
+encoder này đã collapse}, dù loss trông rất tốt ở trên. Giải mã trực tiếp 5 latent ground-truth
+(bỏ qua CFM student) cho \texttt{pitch\_std\_semitones} chỉ $0{,}20$--$0{,}69$ (trung bình
+$0{,}44$), so với chính audio thật của 5 bài đó ($6{,}22$--$11{,}46$, trung bình $9{,}46$) —
+cùng dấu hiệu định lượng như lỗi gốc ở \S\ref{sec:latent_space} ($\approx0{,}9$ trước fix). Đây
+là bằng chứng thứ hai, độc lập, xác nhận lại đúng nguyên tắc đã rút ra: \textbf{loss reconstruction
+giảm mượt không đảm bảo encoder khoẻ}. Nguyên nhân khả dĩ nhất: công thức warmup/LR đã fix được
+tinh chỉnh cho 249 bài/40 epoch/2520 step (dữ liệu mel-detour, đã qua một lớp làm mượt của Vocos);
+ở quy mô 1839 bài/10 epoch/4600 step (dữ liệu raw-audio pristine, đa dạng hơn), tỉ lệ warmup
+tương đối thấp hơn ($200/4600\approx4{,}3\%$ so với $200/2520\approx7{,}9\%$) có thể không đủ ổn
+định. Đang thử lại với warmup dài hơn theo tỉ lệ (400 step, $\approx17\%$ trên 5 epoch/2300 step)
+và learning rate thấp hơn ($5\times10^{-5}$) tại thời điểm viết báo cáo — xem \S5 để biết kết quả
+cuối khi có, hoặc kết luận nếu chưa kịp trước hạn nộp.
+
 \section{DiffRhythm2 Distillation}
 \label{sec:distillation_chapter}
 
@@ -1292,22 +1306,39 @@ và là hướng ưu tiên để tiếp tục ngay khi có thêm ngân sách GPU
 Tiếp nối hướng này, đề tài đã loại bỏ được vòng giải mã Vocos trung gian khỏi dữ
 liệu huấn luyện encoder (\S\ref{sec:raw_audio_encoder}) và mở rộng quy mô dữ liệu
 từ 249 bài (một phần của corpus) lên toàn bộ 1843 bài (6 phần), sau khi kiểm chứng
-hạ tầng đọc/gộp nhiều dataset trên GPU Kaggle thật. Encoder đang được huấn luyện lại
-trên toàn bộ dữ liệu này tại thời điểm viết báo cáo; đây là bước điều kiện tiên
-quyết trước khi resume CFM training tới hội tụ như đã đề ra ở lần viết report trước.
+hạ tầng đọc/gộp nhiều dataset trên GPU Kaggle thật. Tuy nhiên, lần huấn luyện lại đầu
+tiên trên toàn bộ dữ liệu này — dù loss giảm mượt và thấp hơn cả kết quả cũ — đã
+\textbf{collapse lại} khi sanity-check bằng cách giải mã trực tiếp latent ground-truth
+(\texttt{pitch\_std\_semitones} chỉ $0{,}44$ trung bình, so với $9{,}46$ của audio thật).
+Đây là bằng chứng thứ hai, độc lập với lần collapse đầu (\S\ref{sec:latent_space}), cho
+cùng một bài học: loss reconstruction thấp/mượt không đủ để tin một encoder khoẻ mạnh —
+sanity-check bằng ground-truth-decode là bước bắt buộc, không phải thủ tục hình thức.
+Nguyên nhân khả dĩ là công thức warmup/learning-rate đã fix được tinh chỉnh cho quy mô dữ
+liệu nhỏ hơn (249 bài) không chuyển giao tốt sang quy mô lớn hơn (1839 bài, đa dạng hơn,
+không qua lớp làm mượt của Vocos). Một lần thử lại với warmup dài hơn theo tỉ lệ và
+learning rate thấp hơn đang được thực hiện; đây là bước điều kiện tiên quyết trước khi
+resume CFM training tới hội tụ như đã đề ra ở lần viết report trước — nếu không kịp có
+kết quả tốt trước hạn nộp, hướng khuyến nghị là quay lại dùng checkpoint encoder đã xác
+nhận khoẻ mạnh trên 249 bài (\S\ref{sec:latent_space}) làm cơ sở cho các bước tiếp theo,
+thay vì trì hoãn toàn bộ tiến độ để chờ encoder quy mô lớn hội tụ.
 
 \section{Hướng phát triển}
 
 Dựa trên tiến độ và kết quả, đề tài ưu tiên các hướng phát triển như sau:
 \begin{enumerate}[label=\arabic*)]
     \item Đã hoàn thành: mở rộng dữ liệu encoder từ 249 lên 1843 bài và loại bỏ vòng
-      giải mã Vocos trung gian (\S\ref{sec:raw_audio_encoder}). Đang thực hiện: huấn
-      luyện lại \texttt{LatentAudioEncoder} trên toàn bộ 1843 bài; sau khi sanity-check
-      (giải mã latent ground-truth, đúng quy trình \S4.24) xác nhận encoder ổn định,
-      huấn luyện tiếp \texttt{MicroDiT} bằng CFM trên không gian latent này tới khi
-      early stopping tự kích hoạt thật, thay vì bị cắt ngang do hết quota Kaggle như
-      lần chạy trước (checkpoint \texttt{NativeDiTStudent}, \S\ref{sec:exp4_mel_vs_latent}),
-      rồi điền lại số liệu ở bảng \ref{tab:mel_vs_latent}.
+      giải mã Vocos trung gian (\S\ref{sec:raw_audio_encoder}). Lần huấn luyện lại đầu
+      tiên trên quy mô này \textbf{collapse} khi sanity-check (\texttt{pitch\_std\_semitones}
+      $0{,}44$ so với $9{,}46$ của audio thật) dù loss trông tốt — đang thử lại với warmup
+      dài hơn theo tỉ lệ và learning rate thấp hơn. Nếu lần thử lại (hoặc các lần tiếp theo,
+      trong giới hạn thời gian còn lại) xác nhận encoder ổn định, huấn luyện tiếp
+      \texttt{MicroDiT} bằng CFM trên không gian latent này tới khi early stopping tự kích
+      hoạt thật, thay vì bị cắt ngang do hết quota Kaggle như lần chạy trước (checkpoint
+      \texttt{NativeDiTStudent}, \S\ref{sec:exp4_mel_vs_latent}), rồi điền lại số liệu ở
+      bảng \ref{tab:mel_vs_latent}. Nếu không kịp trước hạn nộp, hướng khả thi là quay lại
+      checkpoint encoder 249-bài đã xác nhận khoẻ (\S\ref{sec:latent_space}) cho các bước
+      tiếp theo, và coi việc mở rộng dữ liệu + tìm công thức warmup/LR ổn định ở quy mô lớn
+      là một hướng phát triển riêng, chưa khép lại trong report này.
     \item Nâng cao số lượng và chất lượng của tập dữ liệu nhạc Việt Nam.
     \item Tổ chức các phương pháp đánh giá chủ quan như MOS/CMOS với người nghe và đánh giá độ rõ lời tiếng Việt.
     \item Mở rộng mô hình, tích hợp các yếu tố khác như thanh điệu, alignment và pitch/F0 hoặc melody.

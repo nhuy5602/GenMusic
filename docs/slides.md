@@ -162,7 +162,9 @@ Lần train encoder trước (§4.24) vẫn phải: mel → **giải mã ngượ
 - `peak_vram_gb=15,30` trên T4 (16GB) — batch=4 đã gần ngưỡng an toàn.
 - Phát hiện phụ: file waveform thô nặng hơn mel đúng **2,56 lần** (256/100) → I/O chậm hơn hẳn nếu không prefetch; thêm `num_workers=4` đưa tốc độ về gần bình thường.
 
-**Bước tiếp theo**: sanity-check (giải mã ground-truth latent, đo `pitch_std_semitones`) → nếu đạt, huấn luyện MicroDiT bằng CFM trên latent-space tới khi early-stopping tự kích hoạt.
+**Nhưng sanity-check phát hiện encoder collapse**: `pitch_std_semitones` giải mã chỉ **0,44** trung bình (so với **9,46** của audio thật) — cùng dấu hiệu như lỗi gốc §4.24, dù loss trông tốt. Xác nhận lại: **loss thấp không đảm bảo encoder khoẻ**.
+
+**Đang xử lý**: thử lại với warmup dài hơn theo tỉ lệ (400 step thay vì 200) + learning rate thấp hơn (5e-5). Nếu không kịp trước hạn: quay lại checkpoint encoder 249-bài đã xác nhận khoẻ làm cơ sở, coi việc mở rộng dữ liệu ổn định là hướng phát triển riêng.
 
 ---
 
