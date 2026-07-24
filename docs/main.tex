@@ -931,9 +931,20 @@ giảm mượt không đảm bảo encoder khoẻ}. Nguyên nhân khả dĩ nh�
 tinh chỉnh cho 249 bài/40 epoch/2520 step (dữ liệu mel-detour, đã qua một lớp làm mượt của Vocos);
 ở quy mô 1839 bài/10 epoch/4600 step (dữ liệu raw-audio pristine, đa dạng hơn), tỉ lệ warmup
 tương đối thấp hơn ($200/4600\approx4{,}3\%$ so với $200/2520\approx7{,}9\%$) có thể không đủ ổn
-định. Đang thử lại với warmup dài hơn theo tỉ lệ (400 step, $\approx17\%$ trên 5 epoch/2300 step)
-và learning rate thấp hơn ($5\times10^{-5}$) tại thời điểm viết báo cáo — xem \S5 để biết kết quả
-cuối khi có, hoặc kết luận nếu chưa kịp trước hạn nộp.
+định. \textbf{Thử lại với warmup dài hơn theo tỉ lệ (400 step, $\approx17\%$ trên 5 epoch/2300
+step) và learning rate thấp hơn ($5\times10^{-5}$) cũng không giải quyết được}: loss vẫn giảm
+mượt ($2{,}143\to1{,}468$), nhưng \texttt{pitch\_std\_semitones} giải mã chỉ tăng nhẹ lên trung
+bình $0{,}78$ — vẫn collapse, vẫn cách rất xa mức khoẻ mạnh ($6$--$12$). Hai lần thử liên tiếp
+thất bại là bằng chứng đây không đơn thuần là thiếu warmup/LR quá cao, mà nhiều khả năng là một
+khác biệt sâu hơn giữa dữ liệu raw-audio pristine (đa dạng hơn) và dữ liệu mel-detour mà công
+thức gốc được validate — cần điều tra kỹ hơn, ngoài phạm vi thời gian còn lại của report này.
+
+\textbf{Quyết định}: dừng thử thêm hyperparameter ở quy mô 1839 bài, quay lại dùng checkpoint
+encoder 249 bài đã xác nhận khoẻ mạnh (\S\ref{sec:latent_space}) để tiến hành bước còn treo lâu
+nay — huấn luyện \texttt{MicroDiT} bằng CFM trực tiếp trên latent-space (chưa từng chạy, mọi kết
+quả latent-space trước đó đều từ \texttt{NativeDiTStudent} đã gộp/xoá,
+\S\ref{sec:native_dit}) — xem kết quả ở \S\ref{chapter:conclusion}. Việc mở rộng dữ liệu encoder
+lên quy mô lớn ổn định là một hướng phát triển riêng, chưa khép lại trong report này.
 
 \section{DiffRhythm2 Distillation}
 \label{sec:distillation_chapter}
@@ -1313,32 +1324,31 @@ tiên trên toàn bộ dữ liệu này — dù loss giảm mượt và thấp h
 Đây là bằng chứng thứ hai, độc lập với lần collapse đầu (\S\ref{sec:latent_space}), cho
 cùng một bài học: loss reconstruction thấp/mượt không đủ để tin một encoder khoẻ mạnh —
 sanity-check bằng ground-truth-decode là bước bắt buộc, không phải thủ tục hình thức.
-Nguyên nhân khả dĩ là công thức warmup/learning-rate đã fix được tinh chỉnh cho quy mô dữ
-liệu nhỏ hơn (249 bài) không chuyển giao tốt sang quy mô lớn hơn (1839 bài, đa dạng hơn,
-không qua lớp làm mượt của Vocos). Một lần thử lại với warmup dài hơn theo tỉ lệ và
-learning rate thấp hơn đang được thực hiện; đây là bước điều kiện tiên quyết trước khi
-resume CFM training tới hội tụ như đã đề ra ở lần viết report trước — nếu không kịp có
-kết quả tốt trước hạn nộp, hướng khuyến nghị là quay lại dùng checkpoint encoder đã xác
-nhận khoẻ mạnh trên 249 bài (\S\ref{sec:latent_space}) làm cơ sở cho các bước tiếp theo,
-thay vì trì hoãn toàn bộ tiến độ để chờ encoder quy mô lớn hội tụ.
+Một lần thử lại với warmup dài hơn theo tỉ lệ (400 step) và learning rate thấp hơn
+($5\times10^{-5}$) \textbf{cũng collapse} (\texttt{pitch\_std\_semitones} trung bình chỉ tăng
+lên $0{,}78$) — hai lần thất bại liên tiếp với hyperparameter khác nhau cho thấy đây không đơn
+thuần là thiếu warmup/LR quá cao, mà là một khác biệt sâu hơn giữa dữ liệu raw-audio pristine
+và dữ liệu mel-detour mà công thức gốc được validate, cần điều tra kỹ hơn ngoài phạm vi thời
+gian của report này. Quyết định: dừng thử thêm hyperparameter ở quy mô lớn, quay lại dùng
+checkpoint encoder đã xác nhận khoẻ mạnh trên 249 bài (\S\ref{sec:latent_space}) làm cơ sở cho
+bước tiếp theo — huấn luyện \texttt{MicroDiT} bằng CFM trực tiếp trên latent-space, kết quả ở
+\S\ref{chapter:conclusion}.
 
 \section{Hướng phát triển}
 
 Dựa trên tiến độ và kết quả, đề tài ưu tiên các hướng phát triển như sau:
 \begin{enumerate}[label=\arabic*)]
-    \item Đã hoàn thành: mở rộng dữ liệu encoder từ 249 lên 1843 bài và loại bỏ vòng
-      giải mã Vocos trung gian (\S\ref{sec:raw_audio_encoder}). Lần huấn luyện lại đầu
-      tiên trên quy mô này \textbf{collapse} khi sanity-check (\texttt{pitch\_std\_semitones}
-      $0{,}44$ so với $9{,}46$ của audio thật) dù loss trông tốt — đang thử lại với warmup
-      dài hơn theo tỉ lệ và learning rate thấp hơn. Nếu lần thử lại (hoặc các lần tiếp theo,
-      trong giới hạn thời gian còn lại) xác nhận encoder ổn định, huấn luyện tiếp
-      \texttt{MicroDiT} bằng CFM trên không gian latent này tới khi early stopping tự kích
-      hoạt thật, thay vì bị cắt ngang do hết quota Kaggle như lần chạy trước (checkpoint
-      \texttt{NativeDiTStudent}, \S\ref{sec:exp4_mel_vs_latent}), rồi điền lại số liệu ở
-      bảng \ref{tab:mel_vs_latent}. Nếu không kịp trước hạn nộp, hướng khả thi là quay lại
-      checkpoint encoder 249-bài đã xác nhận khoẻ (\S\ref{sec:latent_space}) cho các bước
-      tiếp theo, và coi việc mở rộng dữ liệu + tìm công thức warmup/LR ổn định ở quy mô lớn
-      là một hướng phát triển riêng, chưa khép lại trong report này.
+    \item Đã thử: mở rộng dữ liệu encoder từ 249 lên 1843 bài và loại bỏ vòng giải mã Vocos
+      trung gian (\S\ref{sec:raw_audio_encoder}) — hai lần huấn luyện lại ở quy mô này đều
+      \textbf{collapse} khi sanity-check, dù loss trông tốt và dù đã thử điều chỉnh
+      warmup/learning-rate. Tìm công thức ổn định ở quy mô dữ liệu lớn, đa dạng hơn (khác
+      mel-detour) là một hướng phát triển riêng, chưa khép lại trong report này. Thay vào đó,
+      đã dùng checkpoint encoder 249-bài đã xác nhận khoẻ (\S\ref{sec:latent_space}) để huấn
+      luyện \texttt{MicroDiT} bằng CFM trực tiếp trên latent-space (\texttt{train-self}, chưa
+      từng chạy trước đây — mọi kết quả latent-space trước đó đều từ \texttt{NativeDiTStudent}
+      đã gộp/xoá, \S\ref{sec:native_dit}) tới khi early stopping tự kích hoạt thật, thay vì bị
+      cắt ngang do hết quota Kaggle như lần chạy trước, rồi điền lại số liệu ở bảng
+      \ref{tab:mel_vs_latent}.
     \item Nâng cao số lượng và chất lượng của tập dữ liệu nhạc Việt Nam.
     \item Tổ chức các phương pháp đánh giá chủ quan như MOS/CMOS với người nghe và đánh giá độ rõ lời tiếng Việt.
     \item Mở rộng mô hình, tích hợp các yếu tố khác như thanh điệu, alignment và pitch/F0 hoặc melody.

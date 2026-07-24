@@ -1708,8 +1708,28 @@ Nguyên nhân khả dĩ nhất: công thức warmup/LR/grad-clip đã fix đư�
 epoch/2520 step (mel-detour, dữ liệu đã qua một lớp làm mượt của Vocos); ở quy mô 1839 bài/10
 epoch/4600 step (raw-audio pristine, đa dạng hơn, không làm mượt), tỉ lệ warmup tương đối thấp
 hơn ($200/4600\approx4{,}3\%$ so với $200/2520\approx7{,}9\%$) và cùng learning rate có thể không
-đủ ổn định. Đang thử lại với warmup dài hơn theo tỉ lệ và learning rate thấp hơn (xem tiếp
-\S5 nếu chưa kịp cập nhật số liệu trước hạn báo cáo).
+đủ ổn định.
+
+**Thử lại lần 2** với warmup dài hơn theo tỉ lệ (400 step, $\approx17\%$ trên 5 epoch/2300 step)
+và learning rate thấp hơn ($5\times10^{-5}$ thay vì $10^{-4}$): loss vẫn giảm mượt
+($2{,}143\to1{,}468$), nhưng sanity-check **vẫn collapse** — `pitch_std_semitones` trung bình
+tăng nhẹ từ $0{,}44$ lên $\mathbf{0{,}78}$, vẫn cách rất xa mức khoẻ mạnh ($6$--$12$, §4.24) và
+xa mức thật ($9{,}46$). Hai lần thử liên tiếp với cùng kiến trúc/dữ liệu nhưng hyperparameter
+khác nhau đều collapse — bằng chứng cho thấy đây **không đơn thuần là thiếu warmup/LR quá cao**,
+mà nhiều khả năng là một vấn đề sâu hơn về sự khác biệt giữa dữ liệu raw-audio pristine (đa
+dạng hơn, không qua lớp làm mượt Vocos) và dữ liệu mel-detour mà công thức gốc được validate —
+cần điều tra kỹ hơn (ví dụ: kiểm tra phân phối biên độ/silence giữa các phần dataset, hoặc thử
+loss/kiến trúc encoder khác), không phải việc có thể giải quyết bằng một vài lần chỉnh
+hyperparameter trong thời gian còn lại của phiên này.
+
+**Quyết định (2026-07-25, dưới áp lực hạn nộp báo cáo 2 ngày)**: dừng thử thêm hyperparameter
+cho encoder quy mô 1839 bài, quay lại dùng checkpoint encoder 249 bài đã xác nhận khoẻ mạnh từ
+§4.24 (`pitch_std` 6,16--12,38) cho bước tiếp theo — huấn luyện MicroDiT bằng CFM trực tiếp trên
+latent-space (`train-self`, chưa từng chạy trước đây, mọi kết quả latent-space tính đến giờ đều
+từ `NativeDiTStudent` đã gộp/xoá, §\ref{sec:native_dit}), dùng đúng `precompute-latent-dataset`
+đã hỗ trợ đọc thẳng dataset raw-audio part 6 (250 bài) với encoder cũ này. Việc mở rộng dữ liệu
++ ổn định hoá encoder ở quy mô lớn được chuyển thành một hướng phát triển riêng, chưa khép lại
+trong report này.
 
 ---
 

@@ -164,7 +164,7 @@ Lần train encoder trước (§4.24) vẫn phải: mel → **giải mã ngượ
 
 **Nhưng sanity-check phát hiện encoder collapse**: `pitch_std_semitones` giải mã chỉ **0,44** trung bình (so với **9,46** của audio thật) — cùng dấu hiệu như lỗi gốc §4.24, dù loss trông tốt. Xác nhận lại: **loss thấp không đảm bảo encoder khoẻ**.
 
-**Đang xử lý**: thử lại với warmup dài hơn theo tỉ lệ (400 step thay vì 200) + learning rate thấp hơn (5e-5). Nếu không kịp trước hạn: quay lại checkpoint encoder 249-bài đã xác nhận khoẻ làm cơ sở, coi việc mở rộng dữ liệu ổn định là hướng phát triển riêng.
+**Thử lại với warmup dài hơn (400 step) + LR thấp hơn (5e-5) — vẫn collapse** (0,78, vẫn xa mức khoẻ 6-12). Hai lần thất bại liên tiếp → **quyết định**: dừng thử hyperparameter ở quy mô lớn, quay lại checkpoint encoder 249-bài đã xác nhận khoẻ, dùng nó để huấn luyện MicroDiT bằng CFM trên latent-space — bước chưa từng thực hiện trước đây.
 
 ---
 
