@@ -1748,6 +1748,40 @@ từ `NativeDiTStudent` đã gộp/xoá, §\ref{sec:native_dit}), dùng đúng `
 + ổn định hoá encoder ở quy mô lớn được chuyển thành một hướng phát triển riêng, chưa khép lại
 trong report này.
 
+### 4.30 Thêm bước xác suất (mu/logvar + KL divergence) vào `LatentAudioEncoder` — đúng nửa rẻ của một VAE thật
+
+Sau khi nghe thử trực tiếp cặp audio decoded-vs-real ở §4.29, câu hỏi đặt ra: `LatentAudioEncoder`
+có thực sự follow đúng kiến trúc VAE của Stable Audio 2 không? Đọc lại code
+(`src/models/latent_codec.py`) xác nhận: **không** — đây là lựa chọn có chủ đích, ghi rõ trong
+docstring module, thiếu đúng hai thành phần một VAE âm thanh thật luôn có: (1) không có bước xác
+suất/KL divergence (`forward()` cũ trả về một điểm `(B,64,T)` duy nhất, không sample từ
+$\mathcal{N}(\mu,\sigma)$); (2) không có adversarial loss (chỉ `multi_scale_mel_loss`, L1 thuần).
+
+Loss L1 thuần, không KL/không adversarial, có xu hướng kinh điển "regression-to-the-mean" khi
+target đa dạng — đúng cùng lớp bệnh lý đã tự phát hiện trước đó cho CFM loss (§4.11--4.13, dẫn
+Dieleman 2024/DMD-ADM). Đây là chẩn đoán hợp lý nhất cho việc 2 lần thử warmup/LR khác nhau ở
+§4.29 đều collapse như nhau — vấn đề nằm ở *hình dạng hàm loss*, không phải *bất ổn tối ưu hoá*.
+
+**Đã thêm phần rẻ, ít rủi ro hơn** của một VAE thật:
+- `LatentAudioEncoder.forward()` giờ xuất `mu`, `logvar` (conv\_out tăng gấp đôi kênh ra, 64→128),
+  áp dụng reparameterization trick: $z=\mu+\sigma\epsilon$ lúc train (backprop qua sample thật, để
+  loss decoder regularize cả phân phối chứ không chỉ trị trung bình), $z=\mu$ lúc eval (giữ nguyên
+  hành vi xác định cho mọi nơi gọi hiện có — `precompute-latent-dataset`,
+  `check_latent_encoder_quality.py` — không cần sửa).
+- Thêm `kl_divergence_loss(mu, logvar)` = $-\tfrac12\text{mean}(1+\log\sigma^2-\mu^2-\sigma^2)$,
+  trọng số `--kl-weight` (mặc định $10^{-4}$, giá trị bảo thủ — quá lớn có nguy cơ collapse theo
+  chiều ngược lại, KL đè bẹp reconstruction).
+- **Cố ý chưa thêm** adversarial/discriminator loss — nửa còn lại của một VAE thật, nhưng đúng rủi
+  ro bất ổn GAN training đã lường trước từ đầu (docstring gốc), không đáng đánh đổi dưới deadline.
+
+**Kiểm chứng trước khi chạy full** (theo đúng yêu cầu "không sai sót ở từng bước"): verify tại chỗ
+bằng script nhỏ — eval mode xác định (mu-only), train mode có sample ngẫu nhiên khác nhau mỗi lần
+gọi, gradient chảy ngược qua sample về encoder, KL loss ra số hữu hạn hợp lý ($\approx0{,}027$ lúc
+khởi tạo ngẫu nhiên, gần 0 như lý thuyết dự đoán), 29/29 unit test vẫn pass. Sau đó smoke-test thật
+trên Kaggle (6 bài, 1 mỗi phần, 1 epoch): `recon_loss=3{,}645`, `kl_loss=0{,}042` — không NaN,
+`peak_vram_gb=7{,}988` khớp chính xác benchmark VRAM cũ ở batch=2 (thêm kênh mu/logvar không đổi
+đáng kể footprint bộ nhớ). Đạt điều kiện để chạy full 1839 bài, 10 epoch — kết quả ở \S5 khi có.
+
 ---
 
 ## 5. Kết luận và hướng phát triển

@@ -164,7 +164,21 @@ Lần train encoder trước (§4.24) vẫn phải: mel → **giải mã ngượ
 
 **Nhưng sanity-check phát hiện encoder collapse**: `pitch_std_semitones` giải mã chỉ **0,44** trung bình (so với **9,46** của audio thật) — cùng dấu hiệu như lỗi gốc §4.24, dù loss trông tốt. Xác nhận lại: **loss thấp không đảm bảo encoder khoẻ**.
 
-**Thử lại với warmup dài hơn (400 step) + LR thấp hơn (5e-5) — vẫn collapse** (0,78, vẫn xa mức khoẻ 6-12). Hai lần thất bại liên tiếp → **quyết định**: dừng thử hyperparameter ở quy mô lớn, quay lại checkpoint encoder 249-bài đã xác nhận khoẻ, dùng nó để huấn luyện MicroDiT bằng CFM trên latent-space — bước chưa từng thực hiện trước đây.
+**Thử lại với warmup dài hơn (400 step) + LR thấp hơn (5e-5) — vẫn collapse** (0,78, vẫn xa mức khoẻ 6-12). Hai lần thất bại liên tiếp với hyperparameter khác nhau → không phải vấn đề tối ưu hoá, mà là **hình dạng hàm loss**.
+
+---
+
+## Chẩn đoán: encoder không phải VAE thật
+
+Đọc lại code: `LatentAudioEncoder` **thiếu 2 thành phần** một VAE âm thanh thật (Stable Audio 2) luôn có:
+1. **Không có bước xác suất/KL divergence** — chỉ trả về 1 điểm duy nhất, không sample từ phân phối.
+2. **Không có adversarial loss** — chỉ L1 thuần trên log-mel.
+
+Loss L1 thuần → xu hướng kinh điển "regression-to-the-mean" khi dữ liệu đa dạng — **đúng cùng bệnh lý đã tự phát hiện cho CFM loss** (§4.11-4.13). Dữ liệu càng đa dạng (1839 vs 249 bài), áp lực trung bình hoá càng mạnh → khớp lý do 2 lần chỉnh hyperparameter đều thất bại.
+
+**Đã fix** (nửa rẻ, ít rủi ro): thêm mu/logvar + reparameterization trick + KL-divergence loss — đúng cơ chế VAE thật, tránh collapse. **Chưa fix** (cố ý): adversarial loss — rủi ro bất ổn GAN cao, không đáng đánh đổi dưới deadline.
+
+Verify từng bước trước khi chạy full: local (eval xác định, train stochastic, gradient flow, KL hữu hạn, 29/29 test pass) → smoke-test Kaggle thật (6 bài, không NaN, VRAM khớp benchmark) → **PASS** → chạy full 1839 bài.
 
 ---
 

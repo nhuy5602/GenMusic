@@ -947,15 +947,36 @@ thang STFT, không discriminator). Loss L1 thuần, không KL/không adversarial
 cho CFM loss (§4.11--4.13, \texttt{docs/project\_history.md}, dẫn Dieleman 2024/DMD-ADM), chỉ
 khác network. Dữ liệu càng đa dạng, áp lực trung bình hoá càng mạnh — khớp với việc chỉnh
 warmup/LR không cứu được, vì đây là vấn đề \emph{hình dạng hàm loss}, không phải \emph{bất ổn
-tối ưu hoá}. Thêm KL/adversarial loss là hướng khắc phục thật nhưng là một undertaking lớn, đúng
-rủi ro đã lường trước từ đầu (\S\ref{sec:latent_space}) — ngoài phạm vi thời gian của report này.
+tối ưu hoá}. Thêm adversarial loss (nửa còn lại của một VAE thật) là một undertaking lớn, đúng
+rủi ro bất ổn GAN training đã lường trước từ đầu (\S\ref{sec:latent_space}) — cố ý vẫn để ngoài
+phạm vi report này. Nửa rẻ hơn — thêm bước xác suất/KL divergence — thì khả thi và đã được thực
+hiện (\S\ref{sec:vae_bottleneck}).
 
-\textbf{Quyết định}: dừng thử thêm hyperparameter ở quy mô 1839 bài, quay lại dùng checkpoint
-encoder 249 bài đã xác nhận khoẻ mạnh (\S\ref{sec:latent_space}) để tiến hành bước còn treo lâu
-nay — huấn luyện \texttt{MicroDiT} bằng CFM trực tiếp trên latent-space (chưa từng chạy, mọi kết
-quả latent-space trước đó đều từ \texttt{NativeDiTStudent} đã gộp/xoá,
-\S\ref{sec:native_dit}) — xem kết quả ở \S\ref{chapter:conclusion}. Việc mở rộng dữ liệu encoder
-lên quy mô lớn ổn định là một hướng phát triển riêng, chưa khép lại trong report này.
+\subsection{Thêm bước xác suất (mu/logvar + KL divergence) thật}
+\label{sec:vae_bottleneck}
+
+\texttt{LatentAudioEncoder.forward()} được sửa để xuất \texttt{mu}, \texttt{logvar} (gấp đôi số
+kênh ra của \texttt{conv\_out}, $64\to128$), áp dụng reparameterization trick chuẩn của VAE:
+$z=\mu+\sigma\epsilon$ lúc train (backprop qua sample thật, để loss decoder regularize cả phân
+phối chứ không chỉ giá trị trung bình), $z=\mu$ lúc eval (giữ nguyên hành vi xác định cho mọi nơi
+gọi hiện có — không cần sửa \texttt{precompute-latent-dataset} hay
+\texttt{check\_latent\_encoder\_quality.py}). Thêm số hạng
+$\mathcal{L}_{\mathrm{KL}}=-\tfrac12\,\mathrm{mean}(1+\log\sigma^2-\mu^2-\sigma^2)$, trọng số
+\texttt{--kl-weight} (mặc định $10^{-4}$, giá trị bảo thủ để tránh collapse theo chiều ngược lại —
+KL đè bẹp reconstruction).
+
+Trước khi chạy full, đã kiểm chứng cẩn thận từng bước: verify cục bộ (eval mode xác định, train
+mode có sample ngẫu nhiên, gradient chảy ngược qua sample, KL loss hữu hạn, 29/29 test pass), rồi
+smoke-test thật trên Kaggle (6 bài, 1 mỗi phần, 1 epoch) — \texttt{recon\_loss=3{,}645},
+\texttt{kl\_loss=0{,}042}, không NaN, \texttt{peak\_vram\_gb=7{,}988} khớp đúng benchmark VRAM cũ.
+Sau khi xác nhận đúng đắn, mới chạy full 1839 bài/10 epoch — kết quả ở \S\ref{chapter:conclusion}.
+
+Song song, một checkpoint tạm dùng encoder 249 bài đã xác nhận khoẻ mạnh
+(\S\ref{sec:latent_space}) đã được bắt đầu để không bỏ trống bước \texttt{MicroDiT}+CFM trên
+latent-space (chưa từng chạy, mọi kết quả latent-space trước đó đều từ \texttt{NativeDiTStudent}
+đã gộp/xoá, \S\ref{sec:native_dit}) — nhưng bị dừng lại để ưu tiên xác nhận kết quả của encoder
+VAE mới trước, theo đúng nguyên tắc kiểm chứng từng bước trước khi đi tiếp. Xem kết quả cuối cùng
+(encoder VAE có ổn định không, và bước CFM/distillation tiếp theo) ở \S\ref{chapter:conclusion}.
 
 \section{DiffRhythm2 Distillation}
 \label{sec:distillation_chapter}
