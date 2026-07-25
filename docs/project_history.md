@@ -1952,6 +1952,33 @@ bắt buộc để tương thích, không thể đổi mà không tự train dec
 xét/gợi ý bên ngoài (kể cả nghe có vẻ hợp lý) với số liệu đo trực tiếp trên checkpoint thật trước khi
 hành động, thay vì áp dụng theo lý thuyết chung chung.
 
+### 4.34 Đẩy tiếp `kl_weight=0,3`, phản biện giả thuyết "5Hz không đủ băng thông cho phụ âm", và tự động hoá bước distillation
+
+Người dùng nhận thấy `avg_recon` gần như không đổi giữa hai lần continuation (§4.33:
+$1{,}239\to1{,}242$) trong khi `sigma`/`pitch_std` đều tăng đáng kể — kết luận vẫn còn dư địa, chưa
+tới điểm đánh đổi có hại. Quyết định đẩy tiếp một bước: `--resume-checkpoint` từ checkpoint
+`kl_weight=0,15`, train tiếp 5 epoch với `kl_weight=0,3` (gấp đôi). Đang chạy tại thời điểm viết mục
+này — kết quả sẽ cập nhật ở mục tiếp theo.
+
+**Phản biện một nhận xét bên ngoài khác** ("5Hz/4800× là giới hạn vật lý, không đủ băng thông giữ
+phụ âm tiếng Việt, phải dựa vào DiT/text-conditioning ở bước sau"): điểm sai — tỷ lệ nén 5Hz không
+phải giới hạn tự đặt ra, mà là tỷ lệ **thật** của chính DiffRhythm2 (teacher gốc dùng để chọn
+distill từ nó); DiffRhythm2 công bố tạo nhạc có lời rõ ở đúng tỷ lệ này, nên nếu 5Hz thực sự không
+đủ băng thông cho phụ âm thì bản thân DiffRhythm2 đã không hoạt động được. Vấn đề nhiều khả năng nằm
+ở việc **encoder tự train của project** (không adversarial loss, không đồng huấn luyện với decoder,
+xem §4.30) yếu hơn encoder gốc DiffRhythm2 ở cùng tỷ lệ nén, không phải giới hạn thông tin của bản
+thân 5Hz. Điểm đúng và quan trọng trong nhận xét: `pitch_std`/WER trên encode-decode round-trip đo
+khả năng tái tạo âm thanh của VAE, KHÔNG đo khả năng CFM/DiT sinh lời đúng từ text điều kiện — hai
+năng lực khác nhau. Bài kiểm tra thật về độ rõ lời phải đến từ mẫu do CFM sinh ra (có điều kiện
+lyric), không phải từ VAE đơn thuần.
+
+**Tự động hoá staged pipeline theo yêu cầu "khẩn trương"**: viết một script polling nền tự động
+launch `train-distill` (25 epoch, `alpha_feature=0,8`, dùng `--processed-kernel-ref` chỉ thẳng vào
+kernel `precompute+train-self` một khi nó COMPLETE) — không cần chờ người vận hành can thiệp thủ
+công giữa hai bước. `run_kaggle_distill.py` tìm dataset bằng cách quét `records.jsonl` bất kỳ đâu
+dưới `/kaggle/input`, nên nhận trực tiếp latent dataset đã precompute từ kernel khác qua
+`kernel_sources` mà không cần viết launcher mới hay upload lại dataset.
+
 ---
 
 ## 5. Kết luận và hướng phát triển

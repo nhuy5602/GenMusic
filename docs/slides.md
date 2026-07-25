@@ -225,6 +225,14 @@ Verify từng bước trước khi chạy full: local (eval xác định, train 
 
 ---
 
+## Đang tiếp tục đẩy giới hạn + tự động hoá pipeline
+
+- `avg_recon` không đổi qua các lần continuation (1,239→1,242) trong khi σ/pitch_std vẫn tăng → còn dư địa. Đang train tiếp `kl_weight=0,3` (resume từ checkpoint 0,15).
+- Phản biện nhận xét "5Hz không đủ băng thông giữ phụ âm": tỷ lệ nén này là của chính DiffRhythm2 (teacher) — nếu đúng vậy thì DiffRhythm2 đã không hoạt động. Vấn đề nhiều khả năng ở chất lượng encoder tự train, không phải giới hạn 5Hz. Điểm đúng: độ rõ lời là việc của CFM/DiT (text-conditioning), không phải VAE — cần kiểm chứng bằng mẫu CFM sinh ra, không phải encode-decode round-trip.
+- **Tự động hoá staged pipeline**: script polling nền tự launch `train-distill` (25 epoch, `alpha_feature=0,8`) ngay khi job precompute+train-self COMPLETE — không cần can thiệp thủ công giữa các bước.
+
+---
+
 ## Kết quả kiểm chứng hạ tầng (RQ1–RQ2)
 
 | Thiết lập | Kết quả |
