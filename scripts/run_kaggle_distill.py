@@ -28,6 +28,26 @@ import tarfile
 import urllib.request
 from pathlib import Path
 
+def run_logged(command, label):
+    # Streams output live (visible on the Kaggle web UI as it happens) instead
+    # of buffering the whole subprocess and printing it only after it exits --
+    # capture_output=True gave zero visibility into a multi-hour training run,
+    # which is exactly what made a real stall indistinguishable from "just slow".
+    process = subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", bufsize=1,
+    )
+    lines = []
+    for line in process.stdout:
+        print(line, end="", flush=True)
+        lines.append(line)
+    process.wait()
+    output = "".join(lines)
+    Path("/kaggle/working/" + label + ".log").write_text(output, encoding="utf-8")
+    if process.returncode != 0:
+        raise RuntimeError(label + " failed with exit code " + str(process.returncode) + "\\n" + output[-8000:])
+    return process
+
 try:
     print("--- STEP 1: Locating preprocessed dataset ---")
     input_dir = Path("/kaggle/input")
@@ -88,10 +108,9 @@ try:
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
     print("--- STEP 4: Running Knowledge Distillation training ---")
-    # Execute the train-distill command. By default it downloads the ASLP-lab/DiffRhythm2 teacher from HF
-    # stdout/stderr are captured and persisted to disk because the Kaggle log
-    # download is unreliable (often 0 bytes despite real content on the web UI).
-    train_result = subprocess.run([
+    # Execute the train-distill command. By default it downloads the ASLP-lab/DiffRhythm2 teacher from HF.
+    # Streamed live via run_logged (also persists to /kaggle/working/train_distill.log).
+    run_logged([
         sys.executable, str(source_root / "cli.py"), "train-distill",
         "--dataset", str(processed_dataset),
         "--student-checkpoint", "/kaggle/working/distilled_student.pt",
@@ -105,10 +124,7 @@ try:
         "--heads", "{heads}",
         "--ff-mult", "{ff_mult}",
         "--lambda-vocal", "{lambda_vocal}",
-{max_records_line}    ], env=os.environ, capture_output=True, text=True)
-    Path("/kaggle/working/train_distill_stdout.txt").write_text(train_result.stdout, encoding="utf-8")
-    Path("/kaggle/working/train_distill_stderr.txt").write_text(train_result.stderr, encoding="utf-8")
-    train_result.check_returncode()
+{max_records_line}    ], "train_distill")
 
     print("DISTILLATION TRAINING COMPLETED SUCCESSFULLY!")
     print("Output model checkpoint saved at: /kaggle/working/distilled_student.pt")
