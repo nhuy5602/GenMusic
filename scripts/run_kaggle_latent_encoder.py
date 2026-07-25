@@ -85,7 +85,17 @@ try:
     if not source_dataset_dir:
         raise RuntimeError("Could not find the source code dataset directory.")
     source_root = Path("/kaggle/working/GenMusic")
-    shutil.copytree(source_dataset_dir, source_root, dirs_exist_ok=True)
+    source_zip = next(source_dataset_dir.glob("genmusic_vn_source.zip"), None)
+    if source_zip:
+        # Kaggle sometimes auto-extracts an uploaded .zip into the dataset dir and
+        # sometimes doesn't (observed to depend on whether other sibling files, e.g.
+        # a resume checkpoint, are uploaded alongside it) -- extract explicitly
+        # instead of relying on that undocumented, inconsistent behavior.
+        import zipfile
+        with zipfile.ZipFile(source_zip) as archive:
+            archive.extractall(source_root)
+    else:
+        shutil.copytree(source_dataset_dir, source_root, dirs_exist_ok=True)
 
     resume_checkpoint_path = next(source_dataset_dir.glob("resume_encoder.pt"), None)
     if resume_checkpoint_path:
