@@ -135,6 +135,7 @@ def build_parser() -> argparse.ArgumentParser:
     latent_encoder.add_argument("--warmup-steps", type=int, default=200, help="Linear LR warmup steps before cosine decay -- stabilizes early training against the frozen decoder.")
     latent_encoder.add_argument("--grad-clip-norm", type=float, default=1.0)
     latent_encoder.add_argument("--num-workers", type=int, default=4, help="DataLoader background workers to prefetch batches while the GPU computes -- raw-audio waveform records are ~2.56x the bytes of mel, so this matters more here than for train-self.")
+    latent_encoder.add_argument("--kl-weight", type=float, default=1e-4, help="Weight of the VAE KL-divergence regularizer -- see train_latent_encoder's docstring for why this was added (§4.29 collapse at full-corpus scale).")
 
     precompute_latent = sub.add_parser("precompute-latent-dataset", help="Chuyển dataset mel đã có sang không gian latent thật của DiffRhythm2 (64 chiều, 5Hz), dùng LatentAudioEncoder đã pretrain.")
     precompute_latent.add_argument("--source-dataset", required=True)
@@ -246,7 +247,7 @@ def main(argv: list[str] | None = None) -> int:
         report = run_distillation_training(args.dataset, args.student_checkpoint, args.teacher_checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, alpha_feature=args.alpha_feature, beta_repa=args.beta_repa, repo_id=args.repo_id, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, roberta_model=args.roberta_model, max_records=args.max_records, lambda_vocal=args.lambda_vocal)
     elif args.command == "train-latent-encoder":
         from src.training.latent_encoder_training import train_latent_encoder
-        report = train_latent_encoder(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, max_records_per_dataset=args.max_records_per_dataset, log_every_steps=args.log_every_steps, repo_id=args.repo_id, crop_seconds=args.crop_seconds, warmup_steps=args.warmup_steps, grad_clip_norm=args.grad_clip_norm, num_workers=args.num_workers)
+        report = train_latent_encoder(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, max_records_per_dataset=args.max_records_per_dataset, log_every_steps=args.log_every_steps, repo_id=args.repo_id, crop_seconds=args.crop_seconds, warmup_steps=args.warmup_steps, grad_clip_norm=args.grad_clip_norm, num_workers=args.num_workers, kl_weight=args.kl_weight)
     elif args.command == "precompute-latent-dataset":
         from src.data.precompute_latent_dataset import precompute_latent_dataset
         report = precompute_latent_dataset(args.source_dataset, args.encoder_checkpoint, args.out, device=args.device, max_records=args.max_records, crop_seconds=args.crop_seconds)

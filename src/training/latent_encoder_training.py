@@ -111,6 +111,7 @@ def train_latent_encoder(
     warmup_steps: int = 200,
     grad_clip_norm: float = 1.0,
     num_workers: int = 4,
+    kl_weight: float = 1e-4,
 ) -> dict[str, Any]:
     """dataset_dir accepts either one path or a list of paths -- multiple
     independently-preprocessed datasets (e.g. different raw-data parts) are
@@ -137,9 +138,22 @@ def train_latent_encoder(
     a collapsed, degenerate solution, not literal white noise. A fresh
     encoder pushing gradients through a frozen decoder it was never
     co-trained with is a fragile optimization; linear warmup + cosine decay +
-    grad-norm clipping is the standard fix for exactly this failure mode."""
+    grad-norm clipping is the standard fix for exactly this failure mode.
+
+    kl_weight controls the VAE regularizer (LatentAudioEncoder.forward's
+    reparameterization + kl_divergence_loss): two later full-corpus retrains
+    (1839 songs, still collapsed pitch_std despite this warmup/clip recipe)
+    pointed at a deeper cause than optimizer instability -- plain L1
+    reconstruction loss with no probabilistic bottleneck and no adversarial
+    term is known to regress toward a "safe" low-dynamic-range average once
+    the target distribution is diverse enough (docs/project_history.md §4.29
+    draws the parallel to the same regression-to-the-mean failure already
+    diagnosed for the CFM loss, §4.11-4.13). Default 1e-4 is a conservative
+    starting point (too large risks posterior collapse the other way -- KL
+    dominating and crushing the latent toward pure prior noise, destroying
+    reconstruction instead)."""
     torch, DataLoaderClass = _torch()
-    from ..models.latent_codec import LatentAudioEncoder, load_frozen_decoder, multi_scale_mel_loss
+    from ..models.latent_codec import LatentAudioEncoder, kl_divergence_loss, load_frozen_decoder, multi_scale_mel_loss
 
     dataset_dirs = [Path(dataset_dir)] if isinstance(dataset_dir, (str, Path)) else [Path(d) for d in dataset_dir]
     if not dataset_dirs:
@@ -219,6 +233,8 @@ def train_latent_encoder(
 
     for epoch in range(max(1, int(epochs))):
         epoch_losses: list[float] = []
+        epoch_recon_losses: list[float] = []
+        epoch_kl_losses: list[float] = []
         for batch in dataloader:
             if raw_audio_mode:
                 target_24k = batch["full_mix"].to(selected_device)  # (B, samples), already the pristine recording
@@ -247,27 +263,35 @@ def train_latent_encoder(
                 group["lr"] = _lr_at(global_step)
 
             optimizer.zero_grad(set_to_none=True)
-            latent = encoder(target_24k)
+            latent, mu, logvar = encoder(target_24k, return_stats=True)
             chunk_size = min(20, max(1, latent.shape[2]))
             reconstructed_48k = decoder_handle.decoder.decode_audio(latent, overlap=min(2, chunk_size - 1), chunk_size=chunk_size)
-            loss = multi_scale_mel_loss(reconstructed_48k, target_48k, sample_rate=decoder_handle.sampling_rate)
+            recon_loss = multi_scale_mel_loss(reconstructed_48k, target_48k, sample_rate=decoder_handle.sampling_rate)
+            kl_loss = kl_divergence_loss(mu, logvar)
+            loss = recon_loss + kl_weight * kl_loss
             loss.backward()
             torch.nn.utils.clip_grad_norm_(encoder.parameters(), max_norm=grad_clip_norm)
             optimizer.step()
 
             loss_value = float(loss.detach().cpu())
+            recon_loss_value = float(recon_loss.detach().cpu())
+            kl_loss_value = float(kl_loss.detach().cpu())
             losses.append(loss_value)
             epoch_losses.append(loss_value)
+            epoch_recon_losses.append(recon_loss_value)
+            epoch_kl_losses.append(kl_loss_value)
             global_step += 1
             if log_every_steps > 0 and global_step % log_every_steps == 0:
                 vram_note = ""
                 if selected_device.startswith("cuda"):
                     vram_note = f" peak_vram_gb={torch.cuda.max_memory_allocated(selected_device) / 1e9:.2f}"
-                print(f"epoch={epoch + 1} step={global_step} lr={_lr_at(global_step):.7f} loss={loss_value:.6f}{vram_note}", flush=True)
+                print(f"epoch={epoch + 1} step={global_step} lr={_lr_at(global_step):.7f} loss={loss_value:.6f} recon={recon_loss_value:.6f} kl={kl_loss_value:.4f}{vram_note}", flush=True)
 
         avg_loss = sum(epoch_losses) / max(1, len(epoch_losses))
-        loss_curve.append({"epoch": epoch + 1, "loss": avg_loss})
-        print(f"epoch={epoch + 1}/{epochs} avg_loss={avg_loss:.6f}", flush=True)
+        avg_recon_loss = sum(epoch_recon_losses) / max(1, len(epoch_recon_losses))
+        avg_kl_loss = sum(epoch_kl_losses) / max(1, len(epoch_kl_losses))
+        loss_curve.append({"epoch": epoch + 1, "loss": avg_loss, "recon_loss": avg_recon_loss, "kl_loss": avg_kl_loss})
+        print(f"epoch={epoch + 1}/{epochs} avg_loss={avg_loss:.6f} avg_recon={avg_recon_loss:.6f} avg_kl={avg_kl_loss:.4f}", flush=True)
 
     destination = Path(checkpoint_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -279,6 +303,7 @@ def train_latent_encoder(
         "backend": "genmusic-vn-latent-encoder",
         "datasets": [str(d.resolve()) for d in dataset_dirs],
         "raw_audio_mode": raw_audio_mode,
+        "kl_weight": kl_weight,
         "checkpoint": str(destination.resolve()),
         "device": selected_device,
         "record_count": len(records),

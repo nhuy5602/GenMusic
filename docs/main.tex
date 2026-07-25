@@ -935,9 +935,20 @@ tương đối thấp hơn ($200/4600\approx4{,}3\%$ so với $200/2520\approx7{
 step) và learning rate thấp hơn ($5\times10^{-5}$) cũng không giải quyết được}: loss vẫn giảm
 mượt ($2{,}143\to1{,}468$), nhưng \texttt{pitch\_std\_semitones} giải mã chỉ tăng nhẹ lên trung
 bình $0{,}78$ — vẫn collapse, vẫn cách rất xa mức khoẻ mạnh ($6$--$12$). Hai lần thử liên tiếp
-thất bại là bằng chứng đây không đơn thuần là thiếu warmup/LR quá cao, mà nhiều khả năng là một
-khác biệt sâu hơn giữa dữ liệu raw-audio pristine (đa dạng hơn) và dữ liệu mel-detour mà công
-thức gốc được validate — cần điều tra kỹ hơn, ngoài phạm vi thời gian còn lại của report này.
+thất bại là bằng chứng đây không đơn thuần là thiếu warmup/LR quá cao.
+
+\textbf{Chẩn đoán có cơ sở hơn}: \texttt{LatentAudioEncoder} \textbf{không phải một VAE thật}
+theo đúng nghĩa Stable Audio 2 — lựa chọn có chủ đích, ghi rõ trong docstring
+(\texttt{src/models/latent\_codec.py}), thiếu hai thành phần VAE âm thanh thật luôn có: (1)
+không có bước xác suất/KL divergence (\texttt{forward()} trả về một điểm duy nhất, không sample
+từ $\mathcal{N}(\mu,\sigma)$); (2) không có adversarial loss (chỉ L1 thuần trên log-mel qua 3
+thang STFT, không discriminator). Loss L1 thuần, không KL/không adversarial, có xu hướng kinh
+điển "regression-to-the-mean" khi target đa dạng — đúng cùng lớp bệnh lý đã tự phát hiện trước đó
+cho CFM loss (§4.11--4.13, \texttt{docs/project\_history.md}, dẫn Dieleman 2024/DMD-ADM), chỉ
+khác network. Dữ liệu càng đa dạng, áp lực trung bình hoá càng mạnh — khớp với việc chỉnh
+warmup/LR không cứu được, vì đây là vấn đề \emph{hình dạng hàm loss}, không phải \emph{bất ổn
+tối ưu hoá}. Thêm KL/adversarial loss là hướng khắc phục thật nhưng là một undertaking lớn, đúng
+rủi ro đã lường trước từ đầu (\S\ref{sec:latent_space}) — ngoài phạm vi thời gian của report này.
 
 \textbf{Quyết định}: dừng thử thêm hyperparameter ở quy mô 1839 bài, quay lại dùng checkpoint
 encoder 249 bài đã xác nhận khoẻ mạnh (\S\ref{sec:latent_space}) để tiến hành bước còn treo lâu

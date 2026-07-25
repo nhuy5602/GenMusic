@@ -105,10 +105,19 @@ class _DownsampleBlock(nn.Module):
 class LatentAudioEncoder(nn.Module):
     """Mono 24kHz waveform -> (B, DECODER_IN_CHANNELS, T) latent at 5Hz.
 
-    Trained from scratch (see module docstring) against DiffRhythm2's real,
-    frozen decoder -- NOT an attempt to reproduce Stable Audio 2's actual
-    encoder architecture, just a functionally-compatible replacement small
-    enough to train on this project's own 250-song budget.
+    A real variational bottleneck (mu/logvar + reparameterization + KL term,
+    see `reparameterize`/train_latent_encoder's kl_loss): two consecutive
+    full-corpus retrains collapsed (docs/project_history.md §4.29) using the
+    earlier deterministic-autoencoder version of this class, which had no KL
+    regularization and no adversarial loss -- exactly the combination known to
+    let plain L1/L2 reconstruction losses regress to a "safe", low-dynamic-
+    range average once the target distribution is diverse enough (the same
+    failure family already diagnosed for the CFM loss, §4.11-4.13). Adding a
+    real probabilistic bottleneck is the cheap, low-risk half of closing the
+    gap with a real Stable-Audio-2-style VAE; adding an adversarial
+    discriminator (the other half) is deliberately still out of scope -- the
+    module docstring's original risk assessment (GAN-training instability)
+    still applies.
     """
 
     def __init__(self, base_channels: int = 32, max_channels: int = 512):
@@ -121,17 +130,47 @@ class LatentAudioEncoder(nn.Module):
             blocks.append(_DownsampleBlock(channels, next_channels, stride))
             channels = next_channels
         self.blocks = nn.ModuleList(blocks)
-        self.conv_out = nn.Conv1d(channels, DECODER_IN_CHANNELS, kernel_size=7, padding=3)
+        # 2x channels: first half is mu, second half is logvar (see forward()).
+        self.conv_out = nn.Conv1d(channels, DECODER_IN_CHANNELS * 2, kernel_size=7, padding=3)
 
-    def forward(self, waveform: torch.Tensor) -> torch.Tensor:
+    def forward(self, waveform: torch.Tensor, return_stats: bool = False):
         """waveform: (B, samples) or (B, 1, samples) mono audio at
-        ENCODER_INPUT_SAMPLE_RATE. Returns (B, DECODER_IN_CHANNELS, T)."""
+        ENCODER_INPUT_SAMPLE_RATE.
+
+        Returns the latent (B, DECODER_IN_CHANNELS, T) -- a reparameterized
+        sample from N(mu, exp(logvar)) in training mode (`self.training`,
+        standard VAE practice: backprop through the *sample* so the decoder
+        loss regularizes the whole distribution, not just its mean), or the
+        deterministic `mu` in eval mode (matches how every downstream
+        consumer -- precompute-latent-dataset, generate-local,
+        check_latent_encoder_quality.py -- already calls `encoder.eval()`
+        before using it). Pass return_stats=True to additionally get
+        (mu, logvar) for computing the KL term during training.
+        """
         if waveform.dim() == 2:
             waveform = waveform.unsqueeze(1)
         x = self.conv_in(waveform)
         for block in self.blocks:
             x = block(x)
-        return self.conv_out(x)
+        stats = self.conv_out(x)
+        mu, logvar = stats.chunk(2, dim=1)
+        logvar = logvar.clamp(-30.0, 20.0)  # numerical stability, standard VAE practice
+        if self.training:
+            std = torch.exp(0.5 * logvar)
+            z = mu + std * torch.randn_like(std)
+        else:
+            z = mu
+        if return_stats:
+            return z, mu, logvar
+        return z
+
+
+def kl_divergence_loss(mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
+    """KL(N(mu, exp(logvar)) || N(0, 1)), averaged over batch/channels/time --
+    the standard VAE regularizer that pulls the latent distribution toward a
+    simple, continuous prior instead of letting the encoder collapse toward
+    whatever single point minimizes reconstruction loss on average."""
+    return -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
 
 
 @dataclass

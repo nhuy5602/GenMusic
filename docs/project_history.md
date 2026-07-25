@@ -1718,9 +1718,26 @@ xa mức thật ($9{,}46$). Hai lần thử liên tiếp với cùng kiến trú
 khác nhau đều collapse — bằng chứng cho thấy đây **không đơn thuần là thiếu warmup/LR quá cao**,
 mà nhiều khả năng là một vấn đề sâu hơn về sự khác biệt giữa dữ liệu raw-audio pristine (đa
 dạng hơn, không qua lớp làm mượt Vocos) và dữ liệu mel-detour mà công thức gốc được validate —
-cần điều tra kỹ hơn (ví dụ: kiểm tra phân phối biên độ/silence giữa các phần dataset, hoặc thử
-loss/kiến trúc encoder khác), không phải việc có thể giải quyết bằng một vài lần chỉnh
-hyperparameter trong thời gian còn lại của phiên này.
+cần điều tra kỹ hơn, không phải việc có thể giải quyết bằng một vài lần chỉnh hyperparameter.
+
+**Chẩn đoán có cơ sở hơn** (đặt câu hỏi lại sau khi nghe thử kết quả collapse): `LatentAudioEncoder`
+**không phải một VAE thật** theo đúng nghĩa Stable-Audio-2 — đây là lựa chọn có chủ đích, ghi rõ
+trong docstring module (`src/models/latent_codec.py`), không phải thiếu sót. Cụ thể thiếu 2 thành
+phần mà VAE âm thanh thật (Stable Audio 2, DAC, EnCodec...) luôn có: (1) **không có bước xác suất/KL
+divergence** — `forward()` trả về đúng một điểm `(B,64,T)`, không sample từ $\mathcal{N}(\mu,\sigma)$,
+không có loss kéo latent về prior chuẩn; (2) **không có adversarial loss** — chỉ
+`multi_scale_mel_loss` (L1 thuần trên log-mel qua 3 thang STFT), không discriminator, không GAN
+training (quyết định tránh rủi ro huấn luyện GAN trên ngân sách nhỏ, đã cân nhắc từ đầu).
+
+Loss L1/L2 thuần, không KL/không adversarial, có xu hướng kinh điển "regression-to-the-mean" khi
+target đa dạng: mạng học cách dự đoán một xấp xỉ trung bình/phẳng để giảm loss kỳ vọng trên toàn
+tập, thay vì cam kết một đường cao độ sắc nét cho từng bài — **đúng cùng một lớp bệnh lý đã tự phát
+hiện trước đó cho CFM loss** (§4.11--4.13, dẫn Dieleman 2024/DMD-ADM), chỉ khác network. Dữ liệu
+càng đa dạng (1839 bài, 6 phần, nhiều giọng/phong cách hơn hẳn 249 bài của 1 phần), áp lực trung
+bình hoá càng mạnh — khớp với việc 2 lần chỉnh warmup/LR không cứu được, vì đó là vấn đề *hình dạng
+hàm loss*, không phải *bất ổn tối ưu hoá*. Hướng khắc phục thật (thêm KL term hoặc adversarial
+loss) là một undertaking lớn, đúng như rủi ro đã lường trước trong docstring gốc — ngoài phạm vi
+thời gian của phiên này, nhưng là chẩn đoán rõ ràng hơn hẳn để ghi vào hướng phát triển.
 
 **Quyết định (2026-07-25, dưới áp lực hạn nộp báo cáo 2 ngày)**: dừng thử thêm hyperparameter
 cho encoder quy mô 1839 bài, quay lại dùng checkpoint encoder 249 bài đã xác nhận khoẻ mạnh từ
