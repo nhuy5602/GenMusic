@@ -142,109 +142,41 @@ DiffRhythm2 **không** chạy trên mel — teacher thật dùng **Music VAE lat
 
 ---
 
-## Cập nhật mới nhất: loại bỏ vòng Vocos khỏi encoder
+## Encoder latent: kiến trúc và bottleneck xác suất
 
-Lần train encoder trước (§4.24) vẫn phải: mel → **giải mã ngược qua Vocos** → waveform → encoder — một xấp xỉ có mất pha, không phải bản ghi gốc.
+**Vấn đề**: DiffRhythm2 công bố decoder (BigVGAN) nhưng không công bố encoder. Train VAE đầy đủ đúng-như-paper (adversarial loss) quá tốn/rủi ro cho đề tài.
 
-**Đã làm trong phiên này**:
-- `preprocess-raw --raw-audio`: lưu thẳng waveform 24kHz, bỏ hẳn mel.
-- `train-latent-encoder`/`precompute-latent-dataset`: đọc trực tiếp `raw_audio_mode`, cộng vocal+backing waveform — **không còn Vocos** trong pipeline train encoder.
-- Mở rộng nhận **nhiều dataset cùng lúc** → gộp cả 6 phần corpus gốc: **249 → 1843 bài**.
+**Giải pháp**: giữ decoder đông lạnh, chỉ train encoder mới (11M tham số, Conv1d stride tích 4800 = đúng tỷ lệ nén thật của teacher), train trực tiếp trên waveform gốc (không qua Vocos).
 
-**Đã kiểm chứng trên Kaggle GPU thật**: truy cập đủ 6 phần (1843 record, không lỗi), train thử 1 epoch với 1 bài/phần — chạy đúng.
+**Bottleneck xác suất (VAE)**: `mu`/`logvar` + reparameterization trick + KL-divergence loss — tránh regression-to-the-mean (cùng bệnh lý đã gặp ở CFM loss, §4.11-4.13). `kl_weight` áp dụng theo lịch trình **cyclical annealing** (Fu et al., NAACL 2019) thay vì hằng số, để tránh hiện tượng "KL vanishing" đã đo được (xem Thí nghiệm 5).
 
----
-
-## Kết quả: encoder huấn luyện lại trên toàn bộ 1843 bài
-
-- **1839 bài** (sau lọc), 10 epoch, batch 4, LR 1e-4, 4600 step, ~98 phút thuần train.
-- Loss giảm mượt: 2,105 → 1,734 → 1,612 → ... → **1,239** (epoch 10) — **tốt hơn** kết quả cũ trên 249 bài (1,28), dù dữ liệu lớn hơn 7,4×.
-- `peak_vram_gb=15,30` trên T4 (16GB) — batch=4 đã gần ngưỡng an toàn.
-- Phát hiện phụ: file waveform thô nặng hơn mel đúng **2,56 lần** (256/100) → I/O chậm hơn hẳn nếu không prefetch; thêm `num_workers=4` đưa tốc độ về gần bình thường.
-
-**Nhưng sanity-check phát hiện encoder collapse**: `pitch_std_semitones` giải mã chỉ **0,44** trung bình (so với **9,46** của audio thật) — cùng dấu hiệu như lỗi gốc §4.24, dù loss trông tốt. Xác nhận lại: **loss thấp không đảm bảo encoder khoẻ**.
-
-**Thử lại với warmup dài hơn (400 step) + LR thấp hơn (5e-5) — vẫn collapse** (0,78, vẫn xa mức khoẻ 6-12). Hai lần thất bại liên tiếp với hyperparameter khác nhau → không phải vấn đề tối ưu hoá, mà là **hình dạng hàm loss**.
+Huấn luyện trên toàn bộ 1839 bài (6 phần corpus gốc, không qua Vocos), hạ tầng verify kỹ trên GPU Kaggle thật trước khi chạy full.
 
 ---
 
-## Chẩn đoán: encoder không phải VAE thật
+## Thí nghiệm 5: Ablation `kl_weight` cho VAE bottleneck
 
-Đọc lại code: `LatentAudioEncoder` **thiếu 2 thành phần** một VAE âm thanh thật (Stable Audio 2) luôn có:
-1. **Không có bước xác suất/KL divergence** — chỉ trả về 1 điểm duy nhất, không sample từ phân phối.
-2. **Không có adversarial loss** — chỉ L1 thuần trên log-mel.
+| Cấu hình | σ_mean | pitch_std | μ-distance | Ghi chú |
+|---|---|---|---|---|
+| Không VAE (2 lần) | — | 0,44 / 0,78 | — | collapse hoàn toàn |
+| `kl_weight=1e-4` hằng số | 0,003–0,005 | 5,85* | — | *KL vanishing: σ≈0, false positive |
+| `kl_weight=0,05` cyclical | 0,11–0,14 | 4,72 | 0,80–0,91 | VAE thật hoạt động lần đầu |
+| `kl_weight=0,15` cyclical | 0,245–0,273 | **6,01** | 0,84–0,91 | **tốt nhất** |
+| `kl_weight=0,3` cyclical | 0,34–0,37 | 3,72 | 0,81–0,88 | vượt ngưỡng, over-regularization |
 
-Loss L1 thuần → xu hướng kinh điển "regression-to-the-mean" khi dữ liệu đa dạng — **đúng cùng bệnh lý đã tự phát hiện cho CFM loss** (§4.11-4.13). Dữ liệu càng đa dạng (1839 vs 249 bài), áp lực trung bình hoá càng mạnh → khớp lý do 2 lần chỉnh hyperparameter đều thất bại.
-
-**Đã fix** (nửa rẻ, ít rủi ro): thêm mu/logvar + reparameterization trick + KL-divergence loss — đúng cơ chế VAE thật, tránh collapse. **Chưa fix** (cố ý): adversarial loss — rủi ro bất ổn GAN cao, không đáng đánh đổi dưới deadline.
-
-Verify từng bước trước khi chạy full: local (eval xác định, train stochastic, gradient flow, KL hữu hạn, 29/29 test pass) → smoke-test Kaggle thật (6 bài, không NaN, VRAM khớp benchmark) → **PASS** → chạy full 1839 bài.
-
----
-
-## 🎉 Kết quả: VAE fix thành công
-
-- Full 1839 bài, 10 epoch: `recon_loss` 2,245→**1,217** (tốt hơn 2 lần chạy trước). `kl_loss` tăng dần (0,93→3,35), không hội tụ — trọng số 1e-4 rất nhỏ.
-- **Sanity-check quyết định**: `pitch_std_semitones` trung bình **5,85** (so với 9,46 audio thật) — nhảy vọt từ 0,44/0,78 (collapse) lên **gần đúng dải khoẻ mạnh của checkpoint cũ 249-bài (6,16–12,38)**.
-- Một bài (`02ODKglDVQs`) đạt 7,47 — **vượt cả** pitch_std của chính audio thật (6,22).
-- **Xác nhận chẩn đoán đúng**: thiếu KL/xác suất là nguyên nhân chính gây collapse ở quy mô lớn.
-
-→ Encoder train trên toàn bộ 1839 bài (không qua Vocos, có VAE thật) là checkpoint tốt nhất hiện có. Chuyển sang bước CFM training.
+*(audio thật cùng 5 bài: pitch_std trung bình 9,46)*
 
 ---
 
-## ⚠️ Phát hiện sâu hơn: KL "vanishing" — VAE trên chưa thật sự hoạt động
+## Diễn giải: 2 phát hiện quan trọng
 
-- Nghe thử: audio rè → fix `decode_audio` overlap 2→5 (đúng mặc định BigVGAN). Nhưng test tiếp: **nhiễu ngẫu nhiên thuần qua decoder** cũng cho `pitch_std≈4,2` — gần bằng encoder "khoẻ" (5,85)!
-- **Chẩn đoán**: đọc trực tiếp σ (sigma) của checkpoint trên audio thật → **σ_mean≈0,003** (gần như 0!). Nhiễu reparameterization không đáng kể so với μ (scale≈1) → `z≈μ` gần như tất định. VAE này thực chất đang hoạt động như autoencoder thường.
-- Nguyên nhân: `kl_weight=1e-4` **hằng số** quá nhỏ để cản mạng tự thu nhỏ σ về 0 — đúng hiện tượng **"KL vanishing"** (Fu et al., NAACL 2019, Microsoft Research) và giới hạn KL chuẩn (Rivera, arXiv:2309.13160).
+**1. KL vanishing là false positive nguy hiểm.** `kl_weight=1e-4` (giá trị Stable Audio 2.0 dùng thật) cho pitch_std trông tốt (5,85) nhưng σ≈0 — encoder đã collapse về gần tất định, "thành công" chỉ là ảo giác của một chỉ số gián tiếp. Chỉ phát hiện được bằng cách đọc trực tiếp σ.
 
----
+**2. Tồn tại điểm tối ưu không đơn điệu.** 0,05→0,15: σ và pitch_std cùng tăng. 0,15→0,3: σ tiếp tục tăng nhưng pitch_std **giảm** — over-regularization kinh điển (Rivera 2023). `kl_weight=0,15` là điểm tối ưu, không phải giá trị lớn nhất.
 
-## Fix: Cyclical KL Annealing
+**Kiểm định giả thuyết bên ngoài**: một nhận xét nghi ngờ "mean collapse", đề xuất giảm `kl_weight` — đo trực tiếp μ-distance (0,80–0,91, ≈ độ lệch chuẩn nội tại) bác bỏ giả thuyết này. Bài học: đối chiếu mọi gợi ý với số liệu đo trực tiếp trước khi hành động.
 
-- Kiểm chứng cục bộ: fine-tune 40 bước với `kl_weight=0,05` (500× cũ) → σ_mean tăng đều 0,029→0,22-0,36. Xác nhận cơ chế đúng.
-- **Đã sửa**: thay `kl_weight` hằng số bằng lịch trình **cyclical annealing** (Fu et al. 2019) — 4 chu kỳ, mỗi chu kỳ ramp 0→`kl_weight` rồi giữ nguyên, lặp lại thay vì tăng một lần.
-- **Smoke-test Kaggle** (6 bài, 2 epoch): σ_mean **0,003→0,97** (gần đúng N(0,1)!), μ nhỏ hơn nhiều (0,93→0,22) — mạng giờ thật sự dùng phần xác suất.
-- `pitch_std` giải mã còn thấp (0,71) ở checkpoint 2-epoch này — dự kiến, chưa đủ train dưới áp lực KL thật. Đã khởi động full-corpus retrain (1839 bài, 10 epoch) để có kết quả cuối.
-
----
-
-## Kết quả cuối: Full-corpus + Continuation Training
-
-| | `kl_weight=1e-4` (collapsed) | `kl_weight=0,05` (10 epoch) | `kl_weight=0,15` (+5 epoch resume) |
-|---|---|---|---|
-| σ_mean | 0,003 | 0,11–0,14 | **0,245–0,273** |
-| pitch_std (20s) | ~0 | 4,72 | **6,01** (audio thật: 9,46) |
-| Phân biệt bài (μ distance) | — | 0,80–0,91 | 0,84–0,91 (không đổi) |
-
-- Fix hoạt động đúng ở quy mô đầy đủ (1839 bài): σ và pitch_std đều cải thiện dần qua mỗi vòng tăng `kl_weight`, không đánh đổi khả năng phân biệt bài hát.
-- Đối chiếu ngoài: Stable Audio 2.0 dùng đúng `kl_weight=1e-4` (giá trị collapse ở đây) — khác biệt là họ có thêm adversarial loss + train encoder/decoder cùng nhau; ở đây decoder đông lạnh có sẵn nên cần `kl_weight` lớn hơn.
-- Một nhận xét ngoài nghi ngờ "mean collapse", đề xuất giảm `kl_weight` — kiểm chứng trực tiếp bằng phép đo μ-distance bác bỏ giả thuyết này (khoảng cách giữa bài ≈ độ lệch chuẩn nội tại, không collapse).
-- **Checkpoint `kl_weight=0,15` là tốt nhất hiện có** — dùng cho bước CFM training tiếp theo.
-
----
-
-## Đang tiếp tục đẩy giới hạn + tự động hoá pipeline
-
-- `avg_recon` không đổi qua các lần continuation (1,239→1,242) trong khi σ/pitch_std vẫn tăng → thử tiếp `kl_weight=0,3` (resume từ checkpoint 0,15) để dò dư địa.
-- Phản biện nhận xét "5Hz không đủ băng thông giữ phụ âm": tỷ lệ nén này là của chính DiffRhythm2 (teacher) — nếu đúng vậy thì DiffRhythm2 đã không hoạt động. Vấn đề nhiều khả năng ở chất lượng encoder tự train, không phải giới hạn 5Hz. Điểm đúng: độ rõ lời là việc của CFM/DiT (text-conditioning), không phải VAE — cần kiểm chứng bằng mẫu CFM sinh ra, không phải encode-decode round-trip.
-- **Tự động hoá staged pipeline**: script polling nền tự launch `train-distill` (25 epoch, `alpha_feature=0,8`) ngay khi job precompute+train-self COMPLETE — không cần can thiệp thủ công giữa các bước.
-
----
-
-## `kl_weight=0,3` — đã vượt ngưỡng tối ưu
-
-| | `kl_weight=0,15` | `kl_weight=0,3` |
-|---|---|---|
-| σ_mean | 0,245–0,273 | 0,34–0,37 (tiếp tục tăng) |
-| μ distance (phân biệt bài) | 0,84–0,91 | 0,81–0,88 (vẫn ổn) |
-| pitch_std (20s) | **6,01** | **3,72 (giảm!)** |
-
-- σ tiếp tục tăng nhưng `pitch_std` **giảm** — over-regularization kinh điển của VAE, không phải lỗi.
-- **Kết luận: `kl_weight=0,15` là điểm tốt nhất** trong các giá trị đã thử (1e-4→0,05→0,15→0,3), không phải giá trị lớn nhất.
-- Checkpoint đang dùng cho CFM training hiện tại chính là `kl_weight=0,15` — không cần đổi.
-- Bài học: tăng regularization không đơn điệu cải thiện chất lượng — phải đo lại bằng audio thật ở mỗi bước.
+**Checkpoint `kl_weight=0,15`** dùng cho CFM training/distillation tiếp theo.
 
 ---
 

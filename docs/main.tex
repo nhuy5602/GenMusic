@@ -848,225 +848,86 @@ của một Music VAE riêng, ở tần số \textbf{5~Hz} — thấp hơn $\app
 \emph{phía truy vấn teacher} lúc chưng cất; hướng này cho \textbf{student chính nó} một
 không gian latent nén thật, độc lập với việc có chưng cất hay không.
 
+\subsection{Kiến trúc encoder}
+\label{sec:latent_encoder_arch}
+
 DiffRhythm2 công bố \textbf{decoder} (BigVGAN, \texttt{decoder.bin}/\texttt{decoder.json}
-trên HuggingFace) nhưng không công bố encoder (kiểu Stable-Audio-2). Train lại một VAE đầy
-đủ đúng-như-paper (có discriminator đối kháng) được đánh giá là quá tốn/rủi ro cho ngân
-sách 250 bài; giải pháp rẻ hơn: giữ decoder \textbf{đông lạnh} (đã pretrained, đã chứng
-minh hoạt động — chính là decoder thật của teacher), chỉ train một encoder nhỏ mới bằng
-loss reconstruction thuần (không GAN):
+trên HuggingFace) nhưng không công bố encoder tương ứng. Thay vì train lại một VAE đầy đủ
+đúng-như-paper (có discriminator đối kháng, quá tốn/rủi ro cho ngân sách của đề tài),
+phương pháp giữ decoder \textbf{đông lạnh} (đã pretrained, chính là decoder thật của
+teacher) và chỉ train một encoder nhỏ mới:
 \begin{itemize}
  \item \textbf{\texttt{LatentAudioEncoder}} (11M tham số): \texttt{Conv1d}$(1{\to}32)$, 5
    \texttt{\_DownsampleBlock} (mỗi block 3 residual unit dilation $1,3,9$ + conv strided)
-   với stride $(10,10,8,3,2)$ — tích $=4800$, khớp tỉ lệ nén encode-side paper công bố —
-   kênh tăng dần $32{\to}64{\to}128{\to}256{\to}512$ (chặn ở 512), rồi
-   \texttt{Conv1d}$(512{\to}64)$.
- \item Loss: trung bình L1-trên-log-mel qua 3 thang STFT $(n_{\mathrm{fft}},n_{\mathrm{mel}})\in
-   \{(512,40),(1024,80),(2048,80)\}$, so giữa audio decoder tái tạo và audio thật (qua
-   Vocos) — không có số hạng đối kháng.
+   với stride $(10,10,8,3,2)$ — tích $=4800$, khớp chính xác tỉ lệ nén encode-side thật của
+   teacher (xác nhận qua \texttt{upsample\_rates} của \texttt{decoder.json}) — kênh tăng
+   dần $32{\to}64{\to}128{\to}256{\to}512$ (chặn ở 512), rồi \texttt{Conv1d}$(512{\to}128)$
+   tách thành $\mu$/$\log\sigma^2$ (64 chiều mỗi phần, xem \S\ref{sec:vae_bottleneck}).
+ \item Encoder train trực tiếp trên waveform 24~kHz gốc (vocal+backing đã tách qua
+   Demucs), không qua bước trung gian mel/Vocos nào — tránh mất pha do một vòng vocoder
+   phụ không cần thiết (\texttt{preprocess-raw --raw-audio}).
+ \item Loss reconstruction: trung bình L1-trên-log-mel qua 3 thang STFT
+   $(n_{\mathrm{fft}},n_{\mathrm{mel}})\in\{(512,40),(1024,80),(2048,80)\}$, so giữa audio
+   decoder tái tạo và audio thật — không có số hạng đối kháng (rủi ro bất ổn GAN training,
+   cố ý để ngoài phạm vi đề tài).
 \end{itemize}
 
-\textbf{Lỗi thật đã gặp, đáng ghi lại}: lần train encoder đầu tiên (learning rate cố
-định, không gradient clipping/warmup) có đường loss dao động không hội tụ, và encoder
-suy biến — latent \emph{ground-truth} (bỏ qua hẳn CFM student) giải mã ra tín hiệu gần như
-đứng yên một cao độ (\texttt{pitch\_std\_semitones}$\approx0{,}9$), dù không phải nhiễu
-trắng theo \texttt{spectral\_flatness}. Fix: thêm warmup tuyến tính (200 step) + cosine
-decay + gradient-norm clipping ($1{,}0$) vào \texttt{train-latent-encoder}; hạ learning
-rate mặc định $2\times10^{-4}\rightarrow1\times10^{-4}$. Sau fix, cùng dữ liệu, 40 epoch:
-loss giảm mượt, và giải mã latent ground-truth cho \texttt{pitch\_std\_semitones} tăng lên
-$6{,}16$--$12{,}38$ (tuỳ bài) — bằng chứng định lượng fix có tác dụng thật. Chi tiết đầy đủ
-(bảng số liệu trước/sau, log training) ở \texttt{docs/project\_history.md} \S4.24.
-
-\subsection{Loại bỏ vòng lặp qua Vocos khỏi dữ liệu huấn luyện encoder}
-\label{sec:raw_audio_encoder}
-
-Lần train encoder ở trên (\S4.24) vẫn nhận đầu vào qua một vòng gián tiếp: dataset gốc chỉ
-lưu mel, nên trước khi đưa vào \texttt{LatentAudioEncoder} (nhận waveform thô, không nhận
-mel), hệ thống phải giải mã ngược mel về waveform bằng Vocos (\texttt{vocos.decode}) — dù
-bản thân encoder không cần mel ở bước nào. Vòng giải mã này là một xấp xỉ (mất pha, giới hạn
-bởi chính chất lượng Vocos) của bản ghi gốc, không phải bản ghi gốc.
-
-Để loại bỏ hoàn toàn xấp xỉ này, \texttt{preprocess-raw} được bổ sung chế độ
-\texttt{--raw-audio}: bỏ qua \texttt{compute\_mel\_spectrogram} và lưu trực tiếp waveform
-24~kHz đã tách vocal/backing (\texttt{waveforms/*.pt}), giữ nguyên Whisper transcript và
-MuQ-MuLan style embedding (không phụ thuộc mel). \texttt{train-latent-encoder} và
-\texttt{precompute-latent-dataset} được sửa để nhận diện trường \texttt{raw\_audio\_mode:
-true} trong \texttt{config.json} và cộng thẳng \texttt{vocal\_wav\_path}+\texttt{backing\_wav\_path}
-thành full-mix waveform, bỏ hẳn \texttt{vocos.decode()} — encoder giờ train trực tiếp trên
-bản ghi gốc, không qua một bộ vocoder trung gian nào. \texttt{train-latent-encoder} cũng
-được mở rộng để nhận nhiều thư mục dataset cùng lúc (giống \texttt{train-self}), cho phép
-gộp toàn bộ 6 phần của corpus gốc (\texttt{sonlest/vietnamese-music-dataset-version3},
-1843 bài sau lọc chất lượng) thành một lần huấn luyện duy nhất, thay vì chỉ 249 bài của một
-phần như lần train ở \S4.24.
-
-Hạ tầng này được kiểm chứng trên GPU Kaggle thật trước khi dùng cho huấn luyện quy mô đầy
-đủ: (1) truy cập và đọc thử tensor từ cả 6 phần dataset (1843 record, không NaN, đúng
-schema); (2) một lần train nhỏ với đúng 1 bài lấy từ mỗi phần trong cùng 1 epoch, xác nhận
-việc gộp nhiều dataset hoạt động đúng trên dữ liệu thật.
-
-\textbf{Chi tiết vận hành đáng ghi lại}: file waveform thô nặng hơn file mel tương ứng
-đúng $256/100=2{,}56$ lần (đo trực tiếp trên cùng một bài: 24,27~MB so với 9,48~MB) — hệ
-quả trực tiếp của việc không còn nén qua hop length/mel-bin. Lần chạy đầu tiên trên toàn
-bộ 6 phần đo được $\approx4$ giây/step (so với $\approx1{,}3$ giây/step ở benchmark
-dataset đơn cũ), vì \texttt{DataLoader} mặc định (\texttt{num\_workers=0}) đọc tuần tự,
-không chồng lấp I/O với tính toán GPU. Thêm \texttt{num\_workers=4} + \texttt{pin\_memory}
-(prefetch batch kế tiếp trong lúc GPU còn đang xử lý batch hiện tại) đưa tốc độ trở lại gần
-mức benchmark cũ.
-
-\textbf{Kết quả huấn luyện lại trên toàn bộ 1843 bài} (thực ra 1839 bài sau lọc chất lượng,
-10 epoch, batch size 4, learning rate $10^{-4}$, 4600 step, $\approx98$ phút thuần huấn
-luyện): loss giảm đơn điệu và mượt qua từng epoch —
-$2{,}105\to1{,}734\to1{,}612\to1{,}495\to1{,}421\to1{,}352\to1{,}299\to1{,}261\to1{,}245\to
-\mathbf{1{,}239}$ — thấp hơn cả kết quả tốt nhất trước đó trên 249 bài qua vòng Vocos
-(final loss $1{,}28$, \S4.24), dù không gian dữ liệu lớn hơn 7,4 lần. \texttt{peak\_vram\_gb}
-đo được $15{,}30$ trên T4 (16~GB) — xác nhận \texttt{batch\_size=4} đã gần chạm giới hạn an
-toàn, không nên tăng thêm ở \texttt{crop\_seconds} hiện tại.
-
-\textbf{Sanity-check (bắt buộc, \texttt{scripts/check\_latent\_encoder\_quality.py}) phát hiện
-encoder này đã collapse}, dù loss trông rất tốt ở trên. Giải mã trực tiếp 5 latent ground-truth
-(bỏ qua CFM student) cho \texttt{pitch\_std\_semitones} chỉ $0{,}20$--$0{,}69$ (trung bình
-$0{,}44$), so với chính audio thật của 5 bài đó ($6{,}22$--$11{,}46$, trung bình $9{,}46$) —
-cùng dấu hiệu định lượng như lỗi gốc ở \S\ref{sec:latent_space} ($\approx0{,}9$ trước fix). Đây
-là bằng chứng thứ hai, độc lập, xác nhận lại đúng nguyên tắc đã rút ra: \textbf{loss reconstruction
-giảm mượt không đảm bảo encoder khoẻ}. Nguyên nhân khả dĩ nhất: công thức warmup/LR đã fix được
-tinh chỉnh cho 249 bài/40 epoch/2520 step (dữ liệu mel-detour, đã qua một lớp làm mượt của Vocos);
-ở quy mô 1839 bài/10 epoch/4600 step (dữ liệu raw-audio pristine, đa dạng hơn), tỉ lệ warmup
-tương đối thấp hơn ($200/4600\approx4{,}3\%$ so với $200/2520\approx7{,}9\%$) có thể không đủ ổn
-định. \textbf{Thử lại với warmup dài hơn theo tỉ lệ (400 step, $\approx17\%$ trên 5 epoch/2300
-step) và learning rate thấp hơn ($5\times10^{-5}$) cũng không giải quyết được}: loss vẫn giảm
-mượt ($2{,}143\to1{,}468$), nhưng \texttt{pitch\_std\_semitones} giải mã chỉ tăng nhẹ lên trung
-bình $0{,}78$ — vẫn collapse, vẫn cách rất xa mức khoẻ mạnh ($6$--$12$). Hai lần thử liên tiếp
-thất bại là bằng chứng đây không đơn thuần là thiếu warmup/LR quá cao.
-
-\textbf{Chẩn đoán có cơ sở hơn}: \texttt{LatentAudioEncoder} \textbf{không phải một VAE thật}
-theo đúng nghĩa Stable Audio 2 — lựa chọn có chủ đích, ghi rõ trong docstring
-(\texttt{src/models/latent\_codec.py}), thiếu hai thành phần VAE âm thanh thật luôn có: (1)
-không có bước xác suất/KL divergence (\texttt{forward()} trả về một điểm duy nhất, không sample
-từ $\mathcal{N}(\mu,\sigma)$); (2) không có adversarial loss (chỉ L1 thuần trên log-mel qua 3
-thang STFT, không discriminator). Loss L1 thuần, không KL/không adversarial, có xu hướng kinh
-điển "regression-to-the-mean" khi target đa dạng — đúng cùng lớp bệnh lý đã tự phát hiện trước đó
-cho CFM loss (§4.11--4.13, \texttt{docs/project\_history.md}, dẫn Dieleman 2024/DMD-ADM), chỉ
-khác network. Dữ liệu càng đa dạng, áp lực trung bình hoá càng mạnh — khớp với việc chỉnh
-warmup/LR không cứu được, vì đây là vấn đề \emph{hình dạng hàm loss}, không phải \emph{bất ổn
-tối ưu hoá}. Thêm adversarial loss (nửa còn lại của một VAE thật) là một undertaking lớn, đúng
-rủi ro bất ổn GAN training đã lường trước từ đầu (\S\ref{sec:latent_space}) — cố ý vẫn để ngoài
-phạm vi report này. Nửa rẻ hơn — thêm bước xác suất/KL divergence — thì khả thi và đã được thực
-hiện (\S\ref{sec:vae_bottleneck}).
-
-\subsection{Thêm bước xác suất (mu/logvar + KL divergence) thật}
+\subsection{Bottleneck xác suất (VAE) và lịch trình KL}
 \label{sec:vae_bottleneck}
 
-\texttt{LatentAudioEncoder.forward()} được sửa để xuất \texttt{mu}, \texttt{logvar} (gấp đôi số
-kênh ra của \texttt{conv\_out}, $64\to128$), áp dụng reparameterization trick chuẩn của VAE:
-$z=\mu+\sigma\epsilon$ lúc train (backprop qua sample thật, để loss decoder regularize cả phân
-phối chứ không chỉ giá trị trung bình), $z=\mu$ lúc eval (giữ nguyên hành vi xác định cho mọi nơi
-gọi hiện có — không cần sửa \texttt{precompute-latent-dataset} hay
-\texttt{check\_latent\_encoder\_quality.py}). Thêm số hạng
-$\mathcal{L}_{\mathrm{KL}}=-\tfrac12\,\mathrm{mean}(1+\log\sigma^2-\mu^2-\sigma^2)$, trọng số
-\texttt{--kl-weight} (mặc định $10^{-4}$, giá trị bảo thủ để tránh collapse theo chiều ngược lại —
-KL đè bẹp reconstruction).
+Một encoder chỉ train bằng loss reconstruction thuần (không bước xác suất, không
+adversarial loss) có xu hướng kinh điển "regression-to-the-mean" khi target đa dạng — cùng
+lớp bệnh lý đã gặp ở CFM loss (\S4.11--4.13, \texttt{docs/project\_history.md}, dẫn
+Dieleman 2024/DMD-ADM). Để tránh, \texttt{LatentAudioEncoder.forward()} áp dụng
+reparameterization trick chuẩn của VAE: $z=\mu+\sigma\epsilon$ lúc train (backprop qua
+sample thật), $z=\mu$ lúc eval (hành vi xác định cho suy luận), với hàm mất mát tổng
+\begin{equation}
+ \mathcal{L} = \mathcal{L}_{\text{recon}} + \texttt{kl\_weight}\cdot\mathcal{L}_{\mathrm{KL}},
+ \quad \mathcal{L}_{\mathrm{KL}}=-\tfrac12\,\mathrm{mean}\big(1+\log\sigma^2-\mu^2-\sigma^2\big).
+\end{equation}
 
-Trước khi chạy full, đã kiểm chứng cẩn thận từng bước: verify cục bộ (eval mode xác định, train
-mode có sample ngẫu nhiên, gradient chảy ngược qua sample, KL loss hữu hạn, 29/29 test pass), rồi
-smoke-test thật trên Kaggle (6 bài, 1 mỗi phần, 1 epoch) — \texttt{recon\_loss=3{,}645},
-\texttt{kl\_loss=0{,}042}, không NaN, \texttt{peak\_vram\_gb=7{,}988} khớp đúng benchmark VRAM cũ.
-Sau khi xác nhận đúng đắn, chạy full 1839 bài/10 epoch: \texttt{recon\_loss} giảm mượt
-$2{,}245\to\mathbf{1{,}217}$ (tốt hơn cả hai lần chạy trước không-KL). \texttt{kl\_loss} tăng dần
-đều suốt 10 epoch ($0{,}93\to3{,}35$) thay vì hội tụ — với trọng số $10^{-4}$, đóng góp của KL vào
-tổng loss chỉ $\approx0{,}03\%$, nên chỉ sanity-check thật mới biết được liệu regularization có
-đủ mạnh hay không.
+Huấn luyện với \texttt{kl\_weight} hằng số dẫn tới hiện tượng \textbf{``KL vanishing''}
+(Fu et al., \emph{Cyclical Annealing Schedule: A Simple Approach to Mitigating KL
+Vanishing}, NAACL 2019): mạng thu nhỏ $\sigma$ về gần 0 để loại bỏ chi phí mà nhiễu
+reparameterization gây ra cho reconstruction, khiến bottleneck xác suất trở thành vô tác
+dụng dù công thức toán học đúng (kết quả định lượng ở Thí nghiệm 5, \S\ref{sec:exp5_vae}).
+Rivera (\emph{How to train your VAE}, arXiv:2309.13160) chỉ ra nguyên nhân sâu hơn: KL
+chuẩn gộp chung việc phạt phương sai cá nhân collapse về 0 (cần thiết, tránh encoder tất
+định hoá) với việc phạt trung bình cá nhân dạt về 0 (không cần thiết, xoá thông tin
+per-sample). Để giảm thiểu KL vanishing mà không cần tách riêng hai số hạng đó (undertaking
+lớn hơn), \texttt{kl\_weight} được áp dụng theo lịch trình \textbf{cyclical annealing} (Fu
+et al.) thay vì hằng số: tổng số step huấn luyện chia thành 4 chu kỳ, mỗi chu kỳ ramp tuyến
+tính $0\to\texttt{kl\_weight}$ ở nửa đầu rồi giữ nguyên ở nửa sau — cho decoder liên tục có
+cơ hội phụ thuộc lại vào $z$ giàu thông tin thay vì ổn định vào trạng thái phớt lờ nó vĩnh
+viễn.
 
-\textbf{Kết quả: THÀNH CÔNG rõ rệt.} \texttt{pitch\_std\_semitones} giải mã trung bình
-$\mathbf{5{,}85}$ so với $9{,}46$ của audio thật — nhảy vọt từ $0{,}44$/$0{,}78$ (hai lần collapse
-trước, \S\ref{sec:latent_space}) lên gần đúng dải khoẻ mạnh của checkpoint 249-bài cũ
-($6{,}16$--$12{,}38$). Một bài còn vượt cả pitch\_std của chính audio thật. Xác nhận chẩn đoán:
-thiếu bước xác suất/KL chính là nguyên nhân chính gây collapse ở quy mô dữ liệu lớn — thêm nó, dù
-trọng số nhỏ và bản thân KL loss không hội tụ, đã đủ thay đổi hẳn hành vi encoder theo hướng tốt.
-Encoder này (huấn luyện trên toàn bộ 1839 bài, không qua vòng Vocos) là checkpoint tốt nhất hiện
-có, dùng cho bước CFM training tiếp theo — kết quả ở \S\ref{chapter:conclusion}.
+\subsection{Mở rộng dữ liệu và hạ tầng huấn luyện}
+\label{sec:raw_audio_encoder}
 
-\subsection{Phát hiện sâu hơn: KL ``vanishing'' — VAE ở trên chưa thật sự hoạt động}
-\label{sec:kl_vanishing}
+\texttt{train-latent-encoder} được mở rộng để nhận nhiều thư mục dataset cùng lúc (giống
+\texttt{train-self}), cho phép gộp toàn bộ 6 phần của corpus gốc
+(\texttt{sonlest/vietnamese-music-dataset-version3}, 1839 bài sau lọc chất lượng) thành
+một lần huấn luyện duy nhất. \texttt{DataLoader} dùng \texttt{num\_workers=4} +
+\texttt{pin\_memory} để chồng lấp I/O (file waveform thô nặng hơn mel tương ứng đúng
+$256/100=2{,}56$ lần) với tính toán GPU. \texttt{--resume-checkpoint} cho phép tiếp tục
+huấn luyện từ một checkpoint có sẵn với \texttt{kl\_weight} khác (tối ưu hoá bậc thang cho
+\texttt{kl\_weight}, \S\ref{sec:exp5_vae}), tránh phải trả lại chi phí của các epoch đầu.
 
-Sau khi nghe checkpoint trên, người dùng báo âm thanh rè định kỳ. Đọc thẳng source
-\texttt{decode\_audio} (\texttt{DiffRhythm2-main/bigvgan/model.py}) xác nhận: hàm này không
-crossfade biên chunk, chỉ cắt \texttt{(overlap//2)*9600} mẫu mỗi cạnh rồi nối — code cũ hard-code
-\texttt{overlap=2}, thấp hơn hẳn mặc định thư viện (\texttt{overlap=5}). Sửa xong, người dùng hoài
-nghi tiếp: giải mã nhiễu ngẫu nhiên thuần (không qua encoder) qua đúng decoder đã sửa cho
-\texttt{pitch\_std\_semitones}$\approx4{,}2$ — rất gần con số ``khoẻ mạnh'' $5{,}85$ ở trên, thay
-vì gần 0. Loại được overlap là nguyên nhân (A/B overlap=2 vs 5 trên cùng nhiễu: $4{,}31$ vs
-$4{,}20$, gần như nhau) — nghĩa là \texttt{pitch\_std\_semitones} một mình không đủ phân biệt
-encoder học được gì với bất kỳ latent biến thiên theo thời gian nào.
-
-\textbf{Chẩn đoán quyết định}: nạp checkpoint thật, forward qua audio thật, đọc trực tiếp
-$\mu$/$\log\sigma^2$/$\sigma=\exp(0{,}5\log\sigma^2)$: $\sigma_{\text{mean}}\approx0{,}003$--$0{,}005$
-(gần như 0!), $\log\sigma^2_{\text{mean}}\approx-11$ đến $-12$, trong khi $\mu$ vẫn có scale
-bình thường ($|\mu|_{\text{mean}}\approx0{,}93$--$0{,}97$). Nhiễu reparameterization
-($\sigma\cdot\epsilon$) không đáng kể so với $\mu$ — tức $z\approx\mu$ gần như tất định ngay cả
-lúc train. Về bản chất, ``VAE'' ở trên hoạt động như một autoencoder tất định thường, dù code
-reparameterization/KL đúng về toán học: \texttt{kl\_weight}$=10^{-4}$ cố định quá nhỏ để cản mạng
-tự thu nhỏ $\sigma$ về 0 nhằm loại bỏ chi phí mà nhiễu gây ra cho reconstruction — khớp đúng xu
-hướng $\mathcal{L}_{\mathrm{KL}}$ tăng dần không hội tụ đã ghi nhận ở trên.
-
-Hai tài liệu tham khảo xác nhận đây là bệnh lý đã biết: Rivera, \emph{``How to train your
-VAE''} (arXiv:2309.13160) chỉ ra KL chuẩn gộp chung việc phạt phương sai cá nhân collapse về 0
-(cần thiết) với việc phạt trung bình cá nhân dạt về 0 (xoá thông tin per-sample); và Fu et al.,
-\emph{``Cyclical Annealing Schedule: A Simple Approach to Mitigating KL Vanishing''} (NAACL 2019,
-Microsoft Research) đặt tên chính xác hiện tượng \textbf{``KL vanishing''} — $\beta$ hằng số khiến
-decoder học cách phớt lờ $z$ — và đề xuất lặp lại chu kỳ tăng $\beta$ từ 0 nhiều lần thay vì tăng
-một lần rồi giữ nguyên.
-
-Kiểm chứng cục bộ trước khi sửa code: fine-tune checkpoint đã collapse 40 bước với
-\texttt{kl\_weight}$=0{,}05$ (500 lần cũ) — $\sigma_{\text{mean}}$ tăng đều từ $0{,}029$ lên
-$0{,}22$--$0{,}36$, xác nhận trực tiếp cơ chế lý thuyết. Đã sửa \texttt{train\_latent\_encoder}:
-thay \texttt{kl\_weight} hằng số bằng lịch trình cyclical annealing (4 chu kỳ, mỗi chu kỳ ramp
-tuyến tính $0\to$\texttt{kl\_weight} nửa đầu rồi giữ nguyên nửa sau). Smoke-test Kaggle (6 bài, 2
-epoch, \texttt{kl\_weight} tối đa $0{,}05$) xác nhận: checkpoint mới có $\sigma_{\text{mean}}\approx0{,}97$
-(gần đúng $\mathcal{N}(0,1)$, so với $0{,}003$ cũ), $\mu$ nhỏ hơn nhiều ($|\mu|_{\text{mean}}\approx0{,}22$)
-— mạng giờ thật sự dựa vào phần xác suất. \texttt{pitch\_std\_semitones} giải mã từ checkpoint
-2-epoch này còn thấp ($0{,}71$ trung bình) — dự kiến, vì 6 bài/2 epoch chưa đủ để encoder học lại
-reconstruction tốt dưới áp lực KL thật lần đầu.
-
-\textbf{Full-corpus retrain (1839 bài, 10 epoch) xác nhận fix thành công}: $\sigma_{\text{mean}}$
-trên audio thật đạt $0{,}11$--$0{,}14$ (so với $0{,}003$ collapsed), \texttt{pitch\_std\_semitones}
-trung bình $\mathbf{4{,}72}$ (20s crop) — khoẻ, tương đương/tốt hơn checkpoint cũ mà $\sigma$ giả
-tạo. Phân tích deceleration (\texttt{recon\_loss} delta epoch9$\to$10 chỉ $-0{,}011$ so với
-$-0{,}48$ ở epoch1$\to$2) cho thấy gần plateau ở \texttt{kl\_weight}$=0{,}05$ này — train thêm
-epoch cùng cấu hình lợi ích nhỏ; dư địa cải thiện nằm ở tăng \texttt{kl\_weight}, không phải train
-lâu hơn. Đối chiếu bên ngoài: Stable Audio 2.0's VAE dùng đúng \texttt{kl\_weight}$=10^{-4}$ (giá
-trị ban đầu đã collapse ở đây!) — khác biệt là VAE của họ có thêm adversarial loss (5
-discriminator) và encoder+decoder train cùng nhau, trong khi ở đây train encoder mới ghép với
-decoder đông lạnh có sẵn, không có adversarial loss (cố ý, \S\ref{sec:vae_bottleneck}) — hợp lý
-hoá việc cần \texttt{kl\_weight} lớn hơn nhiều để đạt hiệu quả tương đương. Đã thêm
-\texttt{--resume-checkpoint} để tiếp tục train từ checkpoint này với \texttt{kl\_weight}$=0{,}15$
-cao hơn (5 epoch thêm).
-
-\textbf{Kết quả continuation training — checkpoint tốt nhất hiện có}: $\sigma_{\text{mean}}$ tăng
-tiếp lên $0{,}245$--$0{,}273$ (từ $0{,}11$--$0{,}14$), \texttt{pitch\_std\_semitones} tăng từ
-$4{,}72$ lên $\mathbf{6{,}01}$ (gần dải audio thật, $9{,}46$), trong khi khả năng phân biệt bài hát
-($\lVert\mu_A-\mu_B\rVert$ giữa các bài khác nhau, $0{,}84$--$0{,}91$) không đổi so với trước —
-không có đánh đổi tiêu cực. Một nhận xét bên ngoài từng nghi ngờ hiện tượng "mean collapse" ($\mu$
-mọi bài hội tụ về gần $0$) và đề xuất giảm \texttt{kl\_weight}; kiểm chứng trực tiếp bằng đúng phép
-đo đó cho thấy khoảng cách giữa các bài xấp xỉ bằng chính độ lệch chuẩn nội tại của một bài
-($\approx1{,}0$) — không có dấu hiệu collapse, và giảm \texttt{kl\_weight} sẽ đi ngược bằng chứng đã
-kiểm chứng (sẽ tái tạo lại đúng vấn đề KL vanishing ban đầu). Xem \texttt{docs/project\_history.md}
-\S4.33 để biết chi tiết đầy đủ.
-
-Vì \texttt{avg\_recon} gần như không đổi qua các lần continuation ($1{,}239\to1{,}242$) trong khi
-$\sigma$/\texttt{pitch\_std} vẫn tăng, đã đẩy tiếp một bước \texttt{kl\_weight}$=0{,}3$ (resume từ
-checkpoint $0{,}15$) để dò xem còn dư địa hay không. Một nhận xét bên ngoài khác cho rằng tỷ lệ nén
-$5$Hz "không đủ băng thông giữ phụ âm tiếng Việt" — điểm sai: đây là tỷ lệ nén \emph{thật} của chính
-DiffRhythm2 (teacher), và DiffRhythm2 tạo được nhạc có lời rõ ở đúng tỷ lệ này, nên vấn đề nhiều khả
-năng nằm ở chất lượng encoder tự train (thiếu adversarial loss, không đồng huấn luyện với decoder),
-không phải giới hạn thông tin của bản thân 5Hz. Điểm đúng: \texttt{pitch\_std} đo khả năng VAE tái
-tạo âm thanh, không đo khả năng CFM/DiT sinh lời từ text điều kiện — hai năng lực khác nhau, kiểm
-chứng thật cần mẫu CFM sinh ra.
-
-\textbf{Kết quả: đã vượt ngưỡng tối ưu.} $\sigma_{\text{mean}}$ tiếp tục tăng ($0{,}34$--$0{,}37$),
-nhưng \texttt{pitch\_std\_semitones} \textbf{giảm} xuống $3{,}72$ (từ $6{,}01$ ở
-\texttt{kl\_weight}$=0{,}15$) — đúng hiện tượng over-regularization kinh điển của VAE. \textbf{Kết
-luận: \texttt{kl\_weight}$=0{,}15$ là điểm tốt nhất trong các giá trị đã thử}
-($10^{-4}\to0{,}05\to0{,}15\to0{,}3$), không phải giá trị lớn nhất — checkpoint đang dùng cho bước
-CFM training tiếp theo chính là checkpoint này. Xem \texttt{docs/project\_history.md} \S4.34.
+Trước khi chạy full, hạ tầng được kiểm chứng trên GPU Kaggle thật: (1) đọc thử tensor từ cả
+6 phần dataset (1839 record, không NaN, đúng schema); (2) một lần train nhỏ với 1 bài lấy
+từ mỗi phần trong cùng 1 epoch, xác nhận việc gộp nhiều dataset hoạt động đúng trên dữ liệu
+thật; (3) smoke-test VAE bottleneck (6 bài, 1 epoch) cho \texttt{recon\_loss}/\texttt{kl\_loss}
+hữu hạn, không NaN, VRAM khớp benchmark cũ. Kiểm chứng cục bộ độc lập (29/29 unit test) xác
+nhận eval mode xác định, train mode sample ngẫu nhiên đúng, và gradient chảy ngược qua
+sample. \textbf{Sanity-check bắt buộc trước khi tin tưởng bất kỳ checkpoint nào}
+(\texttt{scripts/check\_latent\_encoder\_quality.py}): giải mã trực tiếp vài latent
+ground-truth (bỏ qua CFM student), đo \texttt{pitch\_std\_semitones} so với chính audio
+thật của cùng bài — chỉ số duy nhất phân biệt được encoder collapse (gần một cao độ cố
+định) với encoder khoẻ mạnh, vì loss reconstruction giảm mượt không đảm bảo điều này (đã
+xảy ra thật, xem Thí nghiệm 5). Kết quả định lượng đầy đủ của toàn bộ quá trình lựa chọn
+\texttt{kl\_weight} (bốn giá trị, gồm cả hai lần collapse thật và điểm tối ưu tìm được)
+được trình bày ở Thí nghiệm 5 (\S\ref{sec:exp5_vae}); checkpoint tốt nhất từ đó là checkpoint
+dùng cho bước CFM training tiếp theo (\S\ref{chapter:conclusion}).
 
 \section{DiffRhythm2 Distillation}
 \label{sec:distillation_chapter}
@@ -1150,6 +1011,7 @@ Bốn câu hỏi nghiên cứu được đặt ra:
  \item[RQ2:] Pipeline có xử lý được dữ liệu bài hát tiếng Việt, huấn luyện MicroDiT bằng CFM và sinh waveform hữu hạn, không rỗng hay không?
  \item[RQ3:] Quy trình distillation có thực sự gọi teacher, ánh xạ 64--100 mel bins và cập nhật student nhỏ hay không; kết quả hiện có cho phép kết luận gì về lợi ích của teacher?
  \item[RQ4:] Cho student không gian latent thật của teacher (thay vì mel) có thay đổi được vấn đề "âm thanh sinh ra nghe như nhiễu" đã lặp lại ở các thí nghiệm mel-space trước đó không, và nguyên nhân của sự khác biệt (nếu có) là gì?
+ \item[RQ5:] Bottleneck xác suất (VAE, mu/logvar + KL divergence) có khắc phục được hiện tượng collapse của latent encoder ở quy mô dữ liệu lớn hay không, và trọng số \texttt{kl\_weight} nào là tối ưu?
 \end{description}
 
 \section{Nguồn dữ liệu và nguyên tắc báo cáo}
@@ -1383,6 +1245,89 @@ sinh từ (C) có tiếng nhạc thật, không còn là nhiễu hoàn toàn —
 report này nhánh latent-space cho phản hồi nghe tích cực. Cần train tiếp tới hội tụ trước
 khi coi RQ4 đã được trả lời dứt điểm.
 
+\section{Thí nghiệm 5: ablation bottleneck xác suất (VAE) của latent encoder}
+\label{sec:exp5_vae}
+
+\subsection{Động cơ và thiết lập}
+
+Encoder ở Thí nghiệm 4 dòng (B) (\S\ref{sec:latent_space}) collapse hoàn toàn khi chỉ dùng
+loss reconstruction thuần — giải mã latent ground-truth ra gần một cao độ cố định
+(\texttt{pitch\_std\_semitones}$\approx0{,}44$--$0{,}78$ qua hai lần thử warmup/learning-rate
+khác nhau). Thí nghiệm này kiểm tra giả thuyết đã đưa ra ở \S\ref{sec:vae_bottleneck}: thêm
+bottleneck xác suất (mu/logvar + KL divergence) có khắc phục được collapse hay không, và
+\texttt{kl\_weight} nào là tối ưu. Bốn cấu hình được so sánh, cùng huấn luyện trên toàn bộ
+1839 bài (10 epoch cho hai cấu hình đầu; 5 epoch \texttt{--resume-checkpoint} tiếp theo cho
+hai cấu hình sau, xem \S\ref{sec:raw_audio_encoder}), đo bằng ba chỉ số trên audio thật (không
+qua CFM student, cô lập riêng chất lượng encoder): $\sigma_{\text{mean}}=\exp(0{,}5\log\sigma^2)$
+(bottleneck có thật sự xác suất không), \texttt{pitch\_std\_semitones} giải mã (chất lượng
+reconstruction), và khoảng cách $\mu$ giữa các bài khác nhau $\lVert\mu_A-\mu_B\rVert$ per-element
+(encoder có phân biệt được các bài hay bị "mean collapse" — kiểm tra một giả thuyết bên ngoài,
+xem diễn giải).
+
+\subsection{Kết quả}
+
+\begin{table}[H]
+\centering
+\caption{Ablation \texttt{kl\_weight} cho bottleneck xác suất của \texttt{LatentAudioEncoder}}
+\label{tab:kl_ablation}
+\small
+\begin{tabularx}{\textwidth}{Xrrrl}
+\toprule
+\textbf{Cấu hình} & $\boldsymbol{\sigma_{\text{mean}}}$ & \textbf{pitch\_std} & $\boldsymbol{\mu}$\textbf{-distance} & \textbf{Ghi chú} \\
+\midrule
+Không VAE (2 lần thử) & — & 0,44 / 0,78 & — & collapse hoàn toàn \\
+\texttt{kl\_weight}$=10^{-4}$ hằng số & 0,003--0,005 & 5,85$^{*}$ & — & $^{*}$KL vanishing: $\sigma\approx0$, bottleneck vô tác dụng dù pitch\_std trông tốt \\
+\texttt{kl\_weight}$=0{,}05$ cyclical & 0,11--0,14 & 4,72 & 0,80--0,91 & VAE thật hoạt động lần đầu \\
+\texttt{kl\_weight}$=0{,}15$ cyclical & 0,245--0,273 & \textbf{6,01} & 0,84--0,91 & \textbf{tốt nhất} \\
+\texttt{kl\_weight}$=0{,}3$ cyclical & 0,34--0,37 & 3,72 & 0,81--0,88 & vượt ngưỡng, over-regularization \\
+\bottomrule
+\end{tabularx}
+\end{table}
+\emph{Mốc tham chiếu: audio thật cùng 5 bài cho pitch\_std\_semitones trung bình $9{,}46$.
+$\mu$-distance đo trên checkpoint có $\sigma$ khoẻ mạnh ($\ge0{,}05$); không đo được ở hai
+dòng đầu vì không có $\sigma$ hoặc $\sigma\approx0$ khiến phép đo mất ý nghĩa.}
+
+\subsection{Diễn giải}
+
+\textbf{KL vanishing là một false positive nguy hiểm.} Ở \texttt{kl\_weight}$=10^{-4}$ hằng
+số — giá trị mặc định ban đầu, và cũng là giá trị Stable Audio 2.0 dùng thật — encoder cho
+\texttt{pitch\_std}$=5{,}85$, trông như một thành công rõ rệt so với hai lần collapse trước.
+Nhưng đọc trực tiếp $\sigma$ cho thấy bottleneck xác suất đã collapse về gần 0
+($\sigma_{\text{mean}}\approx0{,}003$--$0{,}005$): mạng đã học cách loại bỏ nhiễu
+reparameterization để tối ưu reconstruction thuần tuý, khiến \texttt{pitch\_std} tốt \emph{vì}
+encoder gần như tất định — hiện tượng \textbf{"KL vanishing"} (Fu et al., NAACL 2019). Đây là
+bằng chứng thực nghiệm cho lý do vì sao Stable Audio 2.0 cần thêm adversarial loss (5
+discriminator) và huấn luyện encoder+decoder cùng nhau để dùng an toàn cùng \texttt{kl\_weight}
+này — hai điều kiện project này cố ý không có (\S\ref{sec:latent_encoder_arch}), nên khoảng
+\texttt{kl\_weight} an toàn dịch chuyển lên cao hơn nhiều.
+
+\textbf{Lịch trình cyclical annealing khắc phục được KL vanishing, và tồn tại một điểm tối ưu
+không đơn điệu.} Từ \texttt{kl\_weight}$=0{,}05\to0{,}15$, cả $\sigma$ và \texttt{pitch\_std}
+cùng tăng — bottleneck xác suất càng hoạt động thật, reconstruction càng tốt hơn (không đánh
+đổi). Nhưng từ $0{,}15\to0{,}3$, $\sigma$ tiếp tục tăng trong khi \texttt{pitch\_std}
+\textbf{giảm} — đúng hiện tượng over-regularization kinh điển của VAE (Rivera, 2023: trọng số
+KL quá lớn "over-regularize the latents, degrading reconstruction quality"). \textbf{Kết luận:
+$\texttt{kl\_weight}=0{,}15$ là điểm tối ưu trong các giá trị đã thử}, không phải giá trị lớn
+nhất hay nhỏ nhất — checkpoint này được dùng cho các bước huấn luyện tiếp theo.
+
+\textbf{Kiểm định giả thuyết "mean collapse" từ một nhận xét bên ngoài.} Một nhận xét cho rằng
+vấn đề là $\mu$ của mọi bài hội tụ về gần điểm $0$ do \texttt{kl\_weight} quá \emph{lớn}, đề
+xuất giảm xuống $10^{-5}$--$10^{-6}$ — ngược hướng với kết quả bảng \ref{tab:kl_ablation}. Đo
+trực tiếp $\lVert\mu_A-\mu_B\rVert$ giữa 5 bài khác nhau (cột thứ tư) cho khoảng cách
+$0{,}80$--$0{,}91$, xấp xỉ bằng chính độ lệch chuẩn nội tại của một bài ($\approx1{,}0$) — theo
+đúng ngưỡng đề xuất trong nhận xét đó (collapse nếu $<0{,}5$), số liệu không ủng hộ giả thuyết
+mean collapse. Bài học phương pháp luận: đối chiếu mọi giả thuyết/gợi ý — kể cả nghe hợp lý về
+mặt lý thuyết — với số liệu đo trực tiếp trên checkpoint thật trước khi hành động theo nó.
+
+\subsection{Trả lời}
+
+Bottleneck xác suất (VAE) là cần thiết để tránh collapse ở quy mô dữ liệu lớn, nhưng bản thân
+việc thêm nó không đủ nếu \texttt{kl\_weight} là hằng số — cần lịch trình cyclical annealing để
+tránh KL vanishing, và cần dò \texttt{kl\_weight} theo từng bước nhỏ (không đơn điệu: có một
+điểm tối ưu, tăng thêm sau điểm đó gây hại). Encoder \texttt{kl\_weight}$=0{,}15$ là checkpoint
+tốt nhất hiện có của đề tài, dùng làm đầu vào cho bước CFM training/distillation cuối cùng
+(Chương~\ref{chapter:conclusion}).
+
 \section{Kích thước checkpoint và khả năng triển khai}
 
 Checkpoint ban đầu khoảng 1,1~GB vì lưu cả XLM-R dù encoder này bị đóng băng. Sau khi loại các trọng số có thể tải lại và chỉ lưu phần trainable cùng metadata cấu hình, kích thước giảm còn khoảng 67~MB. Mức giảm khoảng 16 lần không thay đổi phép tính của MicroDiT, nhưng làm cho việc lưu phiên bản, truyền tệp và khôi phục thí nghiệm thuận tiện hơn.
@@ -1402,6 +1347,16 @@ Các ràng buộc trên xác định trực tiếp protocol tiếp theo: chia tr
 Đối với RQ1, thí nghiệm loopback cho thấy pipeline Vocos-native đạt correlation cao nhất 0,997 và lặp lại ở các môi trường khác, xác nhận lựa chọn 100-bin mel cùng feature extractor gốc. Đối với RQ2, pipeline đã hoàn thành tiền xử lý, CFM training và sinh waveform hữu hạn trên cả Kaggle lẫn máy cục bộ; đây là bằng chứng về tính khả thi kỹ thuật, không phải đánh giá chất lượng âm nhạc quy mô lớn. Đối với RQ3, teacher thật, adapter và loss hỗn hợp đã hoạt động; tuy nhiên lần chạy 2 bài chưa tạo bằng chứng thống kê cho lợi ích chất lượng của distillation.
 
 Đối với RQ4 (\S\ref{sec:exp4_mel_vs_latent}), bằng chứng ban đầu — chưa hội tụ, chỉ 13/300 epoch — cho thấy chuyển sang không gian latent thật của teacher cải thiện rõ \texttt{pitch\_std\_semitones} so với cả hai cấu hình mel-space đã thử, và là lần đầu tiên trong toàn bộ report này một mẫu sinh bởi CFM student được người nghe xác nhận có giai điệu thật. Tuy nhiên nguyên nhân suy biến ở mel-space (quy mô dữ liệu) và ở latent-space trước khi fix (encoder collapse) là hai vấn đề độc lập, không phải cùng một nguyên nhân biểu diễn — nên kết quả này chưa thể quy giản thành "latent-space vốn tốt hơn mel-space", chỉ có thể nói rằng nhánh latent-space, sau khi tự loại được lỗi riêng của nó, đang cho tín hiệu khả quan hơn ở cùng giai đoạn phát triển sớm.
+
+Đối với RQ5 (\S\ref{sec:exp5_vae}), bottleneck xác suất khắc phục được collapse của encoder,
+nhưng chỉ khi kết hợp đúng lịch trình cyclical annealing thay vì trọng số KL hằng số — thử với
+trọng số hằng số mặc định ($10^{-4}$) cho một kết quả trông tốt (\texttt{pitch\_std}$=5{,}85$)
+nhưng thực chất là "KL vanishing" (bottleneck xác suất collapse về gần tất định), một false
+positive chỉ phát hiện được bằng cách đọc trực tiếp $\sigma$ chứ không phải qua chỉ số âm thanh
+gián tiếp. Sau khi sửa, tồn tại một điểm tối ưu không đơn điệu cho \texttt{kl\_weight}
+($0{,}15$ trong các giá trị đã thử) — kết quả này củng cố thêm bài học đã rút ra ở RQ3/RQ4:
+mọi chỉ số khách quan, kể cả khi trông "tốt", cần được đối chiếu với phép đo trực tiếp vào
+tham số nội bộ của mô hình trước khi tin tưởng.
 
 Nhìn tổng thể, kết quả mạnh nhất của giai đoạn hiện tại là tính nhất quán đầu cuối: dữ liệu, biểu diễn mel, student, teacher bridge và vocoder đã được nối bằng những hợp đồng có thể kiểm thử. Giá trị của kết quả này nằm ở việc biến một ý tưởng kiến trúc thành nền tảng thực nghiệm tái lập được. Bước tiếp theo không phải bổ sung thêm fallback, mà là huấn luyện nhánh latent-space tới hội tụ thật, mở rộng dữ liệu, và thiết kế đánh giá có đối chứng để đo chất lượng âm nhạc thực sự.
 
