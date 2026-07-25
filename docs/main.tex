@@ -166,11 +166,11 @@
 \chapter*{TÓM TẮT}
 \addcontentsline{toc}{chapter}{TÓM TẮT}
 
-Đề tài tập trung nghiên cứu và phát triển mô hình trí tuệ nhân tạo sinh ca khúc tiếng Việt tự động từ các tín hiệu điều kiện đầu vào gồm lời ca (văn bản) và phong cách âm nhạc (âm thanh). Hệ thống áp dụng phương pháp chưng cất tri thức (Knowledge Distillation) từ mô hình giáo viên (Teacher) DiffRhythm2 sang mô hình học sinh (Student) MicroDiT nhỏ gọn hơn, sử dụng cơ chế khớp dòng điều kiện (Conditional Flow Matching - CFM) làm cốt lõi để biến đổi nhiễu Gaussian thành phổ log-mel của giọng hát.
+Đề tài tập trung nghiên cứu và phát triển mô hình trí tuệ nhân tạo sinh ca khúc tiếng Việt tự động từ các tín hiệu điều kiện đầu vào gồm lời ca (văn bản) và phong cách âm nhạc (âm thanh). Hệ thống áp dụng phương pháp chưng cất tri thức (Knowledge Distillation) từ mô hình giáo viên (Teacher) DiffRhythm2 sang mô hình học sinh (Student) MicroDiT nhỏ gọn hơn, sử dụng cơ chế khớp dòng điều kiện (Conditional Flow Matching - CFM) làm cốt lõi để biến đổi nhiễu Gaussian thành biểu diễn phổ/latent nén của giọng hát.
 
 Trong quy trình tiền xử lý tự động, đề tài tích hợp Demucs để phân tách giọng hát và nhạc đệm, Whisper để nhận dạng và căn lề ca từ tiếng Việt kèm mốc thời gian chi tiết, cùng MuQ-MuLan nhằm trích xuất vector phong cách (Audio Style Anchor) 512 chiều. Nhằm khắc phục rào cản ngôn ngữ và đặc trưng thanh điệu phức tạp của tiếng Việt, đề tài tích hợp bộ mã hóa chuyên dụng XPhoneBERT để trích xuất các vector nhúng âm vị (phoneme embeddings). Giải pháp này giúp mô hình nắm bắt chính xác cấu trúc âm tiết, từ đó tối ưu hóa khả năng phát âm rõ chữ và giữ nguyên nhạc tính tự nhiên của ca từ bản địa.
 
-Kết quả thực nghiệm cho thấy toàn bộ pipeline từ tiền xử lý, huấn luyện đến suy luận đều vận hành đồng bộ và ổn định. Đặc biệt, việc đồng nhất trực tiếp cấu hình Mel của mô hình sinh với đầu vào tự nhiên của Vocos là yếu tố then chốt giúp loại bỏ hiện tượng méo âm, nâng cao vượt trội chất lượng giọng hát tái tạo, đồng thời khẳng định tính khả thi của hướng tiếp cận chưng cất mô hình dòng chảy (flow-based) đối với dữ liệu âm nhạc Việt Nam.
+Về mặt hạ tầng, toàn bộ pipeline từ tiền xử lý, huấn luyện đến suy luận đã được kiểm chứng vận hành đồng bộ trên dữ liệu tiếng Việt thật. Về mặt biểu diễn trung gian, đề tài xác nhận rằng đưa mô hình sinh về đúng không gian latent nén (64 chiều, 5~Hz) mà DiffRhythm2 thực sự huấn luyện trên -- thay vì mel-spectrogram trung gian ban đầu -- là hướng đi cho tín hiệu tích cực rõ rệt nhất, sau khi giải quyết được hiện tượng collapse của bộ mã hóa latent tự huấn luyện bằng một bottleneck xác suất (VAE) với lịch trình huấn luyện KL phù hợp. Tuy nhiên, do giới hạn về thời gian và tài nguyên tính toán, cả mô hình sinh trên không gian latent này lẫn quá trình chưng cất tri thức từ teacher đều chưa được huấn luyện tới hội tụ đầy đủ tại thời điểm hoàn thành báo cáo. Kết quả hiện tại cho thấy đây là một hướng tiếp cận khả thi và có tiềm năng, nhưng để đạt chất lượng sinh nhạc ổn định và rõ lời hoàn chỉnh hơn, nút thắt còn lại nhiều khả năng nằm ở quy mô -- dữ liệu huấn luyện, số bước/epoch huấn luyện, hoặc tài nguyên tính toán -- hơn là một giới hạn cấu trúc của phương pháp, và cần được mở rộng thêm trong các nghiên cứu tiếp theo.
 
 \newpage
 \renewcommand*\contentsname{MỤC LỤC}
@@ -1061,6 +1061,7 @@ Các giá trị RMSE trong bảng vocoder được giữ theo đúng thang đo c
 Với waveform sinh, các sanity metrics gồm peak amplitude, RMS, tỷ lệ mẫu gần không và kiểm tra NaN/Inf. Chúng trả lời tín hiệu có hữu hạn, có năng lượng và không bị im lặng hay clipping nghiêm trọng hay không; chúng không đo độ hay, tính đúng lời hoặc chất lượng giai điệu. Với mô hình, báo cáo CFM ground-truth loss, teacher-matching loss, số tham số và thời gian forward teacher.
 
 \section{Thí nghiệm 1: kiểm chứng vocoder}
+\label{sec:e1_vocoder}
 
 Các lần thử ban đầu dùng mel tự xây dựng hoặc thay đổi kích thước bằng nội suy trước khi đưa vào Vocos. Mặc dù tensor đúng 100 bins, kết quả không duy trì tốt waveform vì miền đặc trưng không khớp checkpoint. Sau khi dùng feature extractor gốc của Vocos trong cả tiền xử lý và loopback, correlation tăng rõ rệt.
 
@@ -1369,9 +1370,16 @@ Nhìn tổng thể, kết quả mạnh nhất của giai đoạn hiện tại l�
 Dự án đã xây dựng một nguyên mẫu Generative AI sinh vocal/audio tiếng Việt dựa
 trên MicroDiT và Conditional Flow Matching. Hệ thống bao phủ toàn bộ vòng đời kỹ
 thuật: khám phá dữ liệu, tách nguồn, nhận dạng lời, trích style embedding, tạo
-mel-spectrogram, validation, huấn luyện, distillation, sampling và giải mã waveform.
-Việc lựa chọn mel 100 chiều tương thích Vocos là cải tiến có tác động rõ nhất đến
-độ trung thực của audio render.
+biểu diễn phổ/latent, validation, huấn luyện, distillation, sampling và giải mã
+waveform. Ở giai đoạn đầu của đề tài, việc đồng nhất cấu hình mel-spectrogram với
+đầu vào gốc của Vocos (Thí nghiệm 1, \S\ref{sec:e1_vocoder}) là bước kiểm chứng nền
+tảng giúp loại bỏ triệt để hiện tượng méo âm khi giải mã, qua đó xác nhận tính đúng
+đắn của hợp đồng biểu diễn âm thanh trước khi mở rộng sang các thí nghiệm phức tạp
+hơn -- đây là một bước sanity-check cần thiết, không phải kết quả cuối cùng của đề
+tài. Kết quả có tác động rõ nhất tới chất lượng sinh nhạc thực tế đến từ hướng đi
+sau đó: chuyển sang không gian latent thật của teacher và khắc phục collapse của
+bộ mã hóa bằng bottleneck xác suất (Thí nghiệm 4--5, \S\ref{sec:exp4_mel_vs_latent},
+\S\ref{sec:exp5_vae}).
 
 Knowledge distillation đã được tích hợp với teacher DiffRhythm2 thật, bao gồm
 lyric tokenizer, teacher forward contract và adapter cho chênh lệch mel dimension.
@@ -1394,38 +1402,48 @@ và là hướng ưu tiên để tiếp tục ngay khi có thêm ngân sách GPU
 Tiếp nối hướng này, đề tài đã loại bỏ được vòng giải mã Vocos trung gian khỏi dữ
 liệu huấn luyện encoder (\S\ref{sec:raw_audio_encoder}) và mở rộng quy mô dữ liệu
 từ 249 bài (một phần của corpus) lên toàn bộ 1843 bài (6 phần), sau khi kiểm chứng
-hạ tầng đọc/gộp nhiều dataset trên GPU Kaggle thật. Tuy nhiên, lần huấn luyện lại đầu
-tiên trên toàn bộ dữ liệu này — dù loss giảm mượt và thấp hơn cả kết quả cũ — đã
-\textbf{collapse lại} khi sanity-check bằng cách giải mã trực tiếp latent ground-truth
-(\texttt{pitch\_std\_semitones} chỉ $0{,}44$ trung bình, so với $9{,}46$ của audio thật).
-Đây là bằng chứng thứ hai, độc lập với lần collapse đầu (\S\ref{sec:latent_space}), cho
-cùng một bài học: loss reconstruction thấp/mượt không đủ để tin một encoder khoẻ mạnh —
-sanity-check bằng ground-truth-decode là bước bắt buộc, không phải thủ tục hình thức.
-Một lần thử lại với warmup dài hơn theo tỉ lệ (400 step) và learning rate thấp hơn
-($5\times10^{-5}$) \textbf{cũng collapse} (\texttt{pitch\_std\_semitones} trung bình chỉ tăng
-lên $0{,}78$) — hai lần thất bại liên tiếp với hyperparameter khác nhau cho thấy đây không đơn
-thuần là thiếu warmup/LR quá cao, mà là một khác biệt sâu hơn giữa dữ liệu raw-audio pristine
-và dữ liệu mel-detour mà công thức gốc được validate, cần điều tra kỹ hơn ngoài phạm vi thời
-gian của report này. Quyết định: dừng thử thêm hyperparameter ở quy mô lớn, quay lại dùng
-checkpoint encoder đã xác nhận khoẻ mạnh trên 249 bài (\S\ref{sec:latent_space}) làm cơ sở cho
-bước tiếp theo — huấn luyện \texttt{MicroDiT} bằng CFM trực tiếp trên latent-space, kết quả ở
-\S\ref{chapter:conclusion}.
+hạ tầng đọc/gộp nhiều dataset trên GPU Kaggle thật. Hai lần huấn luyện lại đầu tiên
+trên toàn bộ dữ liệu này — chỉ dùng loss reconstruction thuần, không có bước xác
+suất — đều \textbf{collapse} khi sanity-check bằng cách giải mã trực tiếp latent
+ground-truth (\texttt{pitch\_std\_semitones} chỉ $0{,}44$ rồi $0{,}78$ trung bình
+qua hai lần thử warmup/learning-rate khác nhau, so với $9{,}46$ của audio thật).
+Đây là bằng chứng thứ hai, độc lập với lần collapse đầu (\S\ref{sec:latent_space}),
+cho cùng một bài học: loss reconstruction thấp/mượt không đủ để tin một encoder
+khoẻ mạnh — sanity-check bằng ground-truth-decode là bước bắt buộc, không phải thủ
+tục hình thức. Hai lần thất bại liên tiếp với hyperparameter khác nhau cho thấy đây
+không đơn thuần là thiếu warmup/LR quá cao, mà là thiếu hẳn một cơ chế cản mạng tự
+thu hẹp về nghiệm tất định khi dữ liệu đa dạng hơn.
+
+Nguyên nhân sâu hơn được xác định và khắc phục trong Thí nghiệm 5
+(\S\ref{sec:exp5_vae}): thêm bottleneck xác suất thật (mu/logvar + KL divergence,
+\S\ref{sec:vae_bottleneck}) cho \texttt{LatentAudioEncoder}, cùng lịch trình
+\emph{cyclical KL annealing} để tránh hiện tượng "KL vanishing" mà một trọng số KL
+hằng số gây ra. Ablation trên bốn giá trị \texttt{kl\_weight} xác nhận
+$\texttt{kl\_weight}=0{,}15$ khắc phục được collapse ngay ở quy mô đầy đủ 1839 bài
+(\texttt{pitch\_std\_semitones}$=6{,}01$, so với $0{,}44$--$0{,}78$ khi không có
+bottleneck xác suất) và là điểm tối ưu trong các giá trị đã thử. Checkpoint encoder
+này -- không phải checkpoint 249 bài trước đó -- được dùng làm đầu vào cho lượt
+huấn luyện chưng cất (\texttt{train-distill}) quy mô đầy đủ tiếp theo, sử dụng
+teacher DiffRhythm2 thật trên toàn bộ dữ liệu đã precompute latent. Tại thời điểm
+hoàn thành báo cáo, quá trình huấn luyện chưng cất này đang chạy nhưng chưa đủ số
+liệu hội tụ để đánh giá chất lượng cuối cùng; đây là hướng cần được resume và đánh
+giá đầy đủ (WER, \texttt{pitch\_std}) ngay khi có thêm ngân sách GPU
+(\S\ref{chapter:conclusion}).
 
 \section{Hướng phát triển}
 
 Dựa trên tiến độ và kết quả, đề tài ưu tiên các hướng phát triển như sau:
 \begin{enumerate}[label=\arabic*)]
-    \item Đã thử: mở rộng dữ liệu encoder từ 249 lên 1843 bài và loại bỏ vòng giải mã Vocos
-      trung gian (\S\ref{sec:raw_audio_encoder}) — hai lần huấn luyện lại ở quy mô này đều
-      \textbf{collapse} khi sanity-check, dù loss trông tốt và dù đã thử điều chỉnh
-      warmup/learning-rate. Tìm công thức ổn định ở quy mô dữ liệu lớn, đa dạng hơn (khác
-      mel-detour) là một hướng phát triển riêng, chưa khép lại trong report này. Thay vào đó,
-      đã dùng checkpoint encoder 249-bài đã xác nhận khoẻ (\S\ref{sec:latent_space}) để huấn
-      luyện \texttt{MicroDiT} bằng CFM trực tiếp trên latent-space (\texttt{train-self}, chưa
-      từng chạy trước đây — mọi kết quả latent-space trước đó đều từ \texttt{NativeDiTStudent}
-      đã gộp/xoá, \S\ref{sec:native_dit}) tới khi early stopping tự kích hoạt thật, thay vì bị
-      cắt ngang do hết quota Kaggle như lần chạy trước, rồi điền lại số liệu ở bảng
-      \ref{tab:mel_vs_latent}.
+    \item Việc mở rộng dữ liệu encoder từ 249 lên 1843 bài (\S\ref{sec:raw_audio_encoder}) ban
+      đầu gây collapse hai lần liên tiếp, nhưng đã được khắc phục bằng bottleneck xác suất (VAE)
+      và lịch trình cyclical KL annealing (Thí nghiệm 5, \S\ref{sec:exp5_vae}), với
+      $\texttt{kl\_weight}=0{,}15$ là cấu hình tốt nhất tìm được. Hướng phát triển tiếp theo
+      không còn là tìm công thức chống collapse, mà là: (a) huấn luyện chưng cất
+      (\texttt{train-distill}) trên checkpoint encoder này tới hội tụ thật, thay vì bị giới hạn
+      bởi thời gian/quota GPU như lần chạy hiện tại; (b) đánh giá bằng cả \texttt{pitch\_std} lẫn
+      chỉ số độ rõ lời (PhoWhisper WER) trên nhiều mẫu hơn, không chỉ một vài bài; và (c) nếu còn
+      dư địa, thử tách riêng số hạng KL\_G/KL\_I theo Rivera (arXiv:2309.13160) thay vì KL chuẩn,
+      để giảm rủi ro over-regularization đã quan sát được ở $\texttt{kl\_weight}=0{,}3$.
     \item Nâng cao số lượng và chất lượng của tập dữ liệu nhạc Việt Nam.
     \item Tổ chức các phương pháp đánh giá chủ quan như MOS/CMOS với người nghe và đánh giá độ rõ lời tiếng Việt.
     \item Mở rộng mô hình, tích hợp các yếu tố khác như thanh điệu, alignment và pitch/F0 hoặc melody.
