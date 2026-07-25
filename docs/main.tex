@@ -1038,7 +1038,18 @@ discriminator) và encoder+decoder train cùng nhau, trong khi ở đây train e
 decoder đông lạnh có sẵn, không có adversarial loss (cố ý, \S\ref{sec:vae_bottleneck}) — hợp lý
 hoá việc cần \texttt{kl\_weight} lớn hơn nhiều để đạt hiệu quả tương đương. Đã thêm
 \texttt{--resume-checkpoint} để tiếp tục train từ checkpoint này với \texttt{kl\_weight}$=0{,}15$
-cao hơn — xem \texttt{docs/project\_history.md} \S4.32 để cập nhật kết quả cuối cùng.
+cao hơn (5 epoch thêm).
+
+\textbf{Kết quả continuation training — checkpoint tốt nhất hiện có}: $\sigma_{\text{mean}}$ tăng
+tiếp lên $0{,}245$--$0{,}273$ (từ $0{,}11$--$0{,}14$), \texttt{pitch\_std\_semitones} tăng từ
+$4{,}72$ lên $\mathbf{6{,}01}$ (gần dải audio thật, $9{,}46$), trong khi khả năng phân biệt bài hát
+($\lVert\mu_A-\mu_B\rVert$ giữa các bài khác nhau, $0{,}84$--$0{,}91$) không đổi so với trước —
+không có đánh đổi tiêu cực. Một nhận xét bên ngoài từng nghi ngờ hiện tượng "mean collapse" ($\mu$
+mọi bài hội tụ về gần $0$) và đề xuất giảm \texttt{kl\_weight}; kiểm chứng trực tiếp bằng đúng phép
+đo đó cho thấy khoảng cách giữa các bài xấp xỉ bằng chính độ lệch chuẩn nội tại của một bài
+($\approx1{,}0$) — không có dấu hiệu collapse, và giảm \texttt{kl\_weight} sẽ đi ngược bằng chứng đã
+kiểm chứng (sẽ tái tạo lại đúng vấn đề KL vanishing ban đầu). Xem \texttt{docs/project\_history.md}
+\S4.33 để biết chi tiết đầy đủ.
 
 \section{DiffRhythm2 Distillation}
 \label{sec:distillation_chapter}

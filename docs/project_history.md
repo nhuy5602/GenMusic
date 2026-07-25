@@ -1905,6 +1905,53 @@ VAE hôm nay) cho kết quả rất quyết đoán: PhoWhisper hallucinate lặp
 lần rồi suy biến thành lặp "từ" — `WER=22,1` (2212%, do transcript dài bất thường) — dấu hiệu rõ
 ràng audio không chứa lời hát thật nào, một tín hiệu dứt khoát hơn hẳn ba chỉ số cũ.
 
+### 4.33 Continuation training (`kl_weight=0,15`, resume từ checkpoint full-corpus) — cải thiện thêm
+
+Người dùng nghe thử vài file từ checkpoint full-corpus (§4.32): tốt hơn bản cũ nhưng "chưa thật sự
+chạm đến cảm giác ổn thỏa". Quyết định: train tiếp từ checkpoint đó (`--resume-checkpoint`, xem
+§4.32) với `kl_weight=0,15` cao hơn (5 epoch), thay vì train lại từ đầu hay train thêm cùng cấu
+hình cũ (đã gần plateau, xem phân tích deceleration ở §4.32).
+
+**Sự cố hạ tầng khi launch** (2 lần fail liên tiếp trước khi thành công): đưa checkpoint resume
+vào CHUNG một Kaggle dataset với source code zip khiến Kaggle **auto-extract zip vào một thư mục
+con cùng tên với file zip** thay vì flatten thẳng vào gốc dataset — hành vi này khác hẳn khi dataset
+chỉ có một file (source zip một mình), xác nhận trực tiếp qua `kaggle datasets files`. Sửa bằng cách
+tìm `cli.py` bằng `rglob` thay vì giả định đường dẫn cố định, rồi copy sang thư mục ghi được (`/kaggle/input`
+chỉ đọc). Bài học chung: không giả định cấu trúc dataset Kaggle khi thêm file mới vào một dataset đã
+có cấu trúc ổn định trước đó — luôn tìm file đích bằng tên, không bằng đường dẫn cố định.
+
+**Kết quả training** (5 epoch, `kl_weight=0,15` cyclical): hoàn tất, không lỗi, `avg_recon` cuối
+1,242 (gần bằng 1,239 của lần `kl_weight=0,05`) — reconstruction không bị hại đáng kể dù tăng
+regularization.
+
+**Kiểm chứng đầy đủ trên audio thật**:
+
+| | `kl_weight=0,05` (§4.32) | `kl_weight=0,15` (mới) |
+|---|---|---|
+| `sigma_mean` | 0,11–0,14 | **0,245–0,273** |
+| `mu` pairwise per-element-rms distance | 0,80–0,91 | 0,84–0,91 (không đổi — vẫn phân biệt tốt) |
+| `pitch_std_semitones` (20s crop, trung bình) | 4,72 | **6,01** |
+
+Cả hai chỉ số quan trọng nhất đều cải thiện: `sigma` tiến gần hơn tới target lý thuyết ~1,0, và
+`pitch_std` tăng từ 4,72 lên 6,01 (gần dải audio thật, 9,46) — trong khi khả năng phân biệt bài
+(`mu` distance) không đổi, xác nhận không có đánh đổi tiêu cực (không xảy ra "mean collapse" mà một
+nhận xét bên ngoài từng nghi ngờ — xem ngay bên dưới). **Đây là checkpoint tốt nhất hiện có**, dùng
+cho bước `precompute-latent-dataset`/CFM training tiếp theo.
+
+**Kiểm định thêm sau một nhận xét bên ngoài (giả thuyết "mean collapse")**: một nhận xét AI khác đề
+xuất vấn đề nằm ở $\mu$ collapse (mọi bài hội tụ về gần điểm 0) do `kl_weight` quá LỚN, đề xuất giảm
+xuống $10^{-5}$–$10^{-6}$. Kiểm chứng trực tiếp bằng đúng test được đề xuất
+($\lVert\mu_A-\mu_B\rVert$ giữa các bài khác nhau): khoảng cách per-element-rms giữa các bài
+(0,80–0,91) xấp xỉ **bằng chính độ lệch chuẩn nội tại của một bài** (~1,0) — theo đúng ngưỡng nhận
+xét đó tự đề xuất (collapse nếu <0,5), số liệu không cho thấy dấu hiệu collapse nào. Nhận xét đó
+cũng đề nghị giảm `kl_weight` — ngược hướng với bằng chứng đã kiểm chứng nhiều lần trong §4.31-4.33
+(giảm `kl_weight` sẽ tái tạo lại đúng vấn đề KL vanishing ban đầu, không phải sửa một vấn đề khác).
+Tỷ lệ nén 4800× (5Hz) cũng không phải tham số tự do như nhận xét đó giả định — nó khớp chính xác
+`upsample_rates` thật của BigVGAN decoder đông lạnh (`[10,10,8,3,2,2]`, xác nhận từ `decoder.json`),
+bắt buộc để tương thích, không thể đổi mà không tự train decoder riêng. Bài học: đối chiếu mọi nhận
+xét/gợi ý bên ngoài (kể cả nghe có vẻ hợp lý) với số liệu đo trực tiếp trên checkpoint thật trước khi
+hành động, thay vì áp dụng theo lý thuyết chung chung.
+
 ---
 
 ## 5. Kết luận và hướng phát triển

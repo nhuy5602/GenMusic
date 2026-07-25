@@ -210,6 +210,21 @@ Verify từng bước trước khi chạy full: local (eval xác định, train 
 
 ---
 
+## Kết quả cuối: Full-corpus + Continuation Training
+
+| | `kl_weight=1e-4` (collapsed) | `kl_weight=0,05` (10 epoch) | `kl_weight=0,15` (+5 epoch resume) |
+|---|---|---|---|
+| σ_mean | 0,003 | 0,11–0,14 | **0,245–0,273** |
+| pitch_std (20s) | ~0 | 4,72 | **6,01** (audio thật: 9,46) |
+| Phân biệt bài (μ distance) | — | 0,80–0,91 | 0,84–0,91 (không đổi) |
+
+- Fix hoạt động đúng ở quy mô đầy đủ (1839 bài): σ và pitch_std đều cải thiện dần qua mỗi vòng tăng `kl_weight`, không đánh đổi khả năng phân biệt bài hát.
+- Đối chiếu ngoài: Stable Audio 2.0 dùng đúng `kl_weight=1e-4` (giá trị collapse ở đây) — khác biệt là họ có thêm adversarial loss + train encoder/decoder cùng nhau; ở đây decoder đông lạnh có sẵn nên cần `kl_weight` lớn hơn.
+- Một nhận xét ngoài nghi ngờ "mean collapse", đề xuất giảm `kl_weight` — kiểm chứng trực tiếp bằng phép đo μ-distance bác bỏ giả thuyết này (khoảng cách giữa bài ≈ độ lệch chuẩn nội tại, không collapse).
+- **Checkpoint `kl_weight=0,15` là tốt nhất hiện có** — dùng cho bước CFM training tiếp theo.
+
+---
+
 ## Kết quả kiểm chứng hạ tầng (RQ1–RQ2)
 
 | Thiết lập | Kết quả |
