@@ -516,11 +516,23 @@ self-attention thay vì cross-attention riêng, âm vị nhúng bằng một b�
 từ đầu thay vì XPhoneBERT pretrained) không cải thiện $\mathcal{L}_{\mathrm{gt}}$ nhưng chậm hơn
 $\approx4{,}4$ lần mỗi step, nên không được giữ lại trong kiến trúc cuối cùng. Mô hình nhận
 noisy mel (hoặc noisy latent, \S\ref{sec:latent_space}) tại thời điểm $t$ cùng
-hai nhóm điều kiện:
-biểu diễn ca từ (qua cross-attention) và neo phong cách toàn cục (cộng trực tiếp) —
+hai nhóm điều kiện: biểu diễn ca từ và neo phong cách toàn cục —
 \textbf{không có} tensor backing nào được đưa vào model, dù backing vẫn quyết định mục
 tiêu huấn luyện (công thức \eqref{eq:reconstruct_full_mix}). Hình~\ref{fig:microdit_architecture}
-mô tả đúng thứ tự các phép biến đổi trong lượt truyền tiến.
+tóm tắt luồng xử lý.
+
+Ca từ được chuyển thành âm vị (G2P tiếng Việt có dấu thanh), mã hoá bằng XPhoneBERT
+đã đóng băng \cite{xphonebert} cộng một lớp self-attention nhỏ có thể huấn luyện, rồi
+được dùng làm điều kiện cho mel thông qua cross-attention ở mỗi khối Transformer — thay
+cho một thiết kế "prepend" (nối text và mel vào cùng một chuỗi self-attention) từng được
+thử trước đó. Lựa chọn cross-attention theo kết quả của SongGen (arXiv:2502.13128, FAD
+1,73 so với 3,56, PER 43,34 so với 56,21 khi so cross-attention với prepend). Timestep và
+style embedding (từ MuQ-MuLan) được kết hợp thành một vector điều kiện chung, vừa cộng
+trực tiếp vào mel ở đầu vào vừa điều khiển một phép chuẩn hoá thích ứng (adaptive
+normalization) trước tầng dự đoán cuối. Từ trạng thái ẩn cuối cùng, hai đầu tuyến tính độc
+lập dự đoán velocity của hỗn hợp cả bài (mục tiêu chính) và velocity riêng của vocal (đầu
+phụ trợ, chỉ dùng lúc huấn luyện) — mục đích của đầu phụ trợ là tránh model "lãng quên"
+tín hiệu vocal, vốn yếu và thưa hơn nhạc đệm, khi tối ưu trực tiếp trên hỗn hợp.
 
 \begin{figure}[H]
 \centering
@@ -581,166 +593,6 @@ mô tả đúng thứ tự các phép biến đổi trong lượt truyền tiế
 \label{fig:microdit_architecture}
 \end{figure}
 
-\subsection{Quy ước tensor đầu vào}
-
-Mel được lưu trên đĩa theo quy ước $B\times F\times T$, với $F=100$. Trước khi gọi
-MicroDiT, vòng huấn luyện chuyển trục thành $B\times T\times F$. Quy ước này khiến mỗi
-vị trí của transformer tương ứng một frame thời gian và vector đặc trưng tại vị trí đó
-gồm 100 mel bins. Không có tensor backing nào được truyền vào model (khác các phiên bản
-kiến trúc trước đây của dự án).
-
-Đầu vào ngôn ngữ không phải tensor token đã chuẩn bị sẵn trong record: dataset lấy các
-lyric segment giao với crop, ghép thành một chuỗi ký tự, rồi bộ mã hoá âm vị tiền huấn luyện
-tự chạy G2P và tokenize bên trong lượt truyền tiến. Style prompt là vector 512 chiều đã
-được tính trước bởi MuQ-MuLan. Timestep là một số thực cho mỗi phần tử batch. Bảng
-\ref{tab:microdit_shapes} tổng hợp kích thước ở các điểm chính.
-
-\begin{table}[H]
-\centering
-\caption{Luồng kích thước tensor bên trong MicroDiT}
-\label{tab:microdit_shapes}
-\small
-\begin{tabularx}{\textwidth}{p{3.4cm}p{3.4cm}X}
-\toprule
-\textbf{Thành phần} & \textbf{Kích thước} & \textbf{Phép biến đổi} \\
-\midrule
-Noisy mel $x_t$ & $B\times T\times100$ & Chiếu tuyến tính $100\rightarrow D$. \\
-Chuỗi âm vị (G2P) & $B\times L$ & Token id từ tokenizer XPhoneBERT. \\
-XPhoneBERT hidden state & $B\times L\times768$ & Encoder đóng băng. \\
-Text sau projection $E_l$ & $B\times L\times D$ & MLP trainable $768\rightarrow D\rightarrow D$ rồi một lớp self-attention trainable riêng cho ca từ; giữ nguyên chiều dài $L$ (không nội suy theo $T$, vì dùng cross-attention). \\
-Time/style embedding & $B\times D$ & Mở rộng thành $B\times T\times D$, cộng trực tiếp vào mel đã chiếu. \\
-Hidden sequence & $B\times T\times D$ & $K$ block; self-attn trên $T$, cross-attn tới $L$. \\
-Velocity chính \& phụ trợ & $B\times T\times100$ (mỗi đầu) & Hai lớp Linear riêng từ cùng hidden state cuối. \\
-\bottomrule
-\end{tabularx}
-\end{table}
-
-\subsection{Nhánh mã hóa ca từ}
-
-Ca từ được chuyển thành âm vị bằng bộ chuyển tự vị--âm vị (G2P tiếng Việt, có dấu
-thanh) trước khi tokenize bằng chính tokenizer của XPhoneBERT
-\cite{xphonebert}. Bộ mã hoá âm vị tiền huấn luyện sau đó chạy chuỗi token qua
-XPhoneBERT — toàn bộ tham số của transformer này bị đóng băng, không tham gia lan
-truyền ngược — trả hidden state $H_l\in\mathbb{R}^{B\times L\times768}$.
-Hai lớp tuyến tính với SiLU ở giữa chiếu mỗi token về kích thước $D$:
-\begin{equation}
- E_l=W_{l,2}\,\operatorname{SiLU}(W_{l,1}H_l+b_{l,1})+b_{l,2}\in\mathbb{R}^{B\times L\times D}.
-\end{equation}
-Khác với thiết kế trước đây (nội suy $E_l$ theo trục $T$ để nối/cộng với mel), chuỗi
-$E_l$ được \textbf{giữ nguyên chiều dài $L$}. Trước khi dùng làm key/value cho cross-attention,
-$E_l$ đi qua \textbf{một lớp self-attention trainable riêng cho ca từ}
-(self-attention kiểu Llama + FFN, có mask padding của ca từ): XPhoneBERT đã đóng băng nên
-không thể tự thích nghi với tác vụ hát cụ thể; lớp self-attention nhỏ này cho phép mô hình
-tinh chỉnh ngữ cảnh giữa các âm vị theo tác vụ, không cần học lại toàn bộ hiểu biết âm vị
-từ đầu trên ngân sách $\sim$250 bài (đúng lỗi mà biến thể thử nghiệm học ca từ bằng
-một bảng embedding từ đầu từng mắc phải). Kết quả cuối cùng mới được đưa trực tiếp làm key/value cho lớp cross-attention trong
-mỗi transformer block (\S\ref{sec:crossattn_block}) — mel chỉ đóng vai trò query. Hệ thống
-cũng tính một vector trung bình trên trục token (sau lớp self-attention) làm
-style fallback khi không có style prompt; trong huấn luyện chính, style
-embedding thật luôn được truyền vào nên nhánh fallback không dùng tới.
-
-\subsection{Nhánh timestep và phong cách}
-
-Timestep $t\in[0,1]$ được ánh xạ sang sinusoidal embedding kích thước $D$, sau đó đi qua
-MLP hai lớp:
-\begin{equation}
- E_t=\operatorname{MLP}_{t}(\operatorname{SinCos}(t)).
-\end{equation}
-Style prompt $s\in\mathbb{R}^{512}$ đi qua một bộ mã hoá phong cách và một MLP thứ
-hai:
-\begin{equation}
- E_s=\operatorname{MLP}_{s,2}
- \left(\operatorname{MLP}_{s,1}(s)\right)\in\mathbb{R}^{B\times D}.
-\end{equation}
-Hai vector được cộng thành $c=E_t+E_s$ dùng cho adaptive normalization ở đầu ra, đồng thời
-mỗi vector còn được mở rộng trên $T$ frame và cộng trực tiếp vào mel đã chiếu ở
-khối nhúng đầu vào (không nối/concat). Điều kiện thời gian và phong cách vì vậy tác
-động ở hai vị trí: ngay tại đầu vào transformer và tại phép chuẩn hóa cuối.
-
-\subsection{Khối hợp nhất điều kiện}
-
-Khối nhúng đầu vào chiếu mel về $D$ chiều rồi cộng cùng time/style embedding
-(đã mở rộng theo $T$):
-\begin{equation}
- H_0=\operatorname{Linear}_{D\rightarrow D}
- \big(\operatorname{Linear}_{100\rightarrow D}(x_t)+\operatorname{Expand}(E_t)+\operatorname{Expand}(E_s)\big)
- \in\mathbb{R}^{B\times T\times D}.
-\end{equation}
-Ca từ \textbf{không} tham gia bước này — $E_l$ chỉ được tiêu thụ sau, bên trong mỗi
-transformer block, qua cross-attention.
-
-\subsection{Transformer backbone: self-attention trên mel, cross-attention tới ca từ}
-\label{sec:crossattn_block}
-
-Mỗi khối Transformer (các khối xây dựng kiểu Llama: self-attention, MLP,
-RMSNorm) gồm ba bước tuần tự, kiểu pre-norm:
-\begin{enumerate}[label=(\alph*)]
- \item \textbf{Self-attention chỉ trên chuỗi mel} ($T$ vị trí, không có ca từ) — RoPE mã hóa
-   thứ tự frame, không cần attention mask (mọi frame trong crop đều hợp lệ, không padding):
-   \begin{equation}
-    H'=H+\operatorname{SelfAttn}(\operatorname{RMSNorm}(H),\operatorname{RoPE}).
-   \end{equation}
- \item \textbf{Cross-attention từ mel tới ca từ}: mel (đã qua self-attention) làm query,
-   $E_l$ làm key/value; cơ chế attention chuẩn nhiều đầu (không dùng RoPE, khác với
-   self-attention trên mel), padding của ca từ được mask:
-   \begin{equation}
-    H''=H'+\operatorname{CrossAttn}(\operatorname{RMSNorm}(H'),\,E_l,\,E_l,\,\text{mask}_{\mathrm{text}}).
-   \end{equation}
- \item \textbf{Feed-forward} (SiLU, hệ số mở rộng $r$, kích thước trung gian $D\times r$):
-   \begin{equation}
-    H_{\mathrm{out}}=H''+\operatorname{MLP}(\operatorname{RMSNorm}(H'')).
-   \end{equation}
-\end{enumerate}
-Thiết kế này (self-attention giữ nguyên trong chuỗi mel, cross-attention riêng cho lời)
-thay cho một thiết kế "prepend" trước đó — nối text và mel vào cùng một chuỗi
-self-attention — theo kết quả của SongGen (arXiv:2502.13128, FAD 1,73 so với 3,56, PER
-43,34 so với 56,21 khi so cross-attention với prepend).
-
-\subsection{Adaptive normalization và hai đầu dự đoán}
-
-Sau block cuối, lớp chuẩn hoá thích ứng cuối dùng $c=E_t+E_s$ để sinh scale và shift:
-\begin{align}
- [\gamma,\beta]&=W_c\,\operatorname{SiLU}(c)+b_c,\\
- \widehat{H}&=\operatorname{LayerNorm}(H_K)\odot(1+\gamma)+\beta.
-\end{align}
-Từ cùng $\widehat{H}$, hai lớp Linear độc lập dự đoán hai velocity khác nhau:
-\begin{equation}
- \hat{u}_t=\widehat{H}W_{\mathrm{out}}+b_{\mathrm{out}}
- \qquad\text{(velocity cả bài — mục tiêu chính)},
-\end{equation}
-\begin{equation}
- \hat{u}_t^{\mathrm{voc}}=\widehat{H}W_{\mathrm{out}}^{\mathrm{voc}}+b_{\mathrm{out}}^{\mathrm{voc}}
- \qquad\text{(velocity vocal — đầu phụ trợ, "Mixed Pro" theo SongGen)}.
-\end{equation}
-Đầu phụ trợ chỉ được tính khi được yêu cầu tường minh và chỉ
-dùng lúc huấn luyện (\S\ref{sec:cfm_training_loss}) — mục đích là tránh model "lãng quên"
-tín hiệu vocal (yếu, thưa hơn) khi tối ưu trực tiếp trên hỗn hợp cả bài.
-
-\begin{table}[H]
-\centering
-\caption{Cấu hình MicroDiT được sử dụng}
-\label{tab:microdit_config}
-\small
-\begin{tabularx}{\textwidth}{p{3.4cm}p{3.8cm}X}
-\toprule
-\textbf{Cấu hình} & \textbf{Mặc định} & \textbf{Student nhỏ trong distillation} \\
-\midrule
-Hidden dimension $D$ & 256 & 128 \\
-Số transformer layer $K$ & 4 & 2 \\
-Attention heads & 4 & 4 \\
-Hệ số FFN & 4 & 4 \\
-Text encoder & XPhoneBERT + G2P, đóng băng & giống mặc định \\
-Style input & MuQ-MuLan, 512 chiều & MuQ-MuLan, 512 chiều \\
-Đầu ra & 100-bin mel velocity (+ velocity vocal phụ trợ) & giống mặc định \\
-\bottomrule
-\end{tabularx}
-\end{table}
-
-Cấu hình mặc định ưu tiên khả năng biểu diễn, còn cấu hình $D=128$, $K=2$ được dùng để
-đo đường chưng cất với chi phí thấp hơn. Thay đổi kích thước không làm thay đổi hợp đồng
-đầu vào--đầu ra: cả hai model vẫn nhận 100-bin mel, lyrics và style embedding, và đều dự
-đoán velocity 100 chiều tại từng frame.
-
 \subsection{Hàm mất mát}
 \label{sec:cfm_training_loss}
 
@@ -796,19 +648,14 @@ DiffRhythm2 công bố \textbf{decoder} (BigVGAN, đã huấn luyện sẵn và 
 công bố encoder tương ứng. Thay vì train lại một VAE đầy đủ đúng-như-paper (có
 discriminator đối kháng, quá tốn/rủi ro cho ngân sách của đề tài), phương pháp giữ decoder
 \textbf{đông lạnh} (đã pretrained, chính là decoder thật của teacher) và chỉ train một
-encoder nhỏ mới, khoảng 11 triệu tham số.
+encoder tích chập nhỏ mới (khoảng 11 triệu tham số), với tỉ lệ nén thời gian được ràng buộc
+khớp chính xác thông số encode-side thật của teacher.
 
-Encoder gồm một lớp tích chập đầu vào và năm khối giảm mẫu liên tiếp, mỗi khối gồm ba đơn
-vị residual với hệ số giãn nở $1$, $3$, $9$ và một lớp tích chập có bước nhảy; tích các
-bước nhảy của năm khối bằng $4800$, khớp chính xác tỉ lệ nén encode-side thật của teacher
-(xác nhận qua cấu hình công khai của decoder). Số kênh tăng dần từ 32 lên 512 qua các khối,
-sau đó một lớp tích chập cuối tách đặc trưng 512 chiều thành $\mu$ và $\log\sigma^2$ (64
-chiều mỗi phần, xem \S\ref{sec:vae_bottleneck}). Encoder train trực tiếp trên waveform
-24~kHz gốc (vocal+backing đã tách qua Demucs), không qua bước trung gian mel/Vocos nào —
-tránh mất pha do một vòng vocoder phụ không cần thiết. Loss reconstruction là trung bình
-L1-trên-log-mel qua ba thang phân giải STFT khác nhau, so giữa audio decoder tái tạo và
-audio thật — không có số hạng đối kháng (rủi ro bất ổn GAN training, cố ý để ngoài phạm vi
-đề tài).
+Encoder train trực tiếp trên waveform 24~kHz gốc (vocal+backing đã tách qua Demucs), không
+qua bước trung gian mel/Vocos nào — tránh mất pha do một vòng vocoder phụ không cần thiết.
+Loss reconstruction là trung bình L1-trên-log-mel qua nhiều thang phân giải STFT, so giữa
+audio decoder tái tạo và audio thật — không có số hạng đối kháng (rủi ro bất ổn GAN
+training, cố ý để ngoài phạm vi đề tài).
 
 \subsection{Bottleneck xác suất (VAE) và lịch trình KL}
 \label{sec:vae_bottleneck}
@@ -833,43 +680,29 @@ kết quả ablation cho lựa chọn thiết kế này được trình bày ở
 \subsection{Khôi phục đúng hợp đồng teacher}
 \label{sec:distill_teacher_call}
 
-Pipeline chưng cất tải cấu hình thật đi kèm checkpoint thay vì giả định số mel bins. Teacher được đóng băng và chuyển sang evaluation mode. Lyric token, tokenizer, thứ tự nối chuỗi, sentinel timestep $-1$ và attention mask đều theo triển khai chính thức. Chế độ huấn luyện chưng cất yêu cầu teacher và tokenizer thật; fallback giả chỉ được phép trong kiểm thử riêng, nhằm ngăn một lần chạy mang nhãn distillation nhưng thực chất không có tín hiệu teacher. Student luôn là MicroDiT (backbone duy nhất trong kiến trúc hiện tại, \S\ref{sec:microdit_architecture}), chạy được trên cả mel-space và latent-space (\S\ref{sec:latent_space}).
+Pipeline chưng cất gọi teacher DiffRhythm2 đúng theo cấu hình và giao thức chính thức đi
+kèm checkpoint công khai của nó (tokenizer, định dạng token, quy ước timestep), thay vì một
+phiên bản đơn giản hoá tự giả định. Teacher luôn ở trạng thái đóng băng, chỉ đóng vai trò
+sinh mục tiêu. Student luôn là MicroDiT (backbone duy nhất trong kiến trúc hiện tại,
+\S\ref{sec:microdit_architecture}), chạy được trên cả mel-space và latent-space
+(\S\ref{sec:latent_space}).
 
 \subsection{Cầu nối tần số 93,75~Hz--5~Hz và 100--64 mel bins}
 
-Ngoài lệch số mel-bin, còn một lệch nghiêm trọng hơn về \textbf{tần số thời gian}: teacher
-chạy ở 5~Hz nhưng student ở 93,75~Hz — đưa nguyên một chuỗi 93,75~Hz vào teacher khiến
-RoPE/attention của nó chạy ngoài phân phối huấn luyện (lệch $\approx19$ lần). Cầu nối gồm
-hai bước:
-\begin{enumerate}
- \item \textbf{Resample trục thời gian} (nội suy tuyến tính, không train) giữa 93,75~Hz và
-   5~Hz, theo cả hai chiều (trước khi gọi teacher, và sau khi lấy velocity trả về).
- \item \textbf{Mặt nạ attention theo block}: tái tạo đúng attention mask tự hồi quy theo
-   khối mà teacher thật được train với, trên layout $[\text{Text},\text{Clean},\text{Noisy}]$
-   — clean chỉ thấy các block clean $\le$ block hiện tại; noisy chỉ thấy các block clean
-   \emph{trước đó} và các frame noisy \emph{cùng block}. Nếu không có bước này, teacher
-   thấy toàn bộ chuỗi hai chiều không hạn chế — sai với cách nó được huấn luyện.
-\end{enumerate}
-Student nhận $x_t^{S}\in\mathbb{R}^{B\times100\times T}$; sau khi resample thời gian, tensor
-còn được nội suy cố định theo trục tần số $x_t^{T}=R_{100\rightarrow64}(x_t^{S})$. Teacher
-dự đoán $v_T\in\mathbb{R}^{B\times64\times T_{5\mathrm{Hz}}}$, qua một lớp tuyến tính có thể
-học $A_\phi:\mathbb{R}^{64}\rightarrow\mathbb{R}^{100}$ rồi resample thời gian ngược lại:
-\begin{equation}
- \tilde{v}_T=\operatorname{Resample}_{5\mathrm{Hz}\rightarrow93{,}75\mathrm{Hz}}\big(A_\phi(v_T)\big).
-\end{equation}
-Phần truyền tiến của teacher không tham gia lan truyền ngược, nhưng lớp ánh xạ $A_\phi$ nằm
-ngoài phạm vi đó để nhận gradient. Đây là chi tiết quan trọng: nếu để lớp ánh xạ này không
-nhận gradient, phép ánh xạ ban đầu không bao giờ thích nghi và student phải bắt chước một
-mục tiêu tùy ý -- đúng lỗi từng gặp phải ở một phiên bản trước đó của hệ thống, khi hai lớp
-ánh xạ mel bị đặt nhầm ngoài phạm vi lan truyền ngược dù đã được đăng ký để huấn luyện.
+Khi student chạy ở mel-space, một lệch biểu diễn nghiêm trọng xuất hiện: teacher chạy ở
+5~Hz/64 chiều nhưng student ở 93,75~Hz/100 chiều — đưa nguyên chuỗi mel-space vào teacher
+khiến attention của nó chạy ngoài phân phối huấn luyện (lệch tần số $\approx19$ lần). Cầu
+nối giải quyết lệch này bằng cách resample trục thời gian theo cả hai chiều quanh lượt gọi
+teacher, khớp lại đúng mặt nạ attention tự hồi quy theo khối mà teacher được huấn luyện với
+(thay vì để nó thấy toàn chuỗi không hạn chế), và một lớp tuyến tính có thể học ánh xạ giữa
+64 và 100 chiều để bù lệch số kênh, được huấn luyện đồng thời với phần còn lại của student.
 
 \textbf{Toàn bộ cầu nối này được bỏ qua khi student chạy trên không gian latent.} Nếu
 student đã chạy trên latent 64-chiều/5~Hz thật (\S\ref{sec:latent_space}) — đúng tần số và
-đúng số chiều của teacher — hệ thống tự động bỏ qua bước resize mel lẫn bước resample thời
-gian, vì hai phía đã cùng một biểu diễn ngay từ đầu; resample một chuỗi đã ở 5~Hz theo đúng
-công thức dành cho mel-space (giả định 93,75~Hz) sẽ làm hỏng nó thêm một lần nữa, không
-phải chỉnh đúng. Khoảng cách phân phối $93{,}75/5=18{,}75$ lần giữa hai tần số vì vậy không
-còn tồn tại.
+đúng số chiều của teacher — hệ thống tự động bỏ qua cả bước ánh xạ kênh lẫn bước resample
+thời gian, vì hai phía đã cùng một biểu diễn ngay từ đầu; áp lại công thức resample dành
+cho mel-space lên một chuỗi đã ở 5~Hz sẽ làm hỏng nó thêm một lần nữa, không phải chỉnh
+đúng. Khoảng cách phân phối 18,75 lần giữa hai tần số vì vậy không còn tồn tại.
 
 \subsection{Hàm mất mát hỗn hợp}
 \label{sec:distill_mixed_loss}
@@ -1100,13 +933,13 @@ SD cao độ, với neo là nhiễu trắng và vocal thật:
 \caption{So sánh mel-space và latent-space (số liệu sơ bộ — xem lưu ý bên dưới)}
 \label{tab:mel_vs_latent}
 \small
-\begin{tabularx}{\textwidth}{Xrrrr}
+\begin{tabularx}{\textwidth}{p{2.6cm}>{\centering\arraybackslash}p{1.5cm}>{\centering\arraybackslash}p{1.5cm}>{\centering\arraybackslash}p{1.6cm}X}
 \toprule
-\textbf{Điều kiện} & \textbf{flatness} & \textbf{voiced\_ratio} & \textbf{pitch\_std (semitone)} & \textbf{Ghi chú} \\
+\textbf{Điều kiện} & \textbf{Độ phẳng phổ} & \textbf{Tỉ lệ voiced} & \textbf{SD cao độ (bán cung)} & \textbf{Ghi chú} \\
 \midrule
 Nhiễu trắng (mốc) & 0,562 & 0,040 & 0,49 & tham chiếu \\
 Vocal thật (mốc) & 0,056 & 0,743 & 6,39 & tham chiếu \\
-(A) Mel-space, exp06 & 0,011 & \textbf{0,924} & 0,91 & voiced\_ratio cao nhưng gần như đứng yên một nốt \\
+(A) Mel-space, exp06 & 0,011 & \textbf{0,924} & 0,91 & tỉ lệ voiced cao nhưng gần như đứng yên một nốt \\
 (B) Latent-space, encoder chưa fix & 0,0001--0,0005 & 0,95--0,99 & \textbf{0,83--0,97} & không phải nhiễu trắng, nhưng gần như đứng yên một nốt \\
 (C) Latent-space, encoder đã fix + CFM (13/300 epoch) & 0,00095 & 0,21 & \textbf{5,70} & giai điệu thật, gần vocal thật hơn hẳn (A)/(B) \\
 \bottomrule
@@ -1120,18 +953,14 @@ nguyên nhân khác nhau (mel-space: quy mô dữ liệu/step; latent-space: enc
 hoá, \S\ref{sec:latent_space}). Sau khi ổn định hoá encoder, (C) đạt
 SD cao độ$=5{,}70$ ($\approx89\%$ vocal thật, so với $\approx14\%$ của (A)) dù
 mới train 13/300 epoch so với 25 epoch đã hội tụ của (A) -- một so sánh không cân bằng
-ngân sách nhưng có lợi cho latent-space. tỉ lệ khung có giọng của (C) ($0{,}21$) thấp
+ngân sách nhưng có lợi cho latent-space. Tỉ lệ khung có giọng của (C) ($0{,}21$) thấp
 hơn cả (A) và vocal thật, phản ánh checkpoint chưa hội tụ đủ để giữ pitch ổn định xuyên
-suốt đoạn có lời.
-
-\subsection{Trả lời RQ4}
-
-Cho student không gian latent thật của teacher cải thiện rõ rệt SD cao độ, xác
-nhận thêm bằng nghe thử trực tiếp (2026-07-22) -- lần đầu tiên trong đề tài một mẫu CFM
-cho giai điệu nghe được thay vì nhiễu/đơn điệu. Tuy nhiên (C) chưa hội tụ và dùng backbone
-đã bị loại khỏi kiến trúc cuối cùng, nên số liệu ở bảng \ref{tab:mel_vs_latent} là tạm
-thời; kết quả đầy đủ trên MicroDiT sẽ có sau khi huấn luyện chưng cất hoàn tất
-(\S\ref{sec:future_work}).
+suốt đoạn có lời. Cho student không gian latent thật của teacher vì vậy cải thiện rõ rệt
+SD cao độ, xác nhận thêm bằng nghe thử trực tiếp (2026-07-22) -- lần đầu tiên trong đề tài
+một mẫu CFM cho giai điệu nghe được thay vì nhiễu/đơn điệu. Tuy nhiên (C) chưa hội tụ và
+dùng backbone đã bị loại khỏi kiến trúc cuối cùng, nên số liệu ở bảng
+\ref{tab:mel_vs_latent} là tạm thời; kết quả đầy đủ trên MicroDiT sẽ có sau khi huấn luyện
+chưng cất hoàn tất (\S\ref{sec:future_work}).
 
 \section{Thí nghiệm 5: ablation bottleneck xác suất (VAE) của latent encoder}
 \label{sec:exp5_vae}
@@ -1153,9 +982,9 @@ phân biệt được các bài hay bị mean collapse).
 \caption{Ablation $\beta$ cho bottleneck xác suất của bộ mã hoá latent}
 \label{tab:kl_ablation}
 \small
-\begin{tabularx}{\textwidth}{Xrrrl}
+\begin{tabularx}{\textwidth}{p{2.6cm}>{\centering\arraybackslash}p{1.6cm}>{\centering\arraybackslash}p{1.4cm}>{\centering\arraybackslash}p{1.5cm}X}
 \toprule
-\textbf{Cấu hình} & $\boldsymbol{\sigma_{\text{mean}}}$ & \textbf{pitch\_std} & $\boldsymbol{\mu}$\textbf{-distance} & \textbf{Ghi chú} \\
+\textbf{Cấu hình} & $\boldsymbol{\sigma_{\text{mean}}}$ & \textbf{SD cao độ} & $\boldsymbol{\mu}$\textbf{-distance} & \textbf{Ghi chú} \\
 \midrule
 Không VAE (2 lần thử) & — & 0,44 / 0,78 & — & collapse hoàn toàn \\
 $\beta=10^{-4}$ hằng số & 0,003--0,005 & 5,85$^{*}$ & — & $^{*}$KL vanishing: $\sigma\approx0$, bottleneck vô tác dụng dù SD cao độ trông tốt \\
@@ -1165,7 +994,7 @@ $\beta=0{,}3$ cyclical & 0,34--0,37 & 3,72 & 0,81--0,88 & vượt ngưỡng, ove
 \bottomrule
 \end{tabularx}
 \end{table}
-\emph{Mốc tham chiếu: audio thật cùng 5 bài cho pitch\_std\_semitones trung bình $9{,}46$.
+\emph{Mốc tham chiếu: audio thật cùng 5 bài cho SD cao độ trung bình $9{,}46$.
 $\mu$-distance đo trên checkpoint có $\sigma$ khoẻ mạnh ($\ge0{,}05$); không đo được ở hai
 dòng đầu vì không có $\sigma$ hoặc $\sigma\approx0$ khiến phép đo mất ý nghĩa.}
 
@@ -1180,30 +1009,10 @@ tại một điểm tối ưu không đơn điệu: $\sigma$ và SD cao độ c�
 $0{,}05\to0{,}15$, nhưng SD cao độ giảm khi tăng tiếp lên $0{,}3$
 (over-regularization, Rivera 2023). $\mu$-distance ($0{,}80$--$0{,}91$, xấp xỉ độ lệch
 chuẩn nội tại $\approx1{,}0$) không ủng hộ giả thuyết "mean collapse" từng được đề xuất
-cho các giá trị $\beta$ nhỏ hơn.
-
-\subsection{Trả lời}
-
-Bottleneck xác suất (VAE) là cần thiết để tránh collapse ở quy mô dữ liệu lớn, nhưng chỉ
-khi kết hợp lịch trình cyclical annealing thay vì $\beta$ hằng số, và cần dò
-theo từng bước nhỏ vì tồn tại điểm tối ưu không đơn điệu. Encoder
-$\beta=0{,}15$ là checkpoint tốt nhất hiện có, dùng làm đầu vào cho bước CFM
-training/distillation cuối cùng (Chương~\ref{chapter:conclusion}).
-
-\section{Kích thước checkpoint và khả năng triển khai}
-
-Checkpoint ban đầu khoảng 1,1~GB vì lưu cả XLM-R dù encoder này bị đóng băng. Sau khi loại các trọng số có thể tải lại và chỉ lưu phần trainable cùng metadata cấu hình, kích thước giảm còn khoảng 67~MB. Mức giảm khoảng 16 lần không thay đổi phép tính của MicroDiT, nhưng làm cho việc lưu phiên bản, truyền tệp và khôi phục thí nghiệm thuận tiện hơn.
-
-Kết quả này minh họa một khía cạnh khác của mô hình nhỏ: số tham số trainable không tự động dẫn tới artifact nhỏ nếu serialization vẫn chứa foundation encoder. Một checkpoint triển khai cần ghi model identifier, tokenizer và cấu hình âm thanh để tải lại đúng phụ thuộc; chỉ bỏ tensor mà không lưu metadata sẽ tạo tệp nhỏ nhưng không tái lập được.
-
-\section{Khả năng mở rộng và đe dọa tính hợp lệ}
-
-Tập ứng viên 201 bài có dung lượng khoảng 2,52~GB. Từ tốc độ quan sát xấp xỉ 70 giây mỗi bài, tiền xử lý toàn bộ được ước lượng khoảng 3,9 GPU-giờ. Đây là phép ngoại suy cho chuẩn bị dữ liệu, không phải thời gian huấn luyện hay distillation. Chi phí teacher trên GPU chưa được đo ổn định nên không được suy đoán trong báo cáo.
-
-Ba nguồn sai lệch chính cần được kiểm soát khi mở rộng. Thứ nhất, Demucs có thể để rò giọng vào backing, làm model dựa vào tín hiệu lời có sẵn. Thứ hai, timestamp segment của Whisper không chính xác tới âm vị, giới hạn khả năng điều khiển lời theo frame. Thứ ba, tập nhỏ chưa bao phủ ca sĩ, thể loại và cấu trúc bài hát đa dạng. Về đánh giá, sanity metrics không thay thế được kiểm tra độ rõ lời, độ phù hợp mô tả và tính âm nhạc bởi người nghe.
-
-Các ràng buộc trên xác định trực tiếp protocol tiếp theo: chia train/validation theo bài hát hoặc ca sĩ để tránh rò rỉ; cố định seed và số update; đánh giá nhiều checkpoint thay vì loss cuối; bổ sung listening test mù so sánh baseline với distilled; và báo cáo tỷ lệ lỗi tiền xử lý. Đối với dữ liệu âm nhạc, quyền sử dụng bản ghi và ca từ cũng phải được kiểm tra trước khi phổ biến dataset hoặc audio sinh.
-
+cho các giá trị $\beta$ nhỏ hơn. Bottleneck xác suất vì vậy là cần thiết để tránh collapse
+ở quy mô dữ liệu lớn, nhưng chỉ khi kết hợp lịch trình cyclical annealing thay vì $\beta$
+hằng số; checkpoint $\beta=0{,}15$ là cấu hình tốt nhất tìm được và được dùng làm đầu vào
+cho bước chưng cất cuối cùng (Chương~\ref{chapter:conclusion}).
 
 \chapter{KẾT LUẬN VÀ HƯỚNG PHÁT TRIỂN}
 \label{chapter:conclusion}
@@ -1232,6 +1041,12 @@ teacher thật, lớp ánh xạ 64--100 mel bins và gradient qua hai nguồn lo
 kiểm chứng; tuy nhiên bằng chứng hiện có mới đủ xác nhận cơ chế, chưa đủ để khẳng
 định mức cải thiện chất lượng cụ thể.
 
+Về mặt triển khai, checkpoint cuối cùng chỉ lưu các trọng số có thể huấn luyện cùng
+metadata cấu hình cần thiết để tải lại đúng phụ thuộc, bỏ qua các trọng số nền tảng đã
+đóng băng (có thể tải lại từ mô hình gốc) — giảm dung lượng từ khoảng 1,1~GB xuống còn
+khoảng 67~MB mà không đổi phép tính của MicroDiT, thuận tiện hơn cho việc lưu phiên bản và
+khôi phục thí nghiệm.
+
 Tại thời điểm hoàn thành báo cáo, checkpoint encoder tốt nhất
 ($\beta=0{,}15$, Thí nghiệm 5) đang được dùng để huấn luyện chưng cất
 quy mô đầy đủ trên toàn bộ dữ liệu, nhưng quá trình này chưa hội tụ nên chưa có số
@@ -1259,6 +1074,13 @@ tự ưu tiên:
     \item Nâng cao số lượng và chất lượng của tập dữ liệu nhạc Việt Nam.
     \item Tổ chức các phương pháp đánh giá chủ quan như MOS/CMOS với người nghe và đánh giá độ rõ lời tiếng Việt.
     \item Mở rộng mô hình, tích hợp các yếu tố khác như thanh điệu, alignment và pitch/F0 hoặc melody.
+    \item Kiểm soát các nguồn sai lệch của pipeline dữ liệu trước khi mở rộng quy mô: rò rỉ
+      giọng hát vào phần backing do tách nguồn chưa hoàn hảo, và mốc thời gian theo đoạn
+      (không chính xác tới từng âm vị) giới hạn khả năng điều khiển lời theo frame.
+    \item Chuẩn hoá protocol thực nghiệm khi mở rộng: chia train/validation theo bài hát
+      hoặc ca sĩ để tránh rò rỉ dữ liệu, cố định seed và số bước cập nhật, đánh giá trên
+      nhiều checkpoint thay vì chỉ dựa vào loss cuối, và kiểm tra quyền sử dụng bản ghi/ca
+      từ trước khi phổ biến dữ liệu hoặc audio sinh ra.
 \end{enumerate}
 
 % =============================================================
