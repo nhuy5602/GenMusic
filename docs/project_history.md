@@ -1979,6 +1979,24 @@ công giữa hai bước. `run_kaggle_distill.py` tìm dataset bằng cách qué
 dưới `/kaggle/input`, nên nhận trực tiếp latent dataset đã precompute từ kernel khác qua
 `kernel_sources` mà không cần viết launcher mới hay upload lại dataset.
 
+**Kết quả `kl_weight=0,3` — vượt ngưỡng tối ưu, KHÔNG tốt hơn**: training hoàn tất không lỗi, nhưng
+`avg_recon` mỗi epoch (1,38; 1,41; 1,34) cao hơn rõ rệt so với `kl_weight=0,05`/`0,15` (đều
+$\approx1{,}24$) — tín hiệu cảnh báo sớm về đánh đổi. Xác nhận trên audio thật:
+
+| | `kl_weight=0,15` | `kl_weight=0,3` |
+|---|---|---|
+| `sigma_mean` | 0,245–0,273 | 0,34–0,37 (tiếp tục tăng) |
+| `mu` pairwise distance | 0,84–0,91 | 0,81–0,88 (vẫn ổn, không collapse) |
+| `pitch_std_semitones` (20s crop) | **6,01** | **3,72 (giảm!)** |
+
+`sigma` tiếp tục tiến gần N(0,1) hơn, nhưng `pitch_std` **giảm** thay vì tăng — đúng hiện tượng
+over-regularization kinh điển của VAE (Rivera 2023: "large values tend to over-regularize the
+latents, degrading reconstruction quality"). **Kết luận: `kl_weight=0,15` là điểm tốt nhất trong
+các giá trị đã thử** ($10^{-4}\to0{,}05\to0{,}15\to0{,}3$), không phải giá trị lớn nhất. Encoder
+đang dùng cho job precompute+train-self hiện tại đã là checkpoint `kl_weight=0,15` này — không cần
+đổi. Bài học: tăng `kl_weight` không đơn điệu cải thiện chất lượng — cần dò từng bước và đo lại
+bằng audio thật ở mỗi bước, không giả định "tăng thêm luôn tốt hơn".
+
 ---
 
 ## 5. Kết luận và hướng phát triển

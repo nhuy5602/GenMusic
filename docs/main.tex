@@ -1053,13 +1053,20 @@ kiểm chứng (sẽ tái tạo lại đúng vấn đề KL vanishing ban đầu
 
 Vì \texttt{avg\_recon} gần như không đổi qua các lần continuation ($1{,}239\to1{,}242$) trong khi
 $\sigma$/\texttt{pitch\_std} vẫn tăng, đã đẩy tiếp một bước \texttt{kl\_weight}$=0{,}3$ (resume từ
-checkpoint $0{,}15$) — chưa tới điểm đánh đổi có hại. Một nhận xét bên ngoài khác cho rằng tỷ lệ nén
+checkpoint $0{,}15$) để dò xem còn dư địa hay không. Một nhận xét bên ngoài khác cho rằng tỷ lệ nén
 $5$Hz "không đủ băng thông giữ phụ âm tiếng Việt" — điểm sai: đây là tỷ lệ nén \emph{thật} của chính
 DiffRhythm2 (teacher), và DiffRhythm2 tạo được nhạc có lời rõ ở đúng tỷ lệ này, nên vấn đề nhiều khả
 năng nằm ở chất lượng encoder tự train (thiếu adversarial loss, không đồng huấn luyện với decoder),
 không phải giới hạn thông tin của bản thân 5Hz. Điểm đúng: \texttt{pitch\_std} đo khả năng VAE tái
 tạo âm thanh, không đo khả năng CFM/DiT sinh lời từ text điều kiện — hai năng lực khác nhau, kiểm
-chứng thật cần mẫu CFM sinh ra. Xem \texttt{docs/project\_history.md} \S4.34.
+chứng thật cần mẫu CFM sinh ra.
+
+\textbf{Kết quả: đã vượt ngưỡng tối ưu.} $\sigma_{\text{mean}}$ tiếp tục tăng ($0{,}34$--$0{,}37$),
+nhưng \texttt{pitch\_std\_semitones} \textbf{giảm} xuống $3{,}72$ (từ $6{,}01$ ở
+\texttt{kl\_weight}$=0{,}15$) — đúng hiện tượng over-regularization kinh điển của VAE. \textbf{Kết
+luận: \texttt{kl\_weight}$=0{,}15$ là điểm tốt nhất trong các giá trị đã thử}
+($10^{-4}\to0{,}05\to0{,}15\to0{,}3$), không phải giá trị lớn nhất — checkpoint đang dùng cho bước
+CFM training tiếp theo chính là checkpoint này. Xem \texttt{docs/project\_history.md} \S4.34.
 
 \section{DiffRhythm2 Distillation}
 \label{sec:distillation_chapter}

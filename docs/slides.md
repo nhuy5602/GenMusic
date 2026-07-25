@@ -227,9 +227,24 @@ Verify từng bước trước khi chạy full: local (eval xác định, train 
 
 ## Đang tiếp tục đẩy giới hạn + tự động hoá pipeline
 
-- `avg_recon` không đổi qua các lần continuation (1,239→1,242) trong khi σ/pitch_std vẫn tăng → còn dư địa. Đang train tiếp `kl_weight=0,3` (resume từ checkpoint 0,15).
+- `avg_recon` không đổi qua các lần continuation (1,239→1,242) trong khi σ/pitch_std vẫn tăng → thử tiếp `kl_weight=0,3` (resume từ checkpoint 0,15) để dò dư địa.
 - Phản biện nhận xét "5Hz không đủ băng thông giữ phụ âm": tỷ lệ nén này là của chính DiffRhythm2 (teacher) — nếu đúng vậy thì DiffRhythm2 đã không hoạt động. Vấn đề nhiều khả năng ở chất lượng encoder tự train, không phải giới hạn 5Hz. Điểm đúng: độ rõ lời là việc của CFM/DiT (text-conditioning), không phải VAE — cần kiểm chứng bằng mẫu CFM sinh ra, không phải encode-decode round-trip.
 - **Tự động hoá staged pipeline**: script polling nền tự launch `train-distill` (25 epoch, `alpha_feature=0,8`) ngay khi job precompute+train-self COMPLETE — không cần can thiệp thủ công giữa các bước.
+
+---
+
+## `kl_weight=0,3` — đã vượt ngưỡng tối ưu
+
+| | `kl_weight=0,15` | `kl_weight=0,3` |
+|---|---|---|
+| σ_mean | 0,245–0,273 | 0,34–0,37 (tiếp tục tăng) |
+| μ distance (phân biệt bài) | 0,84–0,91 | 0,81–0,88 (vẫn ổn) |
+| pitch_std (20s) | **6,01** | **3,72 (giảm!)** |
+
+- σ tiếp tục tăng nhưng `pitch_std` **giảm** — over-regularization kinh điển của VAE, không phải lỗi.
+- **Kết luận: `kl_weight=0,15` là điểm tốt nhất** trong các giá trị đã thử (1e-4→0,05→0,15→0,3), không phải giá trị lớn nhất.
+- Checkpoint đang dùng cho CFM training hiện tại chính là `kl_weight=0,15` — không cần đổi.
+- Bài học: tăng regularization không đơn điệu cải thiện chất lượng — phải đo lại bằng audio thật ở mỗi bước.
 
 ---
 
