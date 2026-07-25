@@ -434,11 +434,17 @@ class KnowledgeDistillationTrainer:
             teacher_velocity = _resample_time_dimension(teacher_velocity, seq_len)  # (B, seq_len, 100)
         return teacher_velocity
 
-    def train_epoch(self, dataloader) -> list[dict[str, float | None]]:
+    def train_epoch(self, dataloader, *, log_every_steps: int = 100, global_step: int = 0) -> list[dict[str, float | None]]:
         """Returns per-step {"loss": total, "loss_gt": ground-truth CFM component,
         "loss_velocity": teacher-matching component or None} -- kept separate (not
         just the blended total) so distilled vs. non-distilled runs can be compared
-        on the same ground-truth-loss axis. See docs/project_history.md."""
+        on the same ground-truth-loss axis. See docs/project_history.md.
+
+        log_every_steps prints a running loss every N steps -- distillation used to
+        only print once per epoch, indistinguishable from a hang on a large dataset
+        with a long epoch; global_step lets the caller keep a step count across
+        epochs so the log matches the training curve continuously rather than
+        resetting every epoch."""
         self.student.train()
         epoch_losses = []
 
@@ -584,6 +590,11 @@ class KnowledgeDistillationTrainer:
                 "loss_repa": float(loss_repa.detach().cpu()) if loss_repa is not None else None,
             })
 
+            global_step += 1
+            if log_every_steps > 0 and global_step % log_every_steps == 0:
+                vram_note = f" peak_vram_gb={torch.cuda.max_memory_allocated(self.device) / 1e9:.2f}" if str(self.device).startswith("cuda") else ""
+                print(f"step={global_step} loss={epoch_losses[-1]['loss']:.6f} loss_gt={epoch_losses[-1]['loss_gt']:.6f} loss_velocity={epoch_losses[-1]['loss_velocity']}{vram_note}", flush=True)
+
         return epoch_losses
 
 
@@ -606,6 +617,7 @@ def run_distillation_training(
     beta_repa: float = 0.0,
     lambda_vocal: float = 1.0,
     max_records: int | None = None,
+    log_every_steps: int = 100,
 ) -> dict[str, Any]:
     torch, _, _, DataLoaderClass = _torch()
 
@@ -691,8 +703,10 @@ def run_distillation_training(
     start_time = time.perf_counter()
     losses = []
     loss_curve = []
+    global_step = 0
     for epoch in range(epochs):
-        epoch_losses = trainer.train_epoch(dataloader)
+        epoch_losses = trainer.train_epoch(dataloader, log_every_steps=log_every_steps, global_step=global_step)
+        global_step += len(epoch_losses)
         losses.extend(epoch_losses)
         # Variable-length lyric batches make PyTorch's CUDA allocator create many
         # differently-sized blocks; reserved-but-unallocated fragmentation grows
