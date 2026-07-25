@@ -84,18 +84,30 @@ try:
     )
     if not source_dataset_dir:
         raise RuntimeError("Could not find the source code dataset directory.")
-    source_root = Path("/kaggle/working/GenMusic")
-    source_zip = next(source_dataset_dir.glob("genmusic_vn_source.zip"), None)
-    if source_zip:
-        # Kaggle sometimes auto-extracts an uploaded .zip into the dataset dir and
-        # sometimes doesn't (observed to depend on whether other sibling files, e.g.
-        # a resume checkpoint, are uploaded alongside it) -- extract explicitly
-        # instead of relying on that undocumented, inconsistent behavior.
+    # Kaggle's auto-extraction of an uploaded .zip is inconsistent: with a single
+    # file in the dataset it flattens into the dataset root, but with a sibling
+    # file present (e.g. a resume checkpoint uploaded alongside it) it nests the
+    # extracted contents under a subfolder named after the zip instead -- so
+    # locate cli.py directly (wherever it actually landed) rather than assuming
+    # a fixed path, extracting explicitly only if no auto-extraction happened at all.
+    cli_py = next(source_dataset_dir.rglob("cli.py"), None)
+    if not cli_py:
+        source_zip = next(source_dataset_dir.glob("genmusic_vn_source.zip"), None)
+        if not source_zip:
+            raise RuntimeError(f"Could not find cli.py or genmusic_vn_source.zip under {{source_dataset_dir}}")
         import zipfile
+        extract_dir = Path("/kaggle/working/_extracted_source")
         with zipfile.ZipFile(source_zip) as archive:
-            archive.extractall(source_root)
-    else:
-        shutil.copytree(source_dataset_dir, source_root, dirs_exist_ok=True)
+            archive.extractall(extract_dir)
+        cli_py = next(extract_dir.rglob("cli.py"), None)
+        if not cli_py:
+            raise RuntimeError("cli.py not found even after explicit extraction.")
+    # /kaggle/input is read-only -- copy to a writable location regardless of
+    # where cli.py actually landed, since later steps write into source_root
+    # (extracting DiffRhythm2-main into it).
+    source_root = Path("/kaggle/working/GenMusic")
+    shutil.copytree(cli_py.parent, source_root, dirs_exist_ok=True)
+    print(f"Using source root: {{source_root}}")
 
     resume_checkpoint_path = next(source_dataset_dir.glob("resume_encoder.pt"), None)
     if resume_checkpoint_path:
