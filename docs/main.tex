@@ -217,23 +217,12 @@ Mục tiêu cốt lõi của đề tài là xây dựng hệ thống có khả n
 \section{Đóng góp đề tài}
 \label{section:scope}
 
-Nghiên cứu tập trung trọng tâm vào thành phần giọng hát tiếng Việt, lấy biểu diễn phổ âm thanh giọng hát làm đầu ra trực tiếp của mô hình sinh. Các đóng góp chính của đề tài bao gồm:
-\begin{itemize}
-    \item Xây dựng hệ thống quy trình tự động tiền xử lý dữ liệu âm thanh thô.
-    \item Triển khai và huấn luyện mạng nơ-ron để dự đoán biểu diễn phổ giọng hát dựa trên kỹ thuật chưng cất tri thức.
-    \item Đánh giá thực nghiệm hiệu năng hệ thống qua các chỉ số kỹ thuật và chất lượng cảm tính.
-\end{itemize}
+Nghiên cứu tập trung trọng tâm vào thành phần giọng hát tiếng Việt, lấy biểu diễn phổ âm thanh giọng hát làm đầu ra trực tiếp của mô hình sinh. Đóng góp chính của đề tài gồm ba phần: xây dựng một quy trình tự động tiền xử lý dữ liệu âm thanh thô; triển khai và huấn luyện mạng nơ-ron dự đoán biểu diễn phổ giọng hát dựa trên kỹ thuật chưng cất tri thức; và đánh giá thực nghiệm hiệu năng hệ thống qua các chỉ số kỹ thuật cùng chất lượng cảm tính.
 
 \section{Bố cục báo cáo}
 \label{section:report-structure}
 
-Nội dung báo cáo được cấu trúc thành các chương như sau:
-\begin{itemize}
-    \item \textbf{Chương 2 -- Cơ sở lý thuyết:} Trình bày tổng quan các nghiên cứu tiền đề và nền tảng lý thuyết cốt lõi về mô hình sinh âm thanh, cơ chế khớp dòng chảy, kiến trúc mạng nơ-ron, phương pháp chưng cất tri thức và bộ giải mã âm thanh.
-    \item \textbf{Chương 3 -- Thiết kế và xây dựng hệ thống:} Mô tả chi tiết kiến trúc tổng quan của hệ thống đường ống dữ liệu, quy trình tiền xử lý, thiết kế mạng sinh giọng hát, cơ chế huấn luyện và giải pháp chưng cất đặc trưng thích ứng.
-    \item \textbf{Chương 4 -- Thực nghiệm và đánh giá kết quả:} Trình bày thiết lập môi trường, nguồn dữ liệu, các chỉ số đánh giá kỹ thuật, kết quả thử nghiệm tích hợp bộ giải mã âm thanh, đánh giá hệ thống đầu-cuối và hiệu quả của phương pháp chưng cất tri thức.
-    \item \textbf{Chương 5 -- Kết luận và hướng phát triển:} Tổng kết các kết quả đạt được và đề xuất định hướng nghiên cứu tiếp theo nhằm nâng cao chất lượng hệ thống.
-\end{itemize}
+Nội dung báo cáo được cấu trúc thành năm chương. Chương 2 trình bày tổng quan các nghiên cứu tiền đề và nền tảng lý thuyết cốt lõi về mô hình sinh âm thanh, cơ chế khớp dòng chảy, kiến trúc mạng nơ-ron, phương pháp chưng cất tri thức và bộ giải mã âm thanh. Chương 3 mô tả chi tiết kiến trúc tổng quan của hệ thống, quy trình tiền xử lý, thiết kế mạng sinh giọng hát, cơ chế huấn luyện và giải pháp chưng cất đặc trưng thích ứng. Chương 4 trình bày thiết lập thực nghiệm, nguồn dữ liệu, các chỉ số đánh giá, kết quả của từng thí nghiệm và thảo luận theo câu hỏi nghiên cứu. Chương 5 tổng kết các kết quả đạt được và đề xuất định hướng nghiên cứu tiếp theo.
 
 
 % =============================================================
@@ -318,7 +307,7 @@ trong đó $p_i$ đại diện cho một đơn vị âm vị và $L$ là độ d
 
 
 
-Tuy nhiên, các âm vị đơn lẻ trong chuỗi mới chỉ là các đặc trưng tĩnh, chưa thể hiện được sự biến thiên liên tục và ảnh hưởng lẫn nhau của các âm tiết đứng cạnh nhau khi hát. Để giải quyết vấn đề này, đề tài sử dụng mô hình ngôn ngữ tiền huấn luyện quy mô lớn \texttt{XPhoneBERT} \cite{xphonebert}. Là một mô hình Masked Language Model hoạt động ở cấp độ âm vị và được tối ưu hóa cho các ngôn ngữ đơn âm tiết, đa thanh điệu như tiếng Việt, mô hình mã hóa đầu vào thành trạng thái ẩn, tích hợp chặt chẽ đặc trưng phát âm ngữ cảnh của toàn bộ câu hát, cung cấp ràng buộc về phát âm để mô hình sinh ở các giai đoạn sau thực hiện căn chỉnh thời gian và tái tạo tiếng hát tròn vành rõ chữ.
+Tuy nhiên, các âm vị đơn lẻ trong chuỗi mới chỉ là các đặc trưng tĩnh, chưa thể hiện được sự biến thiên liên tục và ảnh hưởng lẫn nhau của các âm tiết đứng cạnh nhau khi hát. Để giải quyết vấn đề này, đề tài sử dụng mô hình ngôn ngữ tiền huấn luyện quy mô lớn XPhoneBERT \cite{xphonebert}. Là một mô hình Masked Language Model hoạt động ở cấp độ âm vị và được tối ưu hóa cho các ngôn ngữ đơn âm tiết, đa thanh điệu như tiếng Việt, mô hình mã hóa đầu vào thành trạng thái ẩn, tích hợp chặt chẽ đặc trưng phát âm ngữ cảnh của toàn bộ câu hát, cung cấp ràng buộc về phát âm để mô hình sinh ở các giai đoạn sau thực hiện căn chỉnh thời gian và tái tạo tiếng hát tròn vành rõ chữ.
 
 \section{Biểu diễn phong cách âm nhạc với MuQ-MuLan}
 
@@ -363,13 +352,13 @@ Nghiệm tối ưu của mạng chính là kỳ vọng có điều kiện $v^*(z
 \section{Mô hình sinh nhạc DiffRhythm 2}
 \label{sec:diffrhythm2_framework}
 
-\texttt{DiffRhythm 2} là hệ thống end-to-end sinh bài hát đầy đủ cấu trúc (gồm cả giọng hát và nhạc đệm) có độ dài lên tới 210 giây từ ca từ và mô tả phong cách \cite{diffrhythm2}. Hệ thống áp dụng kiến trúc bán tự hồi quy dựa trên cơ chế khớp dòng khối (\textbf{Block Flow Matching - BFM}) \cite{diffrhythm2}. Chuỗi biểu diễn ẩn (latent) được chia thành các khối có độ dài cố định $b=10$ (tương đương 2 giây âm thanh ở tần số latent 5~Hz). Trong nội bộ từng khối, các vị trí được sinh song song không tự hồi quy (NAR) bằng Flow Matching; giữa các khối, mối quan hệ nhân quả được bảo toàn qua attention mask, kết hợp tối ưu khả năng xử lý song song với việc duy trì ngữ cảnh dài hạn \cite{flowmatching, diffrhythm2}.
+DiffRhythm 2 là hệ thống end-to-end sinh bài hát đầy đủ cấu trúc (gồm cả giọng hát và nhạc đệm) có độ dài lên tới 210 giây từ ca từ và mô tả phong cách \cite{diffrhythm2}. Hệ thống áp dụng kiến trúc bán tự hồi quy dựa trên cơ chế khớp dòng khối (\textbf{Block Flow Matching - BFM}) \cite{diffrhythm2}. Chuỗi biểu diễn ẩn (latent) được chia thành các khối có độ dài cố định $b=10$ (tương đương 2 giây âm thanh ở tần số latent 5~Hz). Trong nội bộ từng khối, các vị trí được sinh song song không tự hồi quy (NAR) bằng Flow Matching; giữa các khối, mối quan hệ nhân quả được bảo toàn qua attention mask, kết hợp tối ưu khả năng xử lý song song với việc duy trì ngữ cảnh dài hạn \cite{flowmatching, diffrhythm2}.
 
-Để giảm chiều dài chuỗi đầu vào cho Diffusion Transformer, \texttt{DiffRhythm 2} sử dụng một bộ Music VAE hoạt động ở tần số latent cực thấp (5~Hz) \cite{diffrhythm2}. Bộ mã hóa nhận âm thanh đầu vào 24~kHz và bộ giải mã tái tạo âm thanh ở tần số 48~kHz, đạt tỷ lệ nén lần lượt là 4.800 và 9.600 lần \cite{diffrhythm2}. Bộ giải mã tích hợp một khối Transformer bổ trợ cùng backbone BigVGAN \cite{bigvgan}. Toàn bộ Music VAE được tối ưu hóa bằng tổ hợp mel loss đa thang đo và STFT loss đa độ phân giải nhằm giữ nguyên vẹn thông tin của cả giọng hát lẫn nhạc đệm \cite{diffrhythm2}.
+Để giảm chiều dài chuỗi đầu vào cho Diffusion Transformer, DiffRhythm 2 sử dụng một bộ Music VAE hoạt động ở tần số latent cực thấp (5~Hz) \cite{diffrhythm2}. Bộ mã hóa nhận âm thanh đầu vào 24~kHz và bộ giải mã tái tạo âm thanh ở tần số 48~kHz, đạt tỷ lệ nén lần lượt là 4.800 và 9.600 lần \cite{diffrhythm2}. Bộ giải mã tích hợp một khối Transformer bổ trợ cùng backbone BigVGAN \cite{bigvgan}. Toàn bộ Music VAE được tối ưu hóa bằng tổ hợp mel loss đa thang đo và STFT loss đa độ phân giải nhằm giữ nguyên vẹn thông tin của cả giọng hát lẫn nhạc đệm \cite{diffrhythm2}.
 
 Mô hình sinh chính của hệ thống là một Diffusion Transformer xấp xỉ 1 tỷ tham số \cite{dit, diffrhythm2}. Khi dự đoán khối thứ $i$, đầu vào bao gồm latent nhiễu của khối hiện tại $z_t^i$ ($t \sim \mathcal{U}(0,1)$), các khối sạch lịch sử $z^{<i}$ (được gán timestep cố định $1.0$ để phân biệt), cùng chuỗi ca từ và đặc trưng phong cách từ MuQ-MuLan \cite{muq, diffrhythm2}. Công trình cũng giới thiệu hàm mất mát **Stochastic Block REPA** nhằm căn chỉnh biểu diễn ẩn của mô hình sinh với đặc trưng tự giám sát (SSL) toàn cục từ một tập con các khối được lấy mẫu ngẫu nhiên \cite{diffrhythm2}. Sau giai đoạn tiền huấn luyện, mô hình được tinh chỉnh bằng kỹ thuật tối ưu hóa ưu tiên cặp chéo (\textbf{Cross-Pair Preference Optimization - CPPO}) để cân bằng đa mục tiêu giữa tính nhạc, độ khớp lời và chất lượng âm thanh \cite{dpo, diffrhythm2}. Khi suy luận, cấu trúc khối cho phép áp dụng KV cache và FlexAttention, đạt hệ số thời gian thực (RTF) khoảng 0.213 trên cấu hình thử nghiệm của tác giả \cite{diffrhythm2}.
 
-Trong khuôn khổ đề tài này, \texttt{DiffRhythm 2} đóng vai trò là một mô hình Teacher đã được đóng băng tham số. Một mô hình con sẽ được học tín hiệu chuyển giao là trường vận tốc (velocity), bắt chước hướng di chuyển tương tự như trường vector của mô hình Teacher.
+Trong khuôn khổ đề tài này, DiffRhythm 2 đóng vai trò là một mô hình Teacher đã được đóng băng tham số. Một mô hình con sẽ được học tín hiệu chuyển giao là trường vận tốc (velocity), bắt chước hướng di chuyển tương tự như trường vector của mô hình Teacher.
 
 
 % =============================================================
@@ -422,11 +411,11 @@ trong đó $y_i$ là ca từ có mốc thời gian, $a_i^{\mathrm{voc}}$ là ph�
  x_1=\log\!\left(\exp(x_1^{\mathrm{voc}})+\exp(x_1^{\mathrm{acc}})\right)
  \label{eq:reconstruct_full_mix}
 \end{equation}
-(áp dụng trên giá trị mel đã denormalize; xem \texttt{reconstruct\_full\_mix} trong \texttt{text\_to\_music\_diffusion.py}). Hệ thống cần học trường velocity:
+(áp dụng trên giá trị mel đã denormalize). Hệ thống cần học trường velocity:
 \begin{equation}
  v_\theta:\;(x_t,t,l,s)\mapsto \hat{u}_t\in\mathbb{R}^{F\times T},
 \end{equation}
-để biến nhiễu Gaussian thành mel của **hỗn hợp cả bài** phù hợp điều kiện lời và phong cách. Trong cấu hình student, $F=100$ và mỗi đoạn huấn luyện có $T=128$ frames (mặc định hiện tại là 384, xem \texttt{frames\_per\_chunk}), tương ứng khoảng 1,36--4,1 giây ở 24~kHz với hop length 256.
+để biến nhiễu Gaussian thành mel của **hỗn hợp cả bài** phù hợp điều kiện lời và phong cách. Trong cấu hình student, $F=100$ và mỗi đoạn huấn luyện có $T=128$ khung mel (mặc định hiện tại là $384$), tương ứng khoảng 1,36--4,1 giây ở 24~kHz với hop length 256.
 
 \textbf{Chú ý quan trọng về vai trò của backing}: $x_1^{\mathrm{acc}}$ (backing) chỉ được dùng để \emph{xây dựng mục tiêu huấn luyện} $x_1$ qua công thức \eqref{eq:reconstruct_full_mix} — nó **không** còn là một tensor điều kiện đưa vào mạng $v_\theta$ (một số phiên bản kiến trúc trước đây của dự án có nhánh này, đã bị loại bỏ, xem \S\ref{sec:microdit_architecture} tiếp theo). Do đó model phải học sinh ra cả bài (giọng hát và nhạc đệm) từ trạng thái không điều kiện theo backing, chỉ dựa vào ca từ và style embedding toàn cục. Để tránh model "lãng quên" tín hiệu giọng hát (yếu hơn, thưa hơn nhạc đệm) khi tối ưu trực tiếp trên hỗn hợp, một đầu ra phụ trợ dự đoán riêng velocity của vocal (\emph{vocal auxiliary head}) được huấn luyện đồng thời — chi tiết ở \S\ref{sec:microdit_architecture}.
 
@@ -463,13 +452,13 @@ tra độc lập.
 \node[process] (whisper) at (-2.6,-2.8) {Whisper: transcript và segment timestamps};
 \node[process] (mel) at (1.5,-2.8) {Vocos feature extractor: mel 100 bins};
 \node[artifact] (records) at (-0.5,-4.25)
-    {\texttt{records.jsonl} + vocal/backing mel + style embedding};
+    {Bản ghi hợp nhất + vocal/backing mel + style embedding};
 \node[artifact] (validation) at (-0.5,-5.55)
     {Kiểm tra tensor, metadata và lấy crop đồng bộ};
 \node[model] (self) at (-3.0,-7.0)
-    {MicroDiT + CFM\\\texttt{train-self}};
+    {MicroDiT + CFM\\(tự huấn luyện)};
 \node[model] (distill) at (2.0,-7.0)
-    {DiffRhythm2 teacher $\rightarrow$ MicroDiT\\\texttt{train-distill}};
+    {DiffRhythm2 teacher $\rightarrow$ MicroDiT\\(chưng cất)};
 \node[optional] (kaggle) at (5.2,-5.55)
     {Kaggle backend tùy chọn\\GPU train/inference};
 \node[process] (sample) at (-0.5,-8.45)
@@ -508,8 +497,8 @@ x_1^{\mathrm{acc}}, l, s)$ — nhưng chỉ $l$ (lời) và $s$ (style) được
 làm điều kiện; $x_1^{\mathrm{acc}}$ chỉ tham gia lúc xây dựng mục tiêu, không phải một tensor
 điều kiện của model.
 
-Trong lớp học trường vận tốc, sau validation, cùng một dataset hỗ trợ hai nhánh. Nhánh \texttt{train-self} tối ưu
-MicroDiT trực tiếp bằng CFM ground-truth velocity. Nhánh \texttt{train-distill} gọi
+Trong lớp học trường vận tốc, sau validation, cùng một dataset hỗ trợ hai nhánh. Nhánh tự huấn luyện tối ưu
+MicroDiT trực tiếp bằng CFM ground-truth velocity. Nhánh chưng cất gọi
 teacher DiffRhythm2 tại cùng trạng thái nhiễu và timestep, sau đó ánh xạ đầu ra teacher
 từ 64 lên 100 mel bins để tạo mục tiêu bổ sung. Hai nhánh dùng chung kiến trúc student
 và chỉ khác hàm mất mát, nhờ đó có thể so sánh baseline với distilled student mà không
@@ -521,15 +510,17 @@ thực thi tùy chọn; nó không thay đổi kiến trúc mô hình hoặc đ�
 phân lớp này giúp cô lập lỗi: có thể kiểm tra riêng record, vòng lặp vocoder, CFM loss,
 teacher contract và waveform đầu ra trước khi đánh giá chất lượng âm nhạc tổng thể.
 
-MicroDiT (\texttt{src/models/dit\_transformer.py}) là backbone \textbf{duy nhất} học trường
-vận tốc trong hệ thống — một backbone thay thế, \texttt{NativeDiTStudent}, từng tồn tại song
-song nhưng đã được gộp lại vào MicroDiT sau khi so sánh thực nghiệm (\S\ref{sec:native_dit}).
-Mô hình nhận noisy mel (hoặc noisy latent, \S\ref{sec:latent_space}) tại thời điểm $t$ cùng
+MicroDiT là backbone \textbf{duy nhất} học trường
+vận tốc trong hệ thống. Một biến thể thử nghiệm khác (ca từ và mel dùng chung một chuỗi
+self-attention thay vì cross-attention riêng, âm vị nhúng bằng một bảng embedding học
+từ đầu thay vì XPhoneBERT pretrained) không cải thiện $\mathcal{L}_{\mathrm{gt}}$ nhưng chậm hơn
+$\approx4{,}4$ lần mỗi step, nên không được giữ lại trong kiến trúc cuối cùng. Mô hình nhận
+noisy mel (hoặc noisy latent, \S\ref{sec:latent_space}) tại thời điểm $t$ cùng
 hai nhóm điều kiện:
 biểu diễn ca từ (qua cross-attention) và neo phong cách toàn cục (cộng trực tiếp) —
 \textbf{không có} tensor backing nào được đưa vào model, dù backing vẫn quyết định mục
 tiêu huấn luyện (công thức \eqref{eq:reconstruct_full_mix}). Hình~\ref{fig:microdit_architecture}
-mô tả đúng thứ tự các phép biến đổi trong hàm \texttt{forward}.
+mô tả đúng thứ tự các phép biến đổi trong lượt truyền tiến.
 
 \begin{figure}[H]
 \centering
@@ -551,26 +542,26 @@ mô tả đúng thứ tự các phép biến đổi trong hàm \texttt{forward}.
 \node[input] (style) at (5.1,0) {MuQ-MuLan style\\$B\times512$};
 
 \node[encoder] (g2p) at (-5.1,-1.4)
-    {G2P (\texttt{text2phonemesequence})\\ca từ $\rightarrow$ âm vị IPA};
+    {Bộ chuyển tự vị--âm vị (G2P)\\ca từ $\rightarrow$ âm vị IPA};
 \node[encoder] (xphonebert) at (-5.1,-2.9)
     {XPhoneBERT đóng băng + MLP\\$E_l\in\mathbb{R}^{B\times L\times D}$};
 \node[encoder] (melready) at (-1.2,-2.9)
-    {Linear $100\rightarrow D$\\$B\times T\times D$};
+    {Chiếu tuyến tính $100\rightarrow D$\\$B\times T\times D$};
 \node[encoder] (tembed) at (1.7,-2.9)
     {Sinusoidal embedding\\MLP $D\rightarrow D$};
 \node[encoder] (sembed) at (5.1,-2.9)
-    {AudioStyleEncoder + MLP\\$512\rightarrow D\rightarrow D$};
+    {Bộ mã hoá phong cách + MLP\\$512\rightarrow D\rightarrow D$};
 
 \node[core] (merge) at (0,-4.45)
-    {InputEmbedding\\$x_{\mathrm{proj}}+\operatorname{Expand}(E_t)+\operatorname{Expand}(E_s)$, chiếu lại $D\rightarrow D$};
+    {Khối nhúng đầu vào\\$x_{\mathrm{proj}}+\operatorname{Expand}(E_t)+\operatorname{Expand}(E_s)$, chiếu lại $D\rightarrow D$};
 \node[core] (blocks) at (0,-5.95)
-    {$K\times$ CrossAttentionDecoderLayer\\self-attn (mel, RoPE) + cross-attn (mel$\rightarrow$text) + FFN};
+    {$K\times$ khối Transformer\\self-attn (mel, RoPE) + cross-attn (mel$\rightarrow$text) + FFN};
 \node[core] (adaln) at (0,-7.35)
-    {AdaLayerNormZeroFinal\\scale/shift từ $c=E_t+E_s$};
+    {Chuẩn hoá thích ứng cuối\\scale/shift từ $c=E_t+E_s$};
 \node[output] (velocity) at (-2.2,-8.7)
-    {\texttt{proj\_out}: $D\rightarrow100$\\velocity cả bài $\hat{u}_t$};
+    {Chiếu tuyến tính $D\rightarrow100$\\velocity cả bài $\hat{u}_t$};
 \node[output] (vocalaux) at (2.2,-8.7)
-    {\texttt{vocal\_proj\_out}: $D\rightarrow100$\\velocity vocal (phụ trợ)};
+    {Chiếu tuyến tính phụ trợ $D\rightarrow100$\\velocity vocal (phụ trợ)};
 
 \draw[flow] (lyrics) -- (g2p);
 \draw[flow] (g2p) -- (xphonebert);
@@ -599,8 +590,8 @@ gồm 100 mel bins. Không có tensor backing nào được truyền vào model 
 kiến trúc trước đây của dự án).
 
 Đầu vào ngôn ngữ không phải tensor token đã chuẩn bị sẵn trong record: dataset lấy các
-lyric segment giao với crop, ghép thành một chuỗi ký tự, rồi \texttt{PretrainedPhonemeEncoder}
-tự chạy G2P và tokenize bên trong \texttt{forward}. Style prompt là vector 512 chiều đã
+lyric segment giao với crop, ghép thành một chuỗi ký tự, rồi bộ mã hoá âm vị tiền huấn luyện
+tự chạy G2P và tokenize bên trong lượt truyền tiến. Style prompt là vector 512 chiều đã
 được tính trước bởi MuQ-MuLan. Timestep là một số thực cho mỗi phần tử batch. Bảng
 \ref{tab:microdit_shapes} tổng hợp kích thước ở các điểm chính.
 
@@ -616,7 +607,7 @@ tự chạy G2P và tokenize bên trong \texttt{forward}. Style prompt là vecto
 Noisy mel $x_t$ & $B\times T\times100$ & Chiếu tuyến tính $100\rightarrow D$. \\
 Chuỗi âm vị (G2P) & $B\times L$ & Token id từ tokenizer XPhoneBERT. \\
 XPhoneBERT hidden state & $B\times L\times768$ & Encoder đóng băng. \\
-Text sau projection $E_l$ & $B\times L\times D$ & MLP trainable $768\rightarrow D\rightarrow D$ rồi một lớp self-attention trainable (\texttt{TextSelfAttentionLayer}); giữ nguyên chiều dài $L$ (không nội suy theo $T$, vì dùng cross-attention). \\
+Text sau projection $E_l$ & $B\times L\times D$ & MLP trainable $768\rightarrow D\rightarrow D$ rồi một lớp self-attention trainable riêng cho ca từ; giữ nguyên chiều dài $L$ (không nội suy theo $T$, vì dùng cross-attention). \\
 Time/style embedding & $B\times D$ & Mở rộng thành $B\times T\times D$, cộng trực tiếp vào mel đã chiếu. \\
 Hidden sequence & $B\times T\times D$ & $K$ block; self-attn trên $T$, cross-attn tới $L$. \\
 Velocity chính \& phụ trợ & $B\times T\times100$ (mỗi đầu) & Hai lớp Linear riêng từ cùng hidden state cuối. \\
@@ -626,27 +617,26 @@ Velocity chính \& phụ trợ & $B\times T\times100$ (mỗi đầu) & Hai lớp
 
 \subsection{Nhánh mã hóa ca từ}
 
-Ca từ được chuyển thành âm vị bằng \texttt{text2phonemesequence} (G2P tiếng Việt, có dấu
-thanh) trước khi tokenize bằng chính tokenizer của \texttt{vinai/xphonebert-base}
-\cite{xphonebert}. \texttt{PretrainedPhonemeEncoder} sau đó chạy chuỗi token qua
-XPhoneBERT — toàn bộ tham số của transformer này có \texttt{requires\_grad=False} và
-forward nằm trong \texttt{no\_grad} — trả hidden state $H_l\in\mathbb{R}^{B\times L\times768}$.
+Ca từ được chuyển thành âm vị bằng bộ chuyển tự vị--âm vị (G2P tiếng Việt, có dấu
+thanh) trước khi tokenize bằng chính tokenizer của XPhoneBERT
+\cite{xphonebert}. Bộ mã hoá âm vị tiền huấn luyện sau đó chạy chuỗi token qua
+XPhoneBERT — toàn bộ tham số của transformer này bị đóng băng, không tham gia lan
+truyền ngược — trả hidden state $H_l\in\mathbb{R}^{B\times L\times768}$.
 Hai lớp tuyến tính với SiLU ở giữa chiếu mỗi token về kích thước $D$:
 \begin{equation}
  E_l=W_{l,2}\,\operatorname{SiLU}(W_{l,1}H_l+b_{l,1})+b_{l,2}\in\mathbb{R}^{B\times L\times D}.
 \end{equation}
 Khác với thiết kế trước đây (nội suy $E_l$ theo trục $T$ để nối/cộng với mel), chuỗi
 $E_l$ được \textbf{giữ nguyên chiều dài $L$}. Trước khi dùng làm key/value cho cross-attention,
-$E_l$ đi qua \textbf{một lớp self-attention trainable} (\texttt{TextSelfAttentionLayer}
-— self-attention kiểu Llama + FFN, có mask padding của ca từ): XPhoneBERT đã đóng băng nên
+$E_l$ đi qua \textbf{một lớp self-attention trainable riêng cho ca từ}
+(self-attention kiểu Llama + FFN, có mask padding của ca từ): XPhoneBERT đã đóng băng nên
 không thể tự thích nghi với tác vụ hát cụ thể; lớp self-attention nhỏ này cho phép mô hình
 tinh chỉnh ngữ cảnh giữa các âm vị theo tác vụ, không cần học lại toàn bộ hiểu biết âm vị
-từ đầu trên ngân sách $\sim$250 bài (đúng lỗi mà kiến trúc \texttt{NativeDiTStudent}, đã bị
-gộp/loại bỏ — xem \S\ref{sec:native_dit} — từng mắc phải với \texttt{nn.Embedding} học từ
-đầu). Kết quả cuối cùng mới được đưa trực tiếp làm key/value cho lớp cross-attention trong
-mỗi transformer block (\S\ref{sec:crossattn_block}) — mel chỉ đóng vai trò query. Mã nguồn
-cũng tính \texttt{pooled\_text} (trung bình trên trục token, sau lớp self-attention) làm
-style fallback khi không có \texttt{style\_prompt}; trong huấn luyện chính, style
+từ đầu trên ngân sách $\sim$250 bài (đúng lỗi mà biến thể thử nghiệm học ca từ bằng
+một bảng embedding từ đầu từng mắc phải). Kết quả cuối cùng mới được đưa trực tiếp làm key/value cho lớp cross-attention trong
+mỗi transformer block (\S\ref{sec:crossattn_block}) — mel chỉ đóng vai trò query. Hệ thống
+cũng tính một vector trung bình trên trục token (sau lớp self-attention) làm
+style fallback khi không có style prompt; trong huấn luyện chính, style
 embedding thật luôn được truyền vào nên nhánh fallback không dùng tới.
 
 \subsection{Nhánh timestep và phong cách}
@@ -656,7 +646,7 @@ MLP hai lớp:
 \begin{equation}
  E_t=\operatorname{MLP}_{t}(\operatorname{SinCos}(t)).
 \end{equation}
-Style prompt $s\in\mathbb{R}^{512}$ đi qua \texttt{AudioStyleEncoder} và một MLP thứ
+Style prompt $s\in\mathbb{R}^{512}$ đi qua một bộ mã hoá phong cách và một MLP thứ
 hai:
 \begin{equation}
  E_s=\operatorname{MLP}_{s,2}
@@ -664,12 +654,12 @@ hai:
 \end{equation}
 Hai vector được cộng thành $c=E_t+E_s$ dùng cho adaptive normalization ở đầu ra, đồng thời
 mỗi vector còn được mở rộng trên $T$ frame và cộng trực tiếp vào mel đã chiếu ở
-\texttt{InputEmbedding} (không nối/concat). Điều kiện thời gian và phong cách vì vậy tác
+khối nhúng đầu vào (không nối/concat). Điều kiện thời gian và phong cách vì vậy tác
 động ở hai vị trí: ngay tại đầu vào transformer và tại phép chuẩn hóa cuối.
 
 \subsection{Khối hợp nhất điều kiện}
 
-Module \texttt{InputEmbedding} chiếu mel về $D$ chiều rồi cộng cùng time/style embedding
+Khối nhúng đầu vào chiếu mel về $D$ chiều rồi cộng cùng time/style embedding
 (đã mở rộng theo $T$):
 \begin{equation}
  H_0=\operatorname{Linear}_{D\rightarrow D}
@@ -682,8 +672,8 @@ transformer block, qua cross-attention.
 \subsection{Transformer backbone: self-attention trên mel, cross-attention tới ca từ}
 \label{sec:crossattn_block}
 
-Mỗi \texttt{CrossAttentionDecoderLayer} (Llama building blocks: \texttt{LlamaAttention},
-\texttt{LlamaMLP}, \texttt{LlamaRMSNorm}) gồm ba bước tuần tự, kiểu pre-norm:
+Mỗi khối Transformer (các khối xây dựng kiểu Llama: self-attention, MLP,
+RMSNorm) gồm ba bước tuần tự, kiểu pre-norm:
 \begin{enumerate}[label=(\alph*)]
  \item \textbf{Self-attention chỉ trên chuỗi mel} ($T$ vị trí, không có ca từ) — RoPE mã hóa
    thứ tự frame, không cần attention mask (mọi frame trong crop đều hợp lệ, không padding):
@@ -691,12 +681,12 @@ Mỗi \texttt{CrossAttentionDecoderLayer} (Llama building blocks: \texttt{LlamaA
     H'=H+\operatorname{SelfAttn}(\operatorname{RMSNorm}(H),\operatorname{RoPE}).
    \end{equation}
  \item \textbf{Cross-attention từ mel tới ca từ}: mel (đã qua self-attention) làm query,
-   $E_l$ làm key/value; \texttt{nn.MultiheadAttention} tiêu chuẩn (không có tương đương
-   trong \texttt{LlamaAttention}), padding của ca từ được mask:
+   $E_l$ làm key/value; cơ chế attention chuẩn nhiều đầu (không dùng RoPE, khác với
+   self-attention trên mel), padding của ca từ được mask:
    \begin{equation}
     H''=H'+\operatorname{CrossAttn}(\operatorname{RMSNorm}(H'),\,E_l,\,E_l,\,\text{mask}_{\mathrm{text}}).
    \end{equation}
- \item \textbf{Feed-forward} (SiLU, intermediate size $D\times\texttt{ff\_mult}$):
+ \item \textbf{Feed-forward} (SiLU, hệ số mở rộng $r$, kích thước trung gian $D\times r$):
    \begin{equation}
     H_{\mathrm{out}}=H''+\operatorname{MLP}(\operatorname{RMSNorm}(H'')).
    \end{equation}
@@ -708,7 +698,7 @@ self-attention — theo kết quả của SongGen (arXiv:2502.13128, FAD 1,73 so
 
 \subsection{Adaptive normalization và hai đầu dự đoán}
 
-Sau block cuối, \texttt{AdaLayerNormZeroFinal} dùng $c=E_t+E_s$ để sinh scale và shift:
+Sau block cuối, lớp chuẩn hoá thích ứng cuối dùng $c=E_t+E_s$ để sinh scale và shift:
 \begin{align}
  [\gamma,\beta]&=W_c\,\operatorname{SiLU}(c)+b_c,\\
  \widehat{H}&=\operatorname{LayerNorm}(H_K)\odot(1+\gamma)+\beta.
@@ -722,7 +712,7 @@ Từ cùng $\widehat{H}$, hai lớp Linear độc lập dự đoán hai velocity
  \hat{u}_t^{\mathrm{voc}}=\widehat{H}W_{\mathrm{out}}^{\mathrm{voc}}+b_{\mathrm{out}}^{\mathrm{voc}}
  \qquad\text{(velocity vocal — đầu phụ trợ, "Mixed Pro" theo SongGen)}.
 \end{equation}
-Đầu phụ trợ chỉ được tính khi caller yêu cầu (\texttt{return\_vocal\_aux=True}) và chỉ
+Đầu phụ trợ chỉ được tính khi được yêu cầu tường minh và chỉ
 dùng lúc huấn luyện (\S\ref{sec:cfm_training_loss}) — mục đích là tránh model "lãng quên"
 tín hiệu vocal (yếu, thưa hơn) khi tối ưu trực tiếp trên hỗn hợp cả bài.
 
@@ -739,7 +729,7 @@ Hidden dimension $D$ & 256 & 128 \\
 Số transformer layer $K$ & 4 & 2 \\
 Attention heads & 4 & 4 \\
 Hệ số FFN & 4 & 4 \\
-Text encoder & XPhoneBERT (\texttt{vinai/xphonebert-base}) + G2P, đóng băng & giống mặc định \\
+Text encoder & XPhoneBERT + G2P, đóng băng & giống mặc định \\
 Style input & MuQ-MuLan, 512 chiều & MuQ-MuLan, 512 chiều \\
 Đầu ra & 100-bin mel velocity (+ velocity vocal phụ trợ) & giống mặc định \\
 \bottomrule
@@ -751,7 +741,7 @@ Cấu hình mặc định ưu tiên khả năng biểu diễn, còn cấu hình 
 đầu vào--đầu ra: cả hai model vẫn nhận 100-bin mel, lyrics và style embedding, và đều dự
 đoán velocity 100 chiều tại từng frame.
 
-\subsection{Hàm mất mát CFM}
+\subsection{Hàm mất mát}
 \label{sec:cfm_training_loss}
 
 Với mỗi batch, thuật toán sinh $x_0\sim\mathcal{N}(0,I)$ cùng kích thước $x_1$ (công thức
@@ -761,8 +751,9 @@ từng mẫu:
  x_t&=(1-t)x_0+t x_1,\qquad u_t=x_1-x_0,\qquad \hat{u}_t=v_\theta(x_t,t,l,s).
 \end{align}
 Thay vì MSE trần, hàm mất mát kết hợp bốn thành phần để chống hiện tượng
-\emph{regression-to-the-mean}/"distributional averaging" đã quan sát được trong quá
-trình thực nghiệm (xem \texttt{docs/project\_history.md} \S4.11--4.13):
+\emph{regression-to-the-mean}/"distributional averaging" -- xu hướng model hội tụ về một
+mức năng lượng trung bình phẳng thay vì phân biệt đúng các đoạn có/không có tiếng hát,
+quan sát được khi chỉ dùng MSE trần ở các thử nghiệm ban đầu của đề tài:
 \begin{align}
  w &= 1+2\cdot\sigma\!\big(2(\bar{x}_1-Q_{0.55}(\bar{x}_1))\big) \quad\text{(trọng số theo năng lượng frame, chuẩn hoá về trung bình 1)},\\
  \mathcal{L}_{\mathrm{vel}} &= \operatorname{mean}\!\big[w\cdot(\hat{u}_t-u_t)^2\big],\\
@@ -772,72 +763,22 @@ trình thực nghiệm (xem \texttt{docs/project\_history.md} \S4.11--4.13):
  \mathcal{L}_{\mathrm{gt}} &= \mathcal{L}_{\mathrm{vel}}+0{,}15\,\mathcal{L}_{\mathrm{recon}}+0{,}05\,\mathcal{L}_{\Delta}.
  \label{eq:loss_gt}
 \end{align}
-Nếu \texttt{lambda\_vocal}$>0$, cùng công thức trọng-số-frame được áp lại cho đầu phụ trợ
+Nếu trọng số vocal-auxiliary $\lambda_{\mathrm{voc}}>0$, cùng công thức trọng-số-frame được áp lại cho đầu phụ trợ
 với mục tiêu $x_1^{\mathrm{voc}}-x_0$, cộng thêm vào loss theo trọng số đó. Khi có ca từ
 khác nhau trong cùng batch, một cặp lời "khớp/lệch" được tạo (mỗi mẫu đổi sang lời của một
 mẫu khác) và hai số hạng bổ sung được cộng vào: một \emph{contrastive hinge} phạt khi sai
 số dự đoán với lời khớp không thấp hơn hẳn sai số với lời lệch, và một số hạng
 \emph{sensitivity} phạt khi đổi lời không làm thay đổi đủ nhiều dự đoán (đo bằng RMS
-tương đối của hiệu hai velocity). Hai số hạng này cũng là cơ sở của cơ chế chọn checkpoint
-tốt nhất và dừng sớm (early stopping) mô tả ở cuối chương này. Toàn bộ tham số không đóng
-băng được tối ưu bằng
-AdamW, cùng EMA (decay $0{,}999$), warmup+cosine-decay learning rate, mixed precision
-(fp16 autocast trên CUDA) và gradient clipping (norm 1,0).
-
-\subsection{Chia validation, chọn checkpoint và dừng sớm}
-\label{sec:early_stopping_full}
-
-Trước khi train, các record hữu dụng được chia train/validation bằng hash quyết định
-của \texttt{sha256(seed:record\_id)} — không dùng module random, nên cách chia ổn định
-qua các lần resume/train lại. Tỉ lệ validation mặc định $5\%$, tối đa 128 record. Sau mỗi
-epoch, một checkpoint chỉ được coi là "tốt nhất" nếu \textbf{đồng thời}: (a) validation
-loss (đánh giá bằng trọng số EMA, seed cố định) giảm hơn một ngưỡng \texttt{min\_delta};
-\textbf{và} (b) chỉ số sensitivity (\S\ref{sec:cfm_training_loss}) không thấp hơn một sàn
-tối thiểu — một checkpoint cải thiện validation loss bằng cách lờ hẳn ca từ sẽ không qua
-được điều kiện (b). Việc train dừng sớm khi đã đạt tối thiểu \texttt{minimum\_epochs} (mặc
-định 8) \textbf{và} không cải thiện được checkpoint tốt nhất qua \texttt{early\_stopping\_patience}
-epoch liên tiếp (mặc định 4) — nghĩa là số epoch truyền vào chỉ là một mức trần, cơ chế
-này mới là thứ quyết định khi nào dừng thật.
+tương đối của hiệu hai velocity); cả hai số hạng đóng vai trò regularizer trong loss và
+là cơ sở của tiêu chí chọn checkpoint tốt nhất mô tả ở Chương~\ref{chapter:experiment}
+(\S\ref{sec:early_stopping_full}), cùng optimizer, learning-rate schedule và các
+hyperparameter huấn luyện cụ thể khác.
 
 \subsection{Suy luận và tổng hợp âm thanh}
 
-Suy luận bắt đầu bằng Gaussian noise $x_0$ có hình dạng $1\times F\times T$ ($F=100$ ở mel-space, $F=64$ ở latent-space, \S\ref{sec:latent_space}). Tại mỗi $t_k$, MicroDiT dự đoán velocity và Euler solver cập nhật trạng thái (mặc định 32 bước, có thể đổi qua \texttt{--steps}). Sau bước cuối, mel được giải mã trực tiếp bằng Vocos (hoặc bằng decoder BigVGAN thật nếu đang ở không gian latent). Nếu không tải được Vocos, hệ thống chuyển sang Griffin--Lim 64 vòng lặp và ghi rõ backend đã dùng.
+Suy luận bắt đầu bằng Gaussian noise $x_0$ có hình dạng $1\times F\times T$ ($F=100$ ở mel-space, $F=64$ ở latent-space, \S\ref{sec:latent_space}). Tại mỗi $t_k$, MicroDiT dự đoán velocity và Euler solver cập nhật trạng thái (mặc định 32 bước, có thể điều chỉnh). Sau bước cuối, mel được giải mã trực tiếp bằng Vocos (hoặc bằng decoder BigVGAN thật nếu đang ở không gian latent). Nếu không tải được Vocos, hệ thống chuyển sang Griffin--Lim 64 vòng lặp và ghi rõ backend đã dùng.
 
-Với bài dài hơn một crop, lời được chia theo segment và các đoạn mel được sinh tuần tự rồi ghép trên trục thời gian. Tham số \texttt{reference-dataset} và \texttt{reference-id} cho phép lấy style embedding thật từ một record đã tiền xử lý, thay vì fallback về vector text-pooled. Checkpoint loại các trọng số XPhoneBERT đã đóng băng vì chúng có thể tải lại từ model identifier, làm giảm mạnh kích thước tệp mà không thay đổi tham số đã học.
-
-\section{Một backbone đã bị gộp/loại bỏ: \texttt{NativeDiTStudent}}
-\label{sec:native_dit}
-
-Trong một giai đoạn của dự án, đã tồn tại song song một backbone thứ hai
-(\texttt{src/models/diffrhythm2\_native.py}, chọn qua \texttt{--architecture native\_dit},
-đã bị xoá khỏi mã nguồn hiện tại), port trực tiếp từ mã nguồn thật của DiffRhythm2 (có ghi
-nguồn, giấy phép Apache~2.0). Khác biệt cơ chế chính so với MicroDiT: ca từ và mel
-\textbf{chia sẻ một chuỗi self-attention duy nhất} thay vì cross-attention riêng, và chuỗi
-âm vị được nhúng bằng một \texttt{nn.Embedding} huấn luyện \textbf{từ đầu} (không dùng
-transformer XPhoneBERT pretrained) — hai lựa chọn thiết kế đối lập trực tiếp với MicroDiT.
-Backbone này chính là mô hình đã tạo ra kết quả latent-space đầu tiên nghe được là nhạc
-thật (\S\ref{sec:latent_space}, Thí nghiệm 4 ở Chương~\ref{chapter:experiment}).
-
-Sau khi so sánh thực nghiệm ở cùng kích thước/epoch (\texttt{docs/project\_history.md}
-\S4.19): kiến trúc nối-chuỗi này không cải thiện \texttt{loss\_gt} so với MicroDiT, nhưng
-chậm hơn $\approx4{,}4$ lần mỗi step — tự-attend trên toàn chuỗi $[\text{text};\text{audio}]$
-nối dài có chi phí bậc hai lớn hơn, và việc phải dùng một attention mask tường minh để che
-padding của ca từ trong một chuỗi hỗn hợp buộc PyTorch's SDPA rơi về kernel chậm hơn thay
-vì kernel flash-attention (MicroDiT's self-attention trên mel không cần mask, tận dụng được
-kernel nhanh nhất). Đồng thời, việc học embedding ca từ từ đầu bỏ lãng phí toàn bộ tri thức
-ngữ âm mà XPhoneBERT đã pretrain, và là một rủi ro overfit không cần thiết trên ngân sách
-$\sim$250 bài. \texttt{train-distill} cũng chưa từng hỗ trợ \texttt{native\_dit}.
-
-Dựa trên các bằng chứng này, backbone \texttt{NativeDiTStudent} đã được \textbf{gộp vào
-MicroDiT và xoá khỏi mã nguồn}: phần duy nhất thật sự đáng giữ lại từ nó — khả năng chạy
-trên không gian latent 64-chiều/5~Hz — hoá ra không cần một backbone riêng, vì MicroDiT đã
-đọc chiều mel một cách tổng quát từ \texttt{config.n\_mels} và chạy đúng trên latent\_mode
-không cần sửa gì. Phần thật sự mới được giữ lại là ý tưởng thêm một lớp self-attention nhỏ,
-trainable, riêng cho ca từ (\S\ref{sec:microdit_architecture}, \texttt{TextSelfAttentionLayer})
-— thay cho việc tự học toàn bộ biểu diễn ca từ từ đầu. Các số liệu thực nghiệm gắn với
-\texttt{NativeDiTStudent} ở \texttt{docs/project\_history.md} và Thí nghiệm 4 vẫn là ghi
-nhận trung thực về những gì đã thực sự chạy tại thời điểm đó — chúng mô tả một backbone
-không còn tồn tại trong mã nguồn hiện tại, không phải MicroDiT.
+Với bài dài hơn một crop, lời được chia theo segment và các đoạn mel được sinh tuần tự rồi ghép trên trục thời gian. Người dùng có thể chỉ định một bài tham chiếu đã tiền xử lý để lấy style embedding thật, thay vì fallback về vector text-pooled. Checkpoint loại các trọng số XPhoneBERT đã đóng băng vì chúng có thể tải lại từ mô hình gốc, làm giảm mạnh kích thước tệp mà không thay đổi tham số đã học.
 
 \section{Không gian latent thật của DiffRhythm2}
 \label{sec:latent_space}
@@ -851,83 +792,40 @@ không gian latent nén thật, độc lập với việc có chưng cất hay k
 \subsection{Kiến trúc encoder}
 \label{sec:latent_encoder_arch}
 
-DiffRhythm2 công bố \textbf{decoder} (BigVGAN, \texttt{decoder.bin}/\texttt{decoder.json}
-trên HuggingFace) nhưng không công bố encoder tương ứng. Thay vì train lại một VAE đầy đủ
-đúng-như-paper (có discriminator đối kháng, quá tốn/rủi ro cho ngân sách của đề tài),
-phương pháp giữ decoder \textbf{đông lạnh} (đã pretrained, chính là decoder thật của
-teacher) và chỉ train một encoder nhỏ mới:
-\begin{itemize}
- \item \textbf{\texttt{LatentAudioEncoder}} (11M tham số): \texttt{Conv1d}$(1{\to}32)$, 5
-   \texttt{\_DownsampleBlock} (mỗi block 3 residual unit dilation $1,3,9$ + conv strided)
-   với stride $(10,10,8,3,2)$ — tích $=4800$, khớp chính xác tỉ lệ nén encode-side thật của
-   teacher (xác nhận qua \texttt{upsample\_rates} của \texttt{decoder.json}) — kênh tăng
-   dần $32{\to}64{\to}128{\to}256{\to}512$ (chặn ở 512), rồi \texttt{Conv1d}$(512{\to}128)$
-   tách thành $\mu$/$\log\sigma^2$ (64 chiều mỗi phần, xem \S\ref{sec:vae_bottleneck}).
- \item Encoder train trực tiếp trên waveform 24~kHz gốc (vocal+backing đã tách qua
-   Demucs), không qua bước trung gian mel/Vocos nào — tránh mất pha do một vòng vocoder
-   phụ không cần thiết (\texttt{preprocess-raw --raw-audio}).
- \item Loss reconstruction: trung bình L1-trên-log-mel qua 3 thang STFT
-   $(n_{\mathrm{fft}},n_{\mathrm{mel}})\in\{(512,40),(1024,80),(2048,80)\}$, so giữa audio
-   decoder tái tạo và audio thật — không có số hạng đối kháng (rủi ro bất ổn GAN training,
-   cố ý để ngoài phạm vi đề tài).
-\end{itemize}
+DiffRhythm2 công bố \textbf{decoder} (BigVGAN, đã huấn luyện sẵn và công khai) nhưng không
+công bố encoder tương ứng. Thay vì train lại một VAE đầy đủ đúng-như-paper (có
+discriminator đối kháng, quá tốn/rủi ro cho ngân sách của đề tài), phương pháp giữ decoder
+\textbf{đông lạnh} (đã pretrained, chính là decoder thật của teacher) và chỉ train một
+encoder nhỏ mới, khoảng 11 triệu tham số.
+
+Encoder gồm một lớp tích chập đầu vào và năm khối giảm mẫu liên tiếp, mỗi khối gồm ba đơn
+vị residual với hệ số giãn nở $1$, $3$, $9$ và một lớp tích chập có bước nhảy; tích các
+bước nhảy của năm khối bằng $4800$, khớp chính xác tỉ lệ nén encode-side thật của teacher
+(xác nhận qua cấu hình công khai của decoder). Số kênh tăng dần từ 32 lên 512 qua các khối,
+sau đó một lớp tích chập cuối tách đặc trưng 512 chiều thành $\mu$ và $\log\sigma^2$ (64
+chiều mỗi phần, xem \S\ref{sec:vae_bottleneck}). Encoder train trực tiếp trên waveform
+24~kHz gốc (vocal+backing đã tách qua Demucs), không qua bước trung gian mel/Vocos nào —
+tránh mất pha do một vòng vocoder phụ không cần thiết. Loss reconstruction là trung bình
+L1-trên-log-mel qua ba thang phân giải STFT khác nhau, so giữa audio decoder tái tạo và
+audio thật — không có số hạng đối kháng (rủi ro bất ổn GAN training, cố ý để ngoài phạm vi
+đề tài).
 
 \subsection{Bottleneck xác suất (VAE) và lịch trình KL}
 \label{sec:vae_bottleneck}
 
-Một encoder chỉ train bằng loss reconstruction thuần (không bước xác suất, không
-adversarial loss) có xu hướng kinh điển "regression-to-the-mean" khi target đa dạng — cùng
-lớp bệnh lý đã gặp ở CFM loss (\S4.11--4.13, \texttt{docs/project\_history.md}, dẫn
-Dieleman 2024/DMD-ADM). Để tránh, \texttt{LatentAudioEncoder.forward()} áp dụng
-reparameterization trick chuẩn của VAE: $z=\mu+\sigma\epsilon$ lúc train (backprop qua
-sample thật), $z=\mu$ lúc eval (hành vi xác định cho suy luận), với hàm mất mát tổng
+Bộ mã hoá latent áp dụng reparameterization trick chuẩn của VAE:
+$z=\mu+\sigma\epsilon$ lúc train (backprop qua sample thật), $z=\mu$ lúc eval (hành vi xác
+định cho suy luận), với hàm mất mát tổng
 \begin{equation}
- \mathcal{L} = \mathcal{L}_{\text{recon}} + \texttt{kl\_weight}\cdot\mathcal{L}_{\mathrm{KL}},
- \quad \mathcal{L}_{\mathrm{KL}}=-\tfrac12\,\mathrm{mean}\big(1+\log\sigma^2-\mu^2-\sigma^2\big).
+ \mathcal{L} = \mathcal{L}_{\text{recon}} + \beta\cdot\mathcal{L}_{\mathrm{KL}},
+ \quad \mathcal{L}_{\mathrm{KL}}=-\tfrac12\,\mathrm{mean}\big(1+\log\sigma^2-\mu^2-\sigma^2\big),
 \end{equation}
-
-Huấn luyện với \texttt{kl\_weight} hằng số dẫn tới hiện tượng \textbf{``KL vanishing''}
-(Fu et al., \emph{Cyclical Annealing Schedule: A Simple Approach to Mitigating KL
-Vanishing}, NAACL 2019): mạng thu nhỏ $\sigma$ về gần 0 để loại bỏ chi phí mà nhiễu
-reparameterization gây ra cho reconstruction, khiến bottleneck xác suất trở thành vô tác
-dụng dù công thức toán học đúng (kết quả định lượng ở Thí nghiệm 5, \S\ref{sec:exp5_vae}).
-Rivera (\emph{How to train your VAE}, arXiv:2309.13160) chỉ ra nguyên nhân sâu hơn: KL
-chuẩn gộp chung việc phạt phương sai cá nhân collapse về 0 (cần thiết, tránh encoder tất
-định hoá) với việc phạt trung bình cá nhân dạt về 0 (không cần thiết, xoá thông tin
-per-sample). Để giảm thiểu KL vanishing mà không cần tách riêng hai số hạng đó (undertaking
-lớn hơn), \texttt{kl\_weight} được áp dụng theo lịch trình \textbf{cyclical annealing} (Fu
-et al.) thay vì hằng số: tổng số step huấn luyện chia thành 4 chu kỳ, mỗi chu kỳ ramp tuyến
-tính $0\to\texttt{kl\_weight}$ ở nửa đầu rồi giữ nguyên ở nửa sau — cho decoder liên tục có
-cơ hội phụ thuộc lại vào $z$ giàu thông tin thay vì ổn định vào trạng thái phớt lờ nó vĩnh
-viễn.
-
-\subsection{Mở rộng dữ liệu và hạ tầng huấn luyện}
-\label{sec:raw_audio_encoder}
-
-\texttt{train-latent-encoder} được mở rộng để nhận nhiều thư mục dataset cùng lúc (giống
-\texttt{train-self}), cho phép gộp toàn bộ 6 phần của corpus gốc
-(\texttt{sonlest/vietnamese-music-dataset-version3}, 1839 bài sau lọc chất lượng) thành
-một lần huấn luyện duy nhất. \texttt{DataLoader} dùng \texttt{num\_workers=4} +
-\texttt{pin\_memory} để chồng lấp I/O (file waveform thô nặng hơn mel tương ứng đúng
-$256/100=2{,}56$ lần) với tính toán GPU. \texttt{--resume-checkpoint} cho phép tiếp tục
-huấn luyện từ một checkpoint có sẵn với \texttt{kl\_weight} khác (tối ưu hoá bậc thang cho
-\texttt{kl\_weight}, \S\ref{sec:exp5_vae}), tránh phải trả lại chi phí của các epoch đầu.
-
-Trước khi chạy full, hạ tầng được kiểm chứng trên GPU Kaggle thật: (1) đọc thử tensor từ cả
-6 phần dataset (1839 record, không NaN, đúng schema); (2) một lần train nhỏ với 1 bài lấy
-từ mỗi phần trong cùng 1 epoch, xác nhận việc gộp nhiều dataset hoạt động đúng trên dữ liệu
-thật; (3) smoke-test VAE bottleneck (6 bài, 1 epoch) cho \texttt{recon\_loss}/\texttt{kl\_loss}
-hữu hạn, không NaN, VRAM khớp benchmark cũ. Kiểm chứng cục bộ độc lập (29/29 unit test) xác
-nhận eval mode xác định, train mode sample ngẫu nhiên đúng, và gradient chảy ngược qua
-sample. \textbf{Sanity-check bắt buộc trước khi tin tưởng bất kỳ checkpoint nào}
-(\texttt{scripts/check\_latent\_encoder\_quality.py}): giải mã trực tiếp vài latent
-ground-truth (bỏ qua CFM student), đo \texttt{pitch\_std\_semitones} so với chính audio
-thật của cùng bài — chỉ số duy nhất phân biệt được encoder collapse (gần một cao độ cố
-định) với encoder khoẻ mạnh, vì loss reconstruction giảm mượt không đảm bảo điều này (đã
-xảy ra thật, xem Thí nghiệm 5). Kết quả định lượng đầy đủ của toàn bộ quá trình lựa chọn
-\texttt{kl\_weight} (bốn giá trị, gồm cả hai lần collapse thật và điểm tối ưu tìm được)
-được trình bày ở Thí nghiệm 5 (\S\ref{sec:exp5_vae}); checkpoint tốt nhất từ đó là checkpoint
-dùng cho bước CFM training tiếp theo (\S\ref{chapter:conclusion}).
+trong đó $\beta$ là trọng số của số hạng KL. Trọng số này được áp dụng theo lịch trình \textbf{cyclical annealing} (Fu
+et al., NAACL 2019) thay vì hằng số: tổng số step huấn luyện chia thành 4 chu kỳ, mỗi chu
+kỳ ramp tuyến tính $0\to\beta$ ở nửa đầu rồi giữ nguyên ở nửa sau. Động cơ và
+kết quả ablation cho lựa chọn thiết kế này được trình bày ở Thí nghiệm 5
+(\S\ref{sec:exp5_vae}), decoder BigVGAN được giữ đông lạnh như mô tả ở
+\S\ref{sec:latent_encoder_arch}.
 
 \section{DiffRhythm2 Distillation}
 \label{sec:distillation_chapter}
@@ -935,7 +833,7 @@ dùng cho bước CFM training tiếp theo (\S\ref{chapter:conclusion}).
 \subsection{Khôi phục đúng hợp đồng teacher}
 \label{sec:distill_teacher_call}
 
-Pipeline chưng cất tải cấu hình thật đi kèm checkpoint thay vì giả định số mel bins. Teacher được đóng băng và chuyển sang evaluation mode. Lyric token, tokenizer, thứ tự nối chuỗi, sentinel timestep $-1$ và attention mask đều theo triển khai chính thức. Chế độ huấn luyện chưng cất yêu cầu teacher và tokenizer thật; fallback giả chỉ được phép trong kiểm thử riêng, nhằm ngăn một lần chạy mang nhãn distillation nhưng thực chất không có tín hiệu teacher. Student luôn là MicroDiT (backbone duy nhất, \S\ref{sec:native_dit}), chạy được trên cả mel-space và latent-space (\S\ref{sec:latent_space}).
+Pipeline chưng cất tải cấu hình thật đi kèm checkpoint thay vì giả định số mel bins. Teacher được đóng băng và chuyển sang evaluation mode. Lyric token, tokenizer, thứ tự nối chuỗi, sentinel timestep $-1$ và attention mask đều theo triển khai chính thức. Chế độ huấn luyện chưng cất yêu cầu teacher và tokenizer thật; fallback giả chỉ được phép trong kiểm thử riêng, nhằm ngăn một lần chạy mang nhãn distillation nhưng thực chất không có tín hiệu teacher. Student luôn là MicroDiT (backbone duy nhất trong kiến trúc hiện tại, \S\ref{sec:microdit_architecture}), chạy được trên cả mel-space và latent-space (\S\ref{sec:latent_space}).
 
 \subsection{Cầu nối tần số 93,75~Hz--5~Hz và 100--64 mel bins}
 
@@ -959,11 +857,22 @@ học $A_\phi:\mathbb{R}^{64}\rightarrow\mathbb{R}^{100}$ rồi resample thời 
 \begin{equation}
  \tilde{v}_T=\operatorname{Resample}_{5\mathrm{Hz}\rightarrow93{,}75\mathrm{Hz}}\big(A_\phi(v_T)\big).
 \end{equation}
-Phần forward teacher nằm trong \texttt{no\_grad}, nhưng adapter $A_\phi$ nằm ngoài khối này để nhận gradient. Đây là chi tiết quan trọng: nếu đặt adapter trong \texttt{no\_grad}, phép ánh xạ ban đầu không bao giờ thích nghi và student phải bắt chước một mục tiêu tùy ý — đúng bug đã gặp thật, xem \texttt{docs/project\_history.md} \S4.7.
+Phần truyền tiến của teacher không tham gia lan truyền ngược, nhưng lớp ánh xạ $A_\phi$ nằm
+ngoài phạm vi đó để nhận gradient. Đây là chi tiết quan trọng: nếu để lớp ánh xạ này không
+nhận gradient, phép ánh xạ ban đầu không bao giờ thích nghi và student phải bắt chước một
+mục tiêu tùy ý -- đúng lỗi từng gặp phải ở một phiên bản trước đó của hệ thống, khi hai lớp
+ánh xạ mel bị đặt nhầm ngoài phạm vi lan truyền ngược dù đã được đăng ký để huấn luyện.
 
-\textbf{Toàn bộ cầu nối này được bỏ qua khi dataset ở latent\_mode.} Nếu student đã chạy trên latent 64-chiều/5~Hz thật (\S\ref{sec:latent_space}) — đúng tần số và đúng số chiều của teacher — thì \texttt{needs\_mel\_resize} tự động là \texttt{False} (\texttt{teacher\_mel\_dim == config.n\_mels}), và \texttt{KnowledgeDistillationTrainer.\_teacher\_velocity} kiểm tra \texttt{config.latent\_mode} để bỏ qua luôn bước resample thời gian — resample một chuỗi đã ở 5~Hz theo đúng công thức dành cho mel-space (giả định 93,75~Hz) sẽ làm hỏng nó thêm một lần nữa, không phải chỉnh đúng. Ở latent\_mode, khoảng cách phân phối 18,75 lần mô tả ở \S4.20 của \texttt{project\_history.md} không còn tồn tại từ đầu, vì cả hai phía đã cùng một biểu diễn.
+\textbf{Toàn bộ cầu nối này được bỏ qua khi student chạy trên không gian latent.} Nếu
+student đã chạy trên latent 64-chiều/5~Hz thật (\S\ref{sec:latent_space}) — đúng tần số và
+đúng số chiều của teacher — hệ thống tự động bỏ qua bước resize mel lẫn bước resample thời
+gian, vì hai phía đã cùng một biểu diễn ngay từ đầu; resample một chuỗi đã ở 5~Hz theo đúng
+công thức dành cho mel-space (giả định 93,75~Hz) sẽ làm hỏng nó thêm một lần nữa, không
+phải chỉnh đúng. Khoảng cách phân phối $93{,}75/5=18{,}75$ lần giữa hai tần số vì vậy không
+còn tồn tại.
 
 \subsection{Hàm mất mát hỗn hợp}
+\label{sec:distill_mixed_loss}
 
 Student được tối ưu bởi:
 \begin{equation}
@@ -975,13 +884,14 @@ với $\mathcal{L}_{\mathrm{gt}}$ theo đúng công thức \eqref{eq:loss_gt} (k
 trần). Số hạng teacher-matching dùng \textbf{L1} chứ không phải MSE, theo khuyến nghị
 literature (Dieleman 2024; DMD/ADM) để tránh xu hướng "làm mượt/lấy trung bình" của MSE
 trong distillation cho model sinh. Cấu hình mặc định trong mã nguồn là $\alpha=0{,}5$,
-nhưng đo thực nghiệm đa-bài ($N=6$, \texttt{docs/project\_history.md} \S4.14) xác nhận
-$\alpha\approx0{,}8$ là điểm tối ưu thật (không phải nhiễu ngẫu nhiên) — nên dùng
-$\alpha=0{,}8$ làm mặc định thực tế, không phải $0{,}5$. Vocal-aux loss và một loss REPA
+nhưng đo tỉ lệ khung có giọng trên 6 bài khác nhau cho ba giá trị $\alpha$ -- $60{,}7\%$
+ở $\alpha=0{,}5$, $\mathbf{92{,}4\%}$ ở $\alpha=0{,}8$, và $77{,}8\%$ ở $\alpha=0{,}9$ (vocal
+thật: $74{,}3\%$) -- xác nhận $\alpha\approx0{,}8$ là điểm tối ưu thật (quan hệ phi tuyến,
+không phải "$\alpha$ cao hơn luôn tốt hơn", và không phải nhiễu ngẫu nhiên từ một checkpoint
+đơn lẻ) — nên dùng $\alpha=0{,}8$ làm mặc định thực tế, không phải $0{,}5$. Vocal-aux loss và một loss REPA
 tuỳ chọn (mặc định tắt) được cộng thêm vào không điều kiện nếu trọng số tương ứng $>0$.
 Nếu teacher hoặc tokenizer không tải được, $\alpha$ bị ép về $1{,}0$ (chỉ còn
-$\mathcal{L}_{\mathrm{gt}}$) và trạng thái này được báo cáo rõ ràng
-(\texttt{teacher\_status}/\texttt{distillation\_active}), không âm thầm.
+$\mathcal{L}_{\mathrm{gt}}$) và trạng thái này được báo cáo rõ ràng trong log, không âm thầm.
 
 \subsection*{Tóm tắt lựa chọn thiết kế}
 
@@ -1011,7 +921,7 @@ Bốn câu hỏi nghiên cứu được đặt ra:
  \item[RQ2:] Pipeline có xử lý được dữ liệu bài hát tiếng Việt, huấn luyện MicroDiT bằng CFM và sinh waveform hữu hạn, không rỗng hay không?
  \item[RQ3:] Quy trình distillation có thực sự gọi teacher, ánh xạ 64--100 mel bins và cập nhật student nhỏ hay không; kết quả hiện có cho phép kết luận gì về lợi ích của teacher?
  \item[RQ4:] Cho student không gian latent thật của teacher (thay vì mel) có thay đổi được vấn đề "âm thanh sinh ra nghe như nhiễu" đã lặp lại ở các thí nghiệm mel-space trước đó không, và nguyên nhân của sự khác biệt (nếu có) là gì?
- \item[RQ5:] Bottleneck xác suất (VAE, mu/logvar + KL divergence) có khắc phục được hiện tượng collapse của latent encoder ở quy mô dữ liệu lớn hay không, và trọng số \texttt{kl\_weight} nào là tối ưu?
+ \item[RQ5:] Bottleneck xác suất (VAE, mu/logvar + KL divergence) có khắc phục được hiện tượng collapse của latent encoder ở quy mô dữ liệu lớn hay không, và trọng số $\beta$ nào là tối ưu?
 \end{description}
 
 \section{Nguồn dữ liệu và nguyên tắc báo cáo}
@@ -1044,6 +954,25 @@ Local distillation & 2 bài & $D=128$, 2 layers & Xác nhận teacher thật, ad
 \bottomrule
 \end{tabularx}
 \end{table}
+
+\subsection{Cấu hình huấn luyện, chọn checkpoint và dừng sớm}
+\label{sec:early_stopping_full}
+
+Toàn bộ tham số không đóng băng của CFM/distillation (\S\ref{sec:cfm_training_loss})
+được tối ưu bằng AdamW, cùng trung bình trượt theo hàm mũ (EMA, hệ số suy giảm $0{,}999$),
+lịch trình learning rate khởi động rồi suy giảm theo hàm cosine, huấn luyện độ chính xác
+hỗn hợp trên GPU và cắt ngưỡng gradient (chuẩn $1,0$). Trước khi train, các bản ghi hữu
+dụng được chia train/validation bằng một hàm băm mật mã quyết định theo seed và mã số bản
+ghi — không dùng số ngẫu nhiên, nên cách chia ổn định qua các lần resume/train lại; tỉ lệ
+validation mặc định $5\%$, tối đa 128 bản ghi.
+
+Sau mỗi epoch, một checkpoint chỉ được coi là "tốt nhất" nếu \textbf{đồng thời}: (a)
+validation loss (đánh giá bằng trọng số EMA, seed cố định) giảm hơn một ngưỡng tối thiểu;
+\textbf{và} (b) chỉ số sensitivity (\S\ref{sec:cfm_training_loss}) không thấp hơn một sàn
+tối thiểu — một checkpoint cải thiện validation loss bằng cách lờ hẳn ca từ sẽ không qua
+được điều kiện (b). Việc train dừng sớm khi đã đạt tối thiểu 8 epoch \textbf{và} không cải
+thiện được checkpoint tốt nhất qua 4 epoch liên tiếp — nghĩa là số epoch truyền vào chỉ là
+một mức trần, cơ chế này mới là thứ quyết định khi nào dừng thật.
 
 \subsection{Chỉ số đánh giá}
 
@@ -1121,9 +1050,9 @@ Lịch huấn luyện ngắn cũng khiến model có xu hướng học các th�
 
 \subsection{Kiểm chứng cơ chế}
 
-Log thí nghiệm xác nhận \texttt{distillation\_active=true}; checkpoint teacher và tokenizer thật đã được tải. Teacher có 1.136.249.664 tham số, trong khi student nhỏ có 745.188 tham số trainable, tương ứng tỷ lệ xấp xỉ 1.525 lần theo số tham số. Trên CPU, một forward teacher với batch size 1 mất khoảng 3 giây. Sự chênh lệch cho thấy động cơ nén là rõ ràng, đồng thời giải thích vì sao distillation trở thành nút thắt thời gian.
+Log thí nghiệm xác nhận chế độ chưng cất thực sự được kích hoạt; checkpoint teacher và tokenizer thật đã được tải. Teacher có 1.136.249.664 tham số, trong khi student nhỏ có 745.188 tham số trainable, tương ứng tỷ lệ xấp xỉ 1.525 lần theo số tham số. Trên CPU, một forward teacher với batch size 1 mất khoảng 3 giây. Sự chênh lệch cho thấy động cơ nén là rõ ràng, đồng thời giải thích vì sao distillation trở thành nút thắt thời gian.
 
-Adapter 64--100 mel bins nằm trong optimizer cùng student. Teacher forward được đóng băng, nhưng đầu ra teacher đi qua adapter bên ngoài \texttt{no\_grad}. Việc log riêng teacher loss và ground-truth loss xác nhận tổng loss thực sự gồm hai nguồn. Như vậy, RQ3 được trả lời ở mức cơ chế: đây là một lần chưng cất thật, không phải baseline được đổi tên.
+Lớp ánh xạ 64--100 mel bins nằm trong optimizer cùng student. Teacher forward được đóng băng, nhưng đầu ra teacher đi qua lớp ánh xạ này bên ngoài phạm vi đóng băng đó nên vẫn nhận gradient. Việc log riêng teacher loss và ground-truth loss xác nhận tổng loss thực sự gồm hai nguồn. Như vậy, RQ3 được trả lời ở mức cơ chế: đây là một lần chưng cất thật, không phải baseline được đổi tên.
 
 \subsection{Kết quả và diễn giải}
 
@@ -1151,35 +1080,19 @@ Kết quả không chứng minh distillation cải thiện chất lượng, như
 \section{Thí nghiệm 4: không gian mel so với không gian latent thật của teacher}
 \label{sec:exp4_mel_vs_latent}
 
-\subsection{Động cơ và thiết lập}
+\subsection{Thiết lập}
 
-Mọi thí nghiệm ở Thí nghiệm 1--3 huấn luyện
-student trên mel 100-chiều/93,75~Hz. Ngay cả sau khi đã fix lệch tần số ở phía truy vấn
-teacher (\S\ref{sec:distill_teacher_call}), báo cáo nghe thử qua nhiều vòng thực nghiệm
-độc lập (\texttt{docs/project\_history.md} \S4.13, \S4.16, \S4.21) đều quy về cùng một
-điểm: audio sinh ra nghe như nhiễu hoặc đơn điệu, dù các chỉ số khách quan (mel-std,
-spectral flatness, voiced\_ratio) từng lần lượt "trông có vẻ tốt". Thí nghiệm 4 kiểm tra
-một giả thuyết khác hẳn nguyên nhân "quy mô dữ liệu" đã kết luận cho nhánh mel (RQ3/\S4.22
-trong \texttt{project\_history.md}): liệu bản thân việc ép student sinh trực tiếp trên mel
-93,75~Hz — thay vì không gian latent 5~Hz thật mà teacher được huấn luyện trên — có phải
-một phần nguyên nhân độc lập, và cho student không gian đó (\S\ref{sec:latent_space}) có
-thay đổi được kết quả nghe thử không.
-
-Ba điều kiện được so sánh, cùng đo bằng bộ ba chỉ số \texttt{spectral\_flatness}/
-\texttt{voiced\_ratio}/\texttt{pitch\_std\_semitones} (\texttt{scripts/evaluate\_generation\_quality.py})
-và một mốc nhiễu trắng tổng hợp làm neo:
+Ba điều kiện được so sánh, đo bằng độ phẳng phổ, tỉ lệ khung có giọng và
+SD cao độ, với neo là nhiễu trắng và vocal thật:
 \begin{enumerate}[label=(\Alph*)]
- \item \textbf{Mel-space} (MicroDiT, mốc \emph{exp06} — cấu hình
-   tốt nhất từng xác nhận đa-bài trong nhánh mel, \texttt{project\_history.md} \S4.14).
- \item \textbf{Latent-space, encoder chưa ổn định hoá} — giải mã trực tiếp latent
-   \emph{ground-truth} (bỏ qua hẳn CFM student) để cô lập riêng chất lượng encoder.
- \item \textbf{Latent-space, encoder đã ổn định hoá + CFM student} — checkpoint tốt nhất
-   hiện có, \textbf{mới train 13/300 epoch} (dừng vì hết quota Kaggle giữa phiên, early
-   stopping chưa kích hoạt thật — xem \S\ref{sec:early_stopping_full}). Checkpoint này dùng
-   backbone \texttt{NativeDiTStudent}, kiến trúc thứ hai đã tồn tại tại thời điểm chạy thí
-   nghiệm này nhưng từ đó đã được gộp vào MicroDiT và xoá khỏi mã nguồn
-   (\S\ref{sec:native_dit}) — số liệu dưới đây là ghi nhận trung thực của lần chạy đó, không
-   phải của MicroDiT trên latent-space (chưa từng chạy tại thời điểm viết báo cáo).
+ \item \textbf{Mel-space} -- MicroDiT, mốc \emph{exp06} ($\alpha=0{,}8$,
+   \S\ref{sec:distill_mixed_loss}), 25 epoch đã hội tụ.
+ \item \textbf{Latent-space, encoder chưa ổn định hoá} -- giải mã trực tiếp latent
+   \emph{ground-truth} (bỏ qua CFM student) để cô lập chất lượng encoder.
+ \item \textbf{Latent-space, encoder đã ổn định hoá + CFM student} -- checkpoint tốt nhất
+   hiện có, mới train 13/300 epoch (dừng vì hết quota Kaggle), dùng một backbone thử
+   nghiệm không giữ lại trong kiến trúc cuối cùng (\S\ref{sec:microdit_architecture}), không
+   phải MicroDiT.
 \end{enumerate}
 
 \begin{table}[H]
@@ -1200,76 +1113,44 @@ Vocal thật (mốc) & 0,056 & 0,743 & 6,39 & tham chiếu \\
 \end{tabularx}
 \end{table}
 
-\subsection{Diễn giải}
+\subsection{Kết quả}
 
-Hai quan sát độc lập:
-
-\textbf{Thứ nhất, (A) và (B) suy biến theo cùng một cách, dù nguyên nhân khác nhau.} Cả
-hai đạt \texttt{pitch\_std}$<1$ semitone — tức gần như hát/giữ một nốt duy nhất suốt đoạn
-— dù (A) là mel-space (nguyên nhân đã kết luận: quy mô dữ liệu/step, không phải bug cụ
-thể, \texttt{project\_history.md} \S4.22) còn (B) là latent-space (nguyên nhân: encoder tự
-train collapse do thiếu ổn định hoá optimizer cơ bản, \S\ref{sec:latent_space}). Đây là
-bằng chứng cho thấy \textbf{"nghe như nhiễu/đơn điệu" không phải một nguyên nhân đơn lẻ} —
-hai lớp vấn đề độc lập (quy mô dữ liệu ở nhánh mel; ổn định hoá training ở nhánh latent)
-có thể cho ra cùng một triệu chứng bên ngoài.
-
-\textbf{Thứ hai, sau khi fix riêng vấn đề của nhánh latent (encoder), (C) vượt hẳn cả (A)
-và (B) trên \texttt{pitch\_std}} — tăng từ $\approx0{,}9$ lên $5{,}70$ semitone, đạt
-$\approx89\%$ biên độ dao động cao độ của vocal thật, so với chỉ $\approx14\%$ của (A). Vì
-(C) chỉ mới train 13/300 epoch trong khi (A) là một cấu hình đã hội tụ (25 epoch, dừng ổn
-định), đây là một so sánh \textbf{không cân bằng về ngân sách huấn luyện} theo hướng có
-lợi cho kết luận "latent-space tốt hơn" — nói cách khác, latent-space đạt kết quả vượt mel-
-space \emph{ngay cả khi được huấn luyện ít hơn nhiều}. Diễn giải hợp lý nhất: không gian
-latent thật (64-chiều, 5~Hz, đúng như teacher được huấn luyện trên) là một bài toán hồi quy
-\emph{dễ hơn} cho CFM so với mel 100-chiều/93,75~Hz — mỗi bước thời gian latent nén nhiều
-thông tin âm nhạc hơn, và tần số thấp hơn nghĩa là mô hình cần học ít bước chuyển tiếp hơn
-trên cùng một khoảng thời gian âm thanh.
-
-\textbf{Giới hạn quan trọng, không nên bỏ qua}: (C) chưa hội tụ, nên chưa thể kết luận đây
-là kết quả tốt nhất khả dĩ của latent-space, và chưa so sánh công bằng ở cùng ngân sách
-epoch với (A). \texttt{voiced\_ratio} của (C) ($0{,}21$) thấp hơn cả (A) và vocal thật
-($0{,}743$) — có thể phản ánh checkpoint chưa hội tụ đủ để giữ pitch ổn định xuyên suốt
-các đoạn có lời (khác với (A)'s vấn đề ngược lại: quá ổn định, tới mức đơn điệu). \textbf{Số
-liệu ở bảng \ref{tab:mel_vs_latent}, đặc biệt dòng (C), là số liệu tạm thời} — khi
-CFM training trên latent-space được resume tới khi early-stopping tự kích hoạt thật (kế
-hoạch ở \S5.2), bảng này cần được điền số mới và diễn giải lại.
+(A) và (B) đều đạt SD cao độ$<1$ semitone -- gần như đứng yên một nốt -- dù
+nguyên nhân khác nhau (mel-space: quy mô dữ liệu/step; latent-space: encoder chưa ổn định
+hoá, \S\ref{sec:latent_space}). Sau khi ổn định hoá encoder, (C) đạt
+SD cao độ$=5{,}70$ ($\approx89\%$ vocal thật, so với $\approx14\%$ của (A)) dù
+mới train 13/300 epoch so với 25 epoch đã hội tụ của (A) -- một so sánh không cân bằng
+ngân sách nhưng có lợi cho latent-space. tỉ lệ khung có giọng của (C) ($0{,}21$) thấp
+hơn cả (A) và vocal thật, phản ánh checkpoint chưa hội tụ đủ để giữ pitch ổn định xuyên
+suốt đoạn có lời.
 
 \subsection{Trả lời RQ4}
 
-Có bằng chứng ban đầu (chưa hội tụ đầy đủ) rằng cho student không gian latent thật của
-teacher \textbf{có} thay đổi được vấn đề "nghe như nhiễu/đơn điệu" — nhưng nguyên nhân gốc
-của vấn đề đó, ở cả hai nhánh, không phải là lựa chọn không gian biểu diễn tự nó, mà là hai
-vấn đề độc lập khác nhau (quy mô dữ liệu ở mel-space; ổn định hoá optimizer của encoder ở
-latent-space) — mỗi vấn đề tình cờ tạo ra cùng một triệu chứng nghe được. Xác nhận bằng
-nghe thật trực tiếp (2026-07-22, cùng phiên với thí nghiệm này): người nghe xác nhận file
-sinh từ (C) có tiếng nhạc thật, không còn là nhiễu hoàn toàn — lần đầu tiên trong toàn bộ
-report này nhánh latent-space cho phản hồi nghe tích cực. Cần train tiếp tới hội tụ trước
-khi coi RQ4 đã được trả lời dứt điểm.
+Cho student không gian latent thật của teacher cải thiện rõ rệt SD cao độ, xác
+nhận thêm bằng nghe thử trực tiếp (2026-07-22) -- lần đầu tiên trong đề tài một mẫu CFM
+cho giai điệu nghe được thay vì nhiễu/đơn điệu. Tuy nhiên (C) chưa hội tụ và dùng backbone
+đã bị loại khỏi kiến trúc cuối cùng, nên số liệu ở bảng \ref{tab:mel_vs_latent} là tạm
+thời; kết quả đầy đủ trên MicroDiT sẽ có sau khi huấn luyện chưng cất hoàn tất
+(\S\ref{sec:future_work}).
 
 \section{Thí nghiệm 5: ablation bottleneck xác suất (VAE) của latent encoder}
 \label{sec:exp5_vae}
 
-\subsection{Động cơ và thiết lập}
+\subsection{Thiết lập}
 
-Encoder ở Thí nghiệm 4 dòng (B) (\S\ref{sec:latent_space}) collapse hoàn toàn khi chỉ dùng
-loss reconstruction thuần — giải mã latent ground-truth ra gần một cao độ cố định
-(\texttt{pitch\_std\_semitones}$\approx0{,}44$--$0{,}78$ qua hai lần thử warmup/learning-rate
-khác nhau). Thí nghiệm này kiểm tra giả thuyết đã đưa ra ở \S\ref{sec:vae_bottleneck}: thêm
-bottleneck xác suất (mu/logvar + KL divergence) có khắc phục được collapse hay không, và
-\texttt{kl\_weight} nào là tối ưu. Bốn cấu hình được so sánh, cùng huấn luyện trên toàn bộ
-1839 bài (10 epoch cho hai cấu hình đầu; 5 epoch \texttt{--resume-checkpoint} tiếp theo cho
-hai cấu hình sau, xem \S\ref{sec:raw_audio_encoder}), đo bằng ba chỉ số trên audio thật (không
-qua CFM student, cô lập riêng chất lượng encoder): $\sigma_{\text{mean}}=\exp(0{,}5\log\sigma^2)$
-(bottleneck có thật sự xác suất không), \texttt{pitch\_std\_semitones} giải mã (chất lượng
-reconstruction), và khoảng cách $\mu$ giữa các bài khác nhau $\lVert\mu_A-\mu_B\rVert$ per-element
-(encoder có phân biệt được các bài hay bị "mean collapse" — kiểm tra một giả thuyết bên ngoài,
-xem diễn giải).
+Encoder ở Thí nghiệm 4 dòng (B) collapse hoàn toàn khi chỉ dùng loss reconstruction thuần
+($SD cao độ\approx0{,}44$--$0{,}78$). Bốn cấu hình được so sánh trên
+toàn bộ 1839 bài (10 epoch cho hai cấu hình đầu; 5 epoch tiếp tục từ checkpoint có sẵn cho
+hai cấu hình sau), đo trên audio thật (không qua CFM student): $\sigma_{\text{mean}}$
+(bottleneck có thật sự xác suất), SD cao độ (chất lượng
+reconstruction), và khoảng cách $\mu$ giữa các bài $\lVert\mu_A-\mu_B\rVert$ (encoder có
+phân biệt được các bài hay bị mean collapse).
 
 \subsection{Kết quả}
 
 \begin{table}[H]
 \centering
-\caption{Ablation \texttt{kl\_weight} cho bottleneck xác suất của \texttt{LatentAudioEncoder}}
+\caption{Ablation $\beta$ cho bottleneck xác suất của bộ mã hoá latent}
 \label{tab:kl_ablation}
 \small
 \begin{tabularx}{\textwidth}{Xrrrl}
@@ -1277,10 +1158,10 @@ xem diễn giải).
 \textbf{Cấu hình} & $\boldsymbol{\sigma_{\text{mean}}}$ & \textbf{pitch\_std} & $\boldsymbol{\mu}$\textbf{-distance} & \textbf{Ghi chú} \\
 \midrule
 Không VAE (2 lần thử) & — & 0,44 / 0,78 & — & collapse hoàn toàn \\
-\texttt{kl\_weight}$=10^{-4}$ hằng số & 0,003--0,005 & 5,85$^{*}$ & — & $^{*}$KL vanishing: $\sigma\approx0$, bottleneck vô tác dụng dù pitch\_std trông tốt \\
-\texttt{kl\_weight}$=0{,}05$ cyclical & 0,11--0,14 & 4,72 & 0,80--0,91 & VAE thật hoạt động lần đầu \\
-\texttt{kl\_weight}$=0{,}15$ cyclical & 0,245--0,273 & \textbf{6,01} & 0,84--0,91 & \textbf{tốt nhất} \\
-\texttt{kl\_weight}$=0{,}3$ cyclical & 0,34--0,37 & 3,72 & 0,81--0,88 & vượt ngưỡng, over-regularization \\
+$\beta=10^{-4}$ hằng số & 0,003--0,005 & 5,85$^{*}$ & — & $^{*}$KL vanishing: $\sigma\approx0$, bottleneck vô tác dụng dù SD cao độ trông tốt \\
+$\beta=0{,}05$ cyclical & 0,11--0,14 & 4,72 & 0,80--0,91 & VAE thật hoạt động lần đầu \\
+$\beta=0{,}15$ cyclical & 0,245--0,273 & \textbf{6,01} & 0,84--0,91 & \textbf{tốt nhất} \\
+$\beta=0{,}3$ cyclical & 0,34--0,37 & 3,72 & 0,81--0,88 & vượt ngưỡng, over-regularization \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -1290,44 +1171,24 @@ dòng đầu vì không có $\sigma$ hoặc $\sigma\approx0$ khiến phép đo m
 
 \subsection{Diễn giải}
 
-\textbf{KL vanishing là một false positive nguy hiểm.} Ở \texttt{kl\_weight}$=10^{-4}$ hằng
-số — giá trị mặc định ban đầu, và cũng là giá trị Stable Audio 2.0 dùng thật — encoder cho
-\texttt{pitch\_std}$=5{,}85$, trông như một thành công rõ rệt so với hai lần collapse trước.
-Nhưng đọc trực tiếp $\sigma$ cho thấy bottleneck xác suất đã collapse về gần 0
-($\sigma_{\text{mean}}\approx0{,}003$--$0{,}005$): mạng đã học cách loại bỏ nhiễu
-reparameterization để tối ưu reconstruction thuần tuý, khiến \texttt{pitch\_std} tốt \emph{vì}
-encoder gần như tất định — hiện tượng \textbf{"KL vanishing"} (Fu et al., NAACL 2019). Đây là
-bằng chứng thực nghiệm cho lý do vì sao Stable Audio 2.0 cần thêm adversarial loss (5
-discriminator) và huấn luyện encoder+decoder cùng nhau để dùng an toàn cùng \texttt{kl\_weight}
-này — hai điều kiện project này cố ý không có (\S\ref{sec:latent_encoder_arch}), nên khoảng
-\texttt{kl\_weight} an toàn dịch chuyển lên cao hơn nhiều.
-
-\textbf{Lịch trình cyclical annealing khắc phục được KL vanishing, và tồn tại một điểm tối ưu
-không đơn điệu.} Từ \texttt{kl\_weight}$=0{,}05\to0{,}15$, cả $\sigma$ và \texttt{pitch\_std}
-cùng tăng — bottleneck xác suất càng hoạt động thật, reconstruction càng tốt hơn (không đánh
-đổi). Nhưng từ $0{,}15\to0{,}3$, $\sigma$ tiếp tục tăng trong khi \texttt{pitch\_std}
-\textbf{giảm} — đúng hiện tượng over-regularization kinh điển của VAE (Rivera, 2023: trọng số
-KL quá lớn "over-regularize the latents, degrading reconstruction quality"). \textbf{Kết luận:
-$\texttt{kl\_weight}=0{,}15$ là điểm tối ưu trong các giá trị đã thử}, không phải giá trị lớn
-nhất hay nhỏ nhất — checkpoint này được dùng cho các bước huấn luyện tiếp theo.
-
-\textbf{Kiểm định giả thuyết "mean collapse" từ một nhận xét bên ngoài.} Một nhận xét cho rằng
-vấn đề là $\mu$ của mọi bài hội tụ về gần điểm $0$ do \texttt{kl\_weight} quá \emph{lớn}, đề
-xuất giảm xuống $10^{-5}$--$10^{-6}$ — ngược hướng với kết quả bảng \ref{tab:kl_ablation}. Đo
-trực tiếp $\lVert\mu_A-\mu_B\rVert$ giữa 5 bài khác nhau (cột thứ tư) cho khoảng cách
-$0{,}80$--$0{,}91$, xấp xỉ bằng chính độ lệch chuẩn nội tại của một bài ($\approx1{,}0$) — theo
-đúng ngưỡng đề xuất trong nhận xét đó (collapse nếu $<0{,}5$), số liệu không ủng hộ giả thuyết
-mean collapse. Bài học phương pháp luận: đối chiếu mọi giả thuyết/gợi ý — kể cả nghe hợp lý về
-mặt lý thuyết — với số liệu đo trực tiếp trên checkpoint thật trước khi hành động theo nó.
+Ở $\beta=10^{-4}$ hằng số, SD cao độ$=5{,}85$ trông tốt nhưng
+$\sigma_{\text{mean}}\approx0{,}003$--$0{,}005$ cho thấy bottleneck xác suất đã collapse --
+hiện tượng \textbf{"KL vanishing"} (Fu et al., NAACL 2019): mạng loại bỏ nhiễu
+reparameterization để tối ưu reconstruction thuần tuý, khiến chỉ số trông tốt \emph{vì}
+encoder gần như tất định. Lịch trình cyclical annealing khắc phục được điều này, nhưng tồn
+tại một điểm tối ưu không đơn điệu: $\sigma$ và SD cao độ cùng tăng từ
+$0{,}05\to0{,}15$, nhưng SD cao độ giảm khi tăng tiếp lên $0{,}3$
+(over-regularization, Rivera 2023). $\mu$-distance ($0{,}80$--$0{,}91$, xấp xỉ độ lệch
+chuẩn nội tại $\approx1{,}0$) không ủng hộ giả thuyết "mean collapse" từng được đề xuất
+cho các giá trị $\beta$ nhỏ hơn.
 
 \subsection{Trả lời}
 
-Bottleneck xác suất (VAE) là cần thiết để tránh collapse ở quy mô dữ liệu lớn, nhưng bản thân
-việc thêm nó không đủ nếu \texttt{kl\_weight} là hằng số — cần lịch trình cyclical annealing để
-tránh KL vanishing, và cần dò \texttt{kl\_weight} theo từng bước nhỏ (không đơn điệu: có một
-điểm tối ưu, tăng thêm sau điểm đó gây hại). Encoder \texttt{kl\_weight}$=0{,}15$ là checkpoint
-tốt nhất hiện có của đề tài, dùng làm đầu vào cho bước CFM training/distillation cuối cùng
-(Chương~\ref{chapter:conclusion}).
+Bottleneck xác suất (VAE) là cần thiết để tránh collapse ở quy mô dữ liệu lớn, nhưng chỉ
+khi kết hợp lịch trình cyclical annealing thay vì $\beta$ hằng số, và cần dò
+theo từng bước nhỏ vì tồn tại điểm tối ưu không đơn điệu. Encoder
+$\beta=0{,}15$ là checkpoint tốt nhất hiện có, dùng làm đầu vào cho bước CFM
+training/distillation cuối cùng (Chương~\ref{chapter:conclusion}).
 
 \section{Kích thước checkpoint và khả năng triển khai}
 
@@ -1343,24 +1204,6 @@ Ba nguồn sai lệch chính cần được kiểm soát khi mở rộng. Thứ 
 
 Các ràng buộc trên xác định trực tiếp protocol tiếp theo: chia train/validation theo bài hát hoặc ca sĩ để tránh rò rỉ; cố định seed và số update; đánh giá nhiều checkpoint thay vì loss cuối; bổ sung listening test mù so sánh baseline với distilled; và báo cáo tỷ lệ lỗi tiền xử lý. Đối với dữ liệu âm nhạc, quyền sử dụng bản ghi và ca từ cũng phải được kiểm tra trước khi phổ biến dataset hoặc audio sinh.
 
-\section{Thảo luận theo câu hỏi nghiên cứu}
-
-Đối với RQ1, thí nghiệm loopback cho thấy pipeline Vocos-native đạt correlation cao nhất 0,997 và lặp lại ở các môi trường khác, xác nhận lựa chọn 100-bin mel cùng feature extractor gốc. Đối với RQ2, pipeline đã hoàn thành tiền xử lý, CFM training và sinh waveform hữu hạn trên cả Kaggle lẫn máy cục bộ; đây là bằng chứng về tính khả thi kỹ thuật, không phải đánh giá chất lượng âm nhạc quy mô lớn. Đối với RQ3, teacher thật, adapter và loss hỗn hợp đã hoạt động; tuy nhiên lần chạy 2 bài chưa tạo bằng chứng thống kê cho lợi ích chất lượng của distillation.
-
-Đối với RQ4 (\S\ref{sec:exp4_mel_vs_latent}), bằng chứng ban đầu — chưa hội tụ, chỉ 13/300 epoch — cho thấy chuyển sang không gian latent thật của teacher cải thiện rõ \texttt{pitch\_std\_semitones} so với cả hai cấu hình mel-space đã thử, và là lần đầu tiên trong toàn bộ report này một mẫu sinh bởi CFM student được người nghe xác nhận có giai điệu thật. Tuy nhiên nguyên nhân suy biến ở mel-space (quy mô dữ liệu) và ở latent-space trước khi fix (encoder collapse) là hai vấn đề độc lập, không phải cùng một nguyên nhân biểu diễn — nên kết quả này chưa thể quy giản thành "latent-space vốn tốt hơn mel-space", chỉ có thể nói rằng nhánh latent-space, sau khi tự loại được lỗi riêng của nó, đang cho tín hiệu khả quan hơn ở cùng giai đoạn phát triển sớm.
-
-Đối với RQ5 (\S\ref{sec:exp5_vae}), bottleneck xác suất khắc phục được collapse của encoder,
-nhưng chỉ khi kết hợp đúng lịch trình cyclical annealing thay vì trọng số KL hằng số — thử với
-trọng số hằng số mặc định ($10^{-4}$) cho một kết quả trông tốt (\texttt{pitch\_std}$=5{,}85$)
-nhưng thực chất là "KL vanishing" (bottleneck xác suất collapse về gần tất định), một false
-positive chỉ phát hiện được bằng cách đọc trực tiếp $\sigma$ chứ không phải qua chỉ số âm thanh
-gián tiếp. Sau khi sửa, tồn tại một điểm tối ưu không đơn điệu cho \texttt{kl\_weight}
-($0{,}15$ trong các giá trị đã thử) — kết quả này củng cố thêm bài học đã rút ra ở RQ3/RQ4:
-mọi chỉ số khách quan, kể cả khi trông "tốt", cần được đối chiếu với phép đo trực tiếp vào
-tham số nội bộ của mô hình trước khi tin tưởng.
-
-Nhìn tổng thể, kết quả mạnh nhất của giai đoạn hiện tại là tính nhất quán đầu cuối: dữ liệu, biểu diễn mel, student, teacher bridge và vocoder đã được nối bằng những hợp đồng có thể kiểm thử. Giá trị của kết quả này nằm ở việc biến một ý tưởng kiến trúc thành nền tảng thực nghiệm tái lập được. Bước tiếp theo không phải bổ sung thêm fallback, mà là huấn luyện nhánh latent-space tới hội tụ thật, mở rộng dữ liệu, và thiết kế đánh giá có đối chứng để đo chất lượng âm nhạc thực sự.
-
 
 \chapter{KẾT LUẬN VÀ HƯỚNG PHÁT TRIỂN}
 \label{chapter:conclusion}
@@ -1373,28 +1216,24 @@ nguồn, nhận dạng lời, trích đặc trưng phong cách, biểu diễn ph
 huấn luyện, chưng cất tri thức và suy luận. Ba kết luận chính rút ra từ các thí
 nghiệm ở Chương~\ref{chapter:experiment}:
 
-\begin{enumerate}[label=(\roman*)]
- \item \textbf{Hợp đồng biểu diễn âm thanh quyết định trực tiếp độ trung thực khi
-   giải mã} (RQ1, \S\ref{sec:e1_vocoder}): một mel-spectrogram đúng cấu hình với
-   vocoder cho correlation loopback $0{,}997$, so với dưới $0{,}9$ khi có sai lệch
-   cấu hình -- một điều kiện cần cho mọi thí nghiệm sinh sau đó, dù không phải yếu
-   tố quyết định chất lượng âm nhạc.
- \item \textbf{Không gian latent thật của teacher (64 chiều, 5~Hz) cho tín hiệu
-   sinh nhạc tốt hơn rõ rệt so với mel-space} (RQ4, \S\ref{sec:exp4_mel_vs_latent}),
-   với điều kiện bộ mã hóa latent tự huấn luyện phải có bottleneck xác suất (VAE)
-   cùng lịch trình cyclical KL annealing để tránh collapse ở quy mô dữ liệu lớn
-   (RQ5, \S\ref{sec:exp5_vae}) -- nếu không, cả hai không gian biểu diễn cho cùng
-   một triệu chứng suy biến (gần như đứng yên một cao độ), dù nguyên nhân khác
-   nhau.
- \item \textbf{Cơ chế chưng cất tri thức từ teacher DiffRhythm2 đã được xác nhận
-   hoạt động đúng} (RQ3, \S\ref{sec:distillation_chapter}): teacher thật, adapter
-   64--100 mel bins và gradient qua hai nguồn loss đều được kiểm chứng; tuy nhiên
-   bằng chứng hiện có mới đủ xác nhận cơ chế, chưa đủ để khẳng định mức cải thiện
-   chất lượng cụ thể.
-\end{enumerate}
+Thứ nhất, hợp đồng biểu diễn âm thanh quyết định trực tiếp độ trung thực khi
+giải mã (RQ1, \S\ref{sec:e1_vocoder}): một mel-spectrogram đúng cấu hình với
+vocoder cho correlation loopback $0{,}997$, so với dưới $0{,}9$ khi có sai lệch
+cấu hình -- một điều kiện cần cho mọi thí nghiệm sinh sau đó, dù không phải yếu
+tố quyết định chất lượng âm nhạc. Thứ hai, không gian latent thật của teacher (64
+chiều, 5~Hz) cho tín hiệu sinh nhạc tốt hơn rõ rệt so với mel-space
+(RQ4, \S\ref{sec:exp4_mel_vs_latent}), với điều kiện bộ mã hóa latent tự huấn
+luyện phải có bottleneck xác suất (VAE) cùng lịch trình cyclical KL annealing để
+tránh collapse ở quy mô dữ liệu lớn (RQ5, \S\ref{sec:exp5_vae}) -- nếu không, cả
+hai không gian biểu diễn cho cùng một triệu chứng suy biến (gần như đứng yên một
+cao độ), dù nguyên nhân khác nhau. Thứ ba, cơ chế chưng cất tri thức từ teacher
+DiffRhythm2 đã được xác nhận hoạt động đúng (RQ3, \S\ref{sec:distillation_chapter}):
+teacher thật, lớp ánh xạ 64--100 mel bins và gradient qua hai nguồn loss đều được
+kiểm chứng; tuy nhiên bằng chứng hiện có mới đủ xác nhận cơ chế, chưa đủ để khẳng
+định mức cải thiện chất lượng cụ thể.
 
 Tại thời điểm hoàn thành báo cáo, checkpoint encoder tốt nhất
-($\texttt{kl\_weight}=0{,}15$, Thí nghiệm 5) đang được dùng để huấn luyện chưng cất
+($\beta=0{,}15$, Thí nghiệm 5) đang được dùng để huấn luyện chưng cất
 quy mô đầy đủ trên toàn bộ dữ liệu, nhưng quá trình này chưa hội tụ nên chưa có số
 liệu chất lượng cuối cùng. Do đó, kết luận phù hợp nhất là đề tài đã hoàn thành một
 pipeline nghiên cứu khả dụng, minh bạch về giới hạn và có cơ sở thực nghiệm để mở
@@ -1405,17 +1244,18 @@ liệu huấn luyện, số bước/epoch, hoặc tài nguyên tính toán -- v�
 chứng bằng cách mở rộng thêm ở các hướng nêu dưới đây.
 
 \section{Hướng phát triển}
+\label{sec:future_work}
 
 Dựa trên các kết luận trên, đề tài đề xuất các hướng phát triển tiếp theo theo thứ
 tự ưu tiên:
 \begin{enumerate}[label=\arabic*)]
-    \item Huấn luyện chưng cất (\texttt{train-distill}) trên checkpoint encoder
-      $\texttt{kl\_weight}=0{,}15$ tới hội tụ thật, thay vì bị giới hạn bởi thời
-      gian/quota GPU như hiện tại; đánh giá bằng cả \texttt{pitch\_std} lẫn chỉ số
-      độ rõ lời (PhoWhisper WER) trên nhiều mẫu hơn một vài bài.
-    \item Nếu còn dư địa tài nguyên, thử tách riêng số hạng KL\_G/KL\_I theo Rivera
+    \item Huấn luyện chưng cất trên checkpoint encoder
+      $\beta=0{,}15$ tới hội tụ thật, thay vì bị giới hạn bởi thời
+      gian/quota GPU như hiện tại; đánh giá bằng cả SD cao độ lẫn chỉ số
+      độ rõ lời (nhận dạng tiếng nói tự động) trên nhiều mẫu hơn một vài bài.
+    \item Nếu còn dư địa tài nguyên, thử tách riêng số hạng $\mathrm{KL}_G$/$\mathrm{KL}_I$ theo Rivera
       (arXiv:2309.13160) thay cho KL chuẩn, nhằm giảm rủi ro over-regularization đã
-      quan sát được ở $\texttt{kl\_weight}=0{,}3$ (\S\ref{sec:exp5_vae}).
+      quan sát được ở $\beta=0{,}3$ (\S\ref{sec:exp5_vae}).
     \item Nâng cao số lượng và chất lượng của tập dữ liệu nhạc Việt Nam.
     \item Tổ chức các phương pháp đánh giá chủ quan như MOS/CMOS với người nghe và đánh giá độ rõ lời tiếng Việt.
     \item Mở rộng mô hình, tích hợp các yếu tố khác như thanh điệu, alignment và pitch/F0 hoặc melody.
