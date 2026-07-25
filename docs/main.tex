@@ -969,14 +969,20 @@ Trước khi chạy full, đã kiểm chứng cẩn thận từng bước: verif
 mode có sample ngẫu nhiên, gradient chảy ngược qua sample, KL loss hữu hạn, 29/29 test pass), rồi
 smoke-test thật trên Kaggle (6 bài, 1 mỗi phần, 1 epoch) — \texttt{recon\_loss=3{,}645},
 \texttt{kl\_loss=0{,}042}, không NaN, \texttt{peak\_vram\_gb=7{,}988} khớp đúng benchmark VRAM cũ.
-Sau khi xác nhận đúng đắn, mới chạy full 1839 bài/10 epoch — kết quả ở \S\ref{chapter:conclusion}.
+Sau khi xác nhận đúng đắn, chạy full 1839 bài/10 epoch: \texttt{recon\_loss} giảm mượt
+$2{,}245\to\mathbf{1{,}217}$ (tốt hơn cả hai lần chạy trước không-KL). \texttt{kl\_loss} tăng dần
+đều suốt 10 epoch ($0{,}93\to3{,}35$) thay vì hội tụ — với trọng số $10^{-4}$, đóng góp của KL vào
+tổng loss chỉ $\approx0{,}03\%$, nên chỉ sanity-check thật mới biết được liệu regularization có
+đủ mạnh hay không.
 
-Song song, một checkpoint tạm dùng encoder 249 bài đã xác nhận khoẻ mạnh
-(\S\ref{sec:latent_space}) đã được bắt đầu để không bỏ trống bước \texttt{MicroDiT}+CFM trên
-latent-space (chưa từng chạy, mọi kết quả latent-space trước đó đều từ \texttt{NativeDiTStudent}
-đã gộp/xoá, \S\ref{sec:native_dit}) — nhưng bị dừng lại để ưu tiên xác nhận kết quả của encoder
-VAE mới trước, theo đúng nguyên tắc kiểm chứng từng bước trước khi đi tiếp. Xem kết quả cuối cùng
-(encoder VAE có ổn định không, và bước CFM/distillation tiếp theo) ở \S\ref{chapter:conclusion}.
+\textbf{Kết quả: THÀNH CÔNG rõ rệt.} \texttt{pitch\_std\_semitones} giải mã trung bình
+$\mathbf{5{,}85}$ so với $9{,}46$ của audio thật — nhảy vọt từ $0{,}44$/$0{,}78$ (hai lần collapse
+trước, \S\ref{sec:latent_space}) lên gần đúng dải khoẻ mạnh của checkpoint 249-bài cũ
+($6{,}16$--$12{,}38$). Một bài còn vượt cả pitch\_std của chính audio thật. Xác nhận chẩn đoán:
+thiếu bước xác suất/KL chính là nguyên nhân chính gây collapse ở quy mô dữ liệu lớn — thêm nó, dù
+trọng số nhỏ và bản thân KL loss không hội tụ, đã đủ thay đổi hẳn hành vi encoder theo hướng tốt.
+Encoder này (huấn luyện trên toàn bộ 1839 bài, không qua vòng Vocos) là checkpoint tốt nhất hiện
+có, dùng cho bước CFM training tiếp theo — kết quả ở \S\ref{chapter:conclusion}.
 
 \section{DiffRhythm2 Distillation}
 \label{sec:distillation_chapter}

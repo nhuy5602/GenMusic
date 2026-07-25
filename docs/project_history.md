@@ -1780,7 +1780,23 @@ gọi, gradient chảy ngược qua sample về encoder, KL loss ra số hữu h
 khởi tạo ngẫu nhiên, gần 0 như lý thuyết dự đoán), 29/29 unit test vẫn pass. Sau đó smoke-test thật
 trên Kaggle (6 bài, 1 mỗi phần, 1 epoch): `recon_loss=3{,}645`, `kl_loss=0{,}042` — không NaN,
 `peak_vram_gb=7{,}988` khớp chính xác benchmark VRAM cũ ở batch=2 (thêm kênh mu/logvar không đổi
-đáng kể footprint bộ nhớ). Đạt điều kiện để chạy full 1839 bài, 10 epoch — kết quả ở \S5 khi có.
+đáng kể footprint bộ nhớ). Đạt điều kiện để chạy full.
+
+**Kết quả full 1839 bài, 10 epoch, `kl_weight=10^{-4}`**: `recon_loss` giảm mượt
+$2{,}245\to\mathbf{1{,}217}$ (tốt hơn cả hai lần chạy trước, không-KL). Đáng chú ý: `kl_loss` tăng
+dần đều suốt 10 epoch ($0{,}93\to3{,}35$) thay vì hội tụ — với trọng số $10^{-4}$, đóng góp của KL
+vào tổng loss chỉ $\approx0{,}03\%$, nên không rõ ngay liệu regularization có đủ mạnh hay network
+đang "phớt lờ" nó.
+
+**Sanity-check quyết định**: `pitch_std_semitones` giải mã trung bình
+**$\mathbf{5{,}85}$** so với $9{,}46$ của audio thật — **nhảy vọt từ $0{,}44$/$0{,}78$ (hai lần
+collapse trước) lên gần đúng dải khoẻ mạnh của checkpoint 249-bài cũ ($6{,}16$--$12{,}38$,
+§4.24)**. Từng bài: $6{,}98$; $3{,}49$; $6{,}31$; $5{,}00$; $7{,}47$ — một bài
+(`02ODKglDVQs`, $7{,}47$) còn vượt cả pitch\_std của chính audio thật ($6{,}22$). **Xác nhận rõ
+ràng chẩn đoán ở đầu §4.30 là đúng**: thiếu bước xác suất/KL chính là nguyên nhân chính gây
+collapse ở quy mô dữ liệu lớn, và thêm nó — dù trọng số nhỏ và KL loss không hội tụ — đã đủ để
+thay đổi hẳn hành vi encoder theo hướng tốt. Encoder này đạt điều kiện dùng cho bước
+`precompute-latent-dataset`/CFM training tiếp theo.
 
 ---
 

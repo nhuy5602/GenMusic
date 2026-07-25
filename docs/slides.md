@@ -182,6 +182,17 @@ Verify từng bước trước khi chạy full: local (eval xác định, train 
 
 ---
 
+## 🎉 Kết quả: VAE fix thành công
+
+- Full 1839 bài, 10 epoch: `recon_loss` 2,245→**1,217** (tốt hơn 2 lần chạy trước). `kl_loss` tăng dần (0,93→3,35), không hội tụ — trọng số 1e-4 rất nhỏ.
+- **Sanity-check quyết định**: `pitch_std_semitones` trung bình **5,85** (so với 9,46 audio thật) — nhảy vọt từ 0,44/0,78 (collapse) lên **gần đúng dải khoẻ mạnh của checkpoint cũ 249-bài (6,16–12,38)**.
+- Một bài (`02ODKglDVQs`) đạt 7,47 — **vượt cả** pitch_std của chính audio thật (6,22).
+- **Xác nhận chẩn đoán đúng**: thiếu KL/xác suất là nguyên nhân chính gây collapse ở quy mô lớn.
+
+→ Encoder train trên toàn bộ 1839 bài (không qua Vocos, có VAE thật) là checkpoint tốt nhất hiện có. Chuyển sang bước CFM training.
+
+---
+
 ## Kết quả kiểm chứng hạ tầng (RQ1–RQ2)
 
 | Thiết lập | Kết quả |
