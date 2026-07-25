@@ -984,6 +984,50 @@ trọng số nhỏ và bản thân KL loss không hội tụ, đã đủ thay đ
 Encoder này (huấn luyện trên toàn bộ 1839 bài, không qua vòng Vocos) là checkpoint tốt nhất hiện
 có, dùng cho bước CFM training tiếp theo — kết quả ở \S\ref{chapter:conclusion}.
 
+\subsection{Phát hiện sâu hơn: KL ``vanishing'' — VAE ở trên chưa thật sự hoạt động}
+\label{sec:kl_vanishing}
+
+Sau khi nghe checkpoint trên, người dùng báo âm thanh rè định kỳ. Đọc thẳng source
+\texttt{decode\_audio} (\texttt{DiffRhythm2-main/bigvgan/model.py}) xác nhận: hàm này không
+crossfade biên chunk, chỉ cắt \texttt{(overlap//2)*9600} mẫu mỗi cạnh rồi nối — code cũ hard-code
+\texttt{overlap=2}, thấp hơn hẳn mặc định thư viện (\texttt{overlap=5}). Sửa xong, người dùng hoài
+nghi tiếp: giải mã nhiễu ngẫu nhiên thuần (không qua encoder) qua đúng decoder đã sửa cho
+\texttt{pitch\_std\_semitones}$\approx4{,}2$ — rất gần con số ``khoẻ mạnh'' $5{,}85$ ở trên, thay
+vì gần 0. Loại được overlap là nguyên nhân (A/B overlap=2 vs 5 trên cùng nhiễu: $4{,}31$ vs
+$4{,}20$, gần như nhau) — nghĩa là \texttt{pitch\_std\_semitones} một mình không đủ phân biệt
+encoder học được gì với bất kỳ latent biến thiên theo thời gian nào.
+
+\textbf{Chẩn đoán quyết định}: nạp checkpoint thật, forward qua audio thật, đọc trực tiếp
+$\mu$/$\log\sigma^2$/$\sigma=\exp(0{,}5\log\sigma^2)$: $\sigma_{\text{mean}}\approx0{,}003$--$0{,}005$
+(gần như 0!), $\log\sigma^2_{\text{mean}}\approx-11$ đến $-12$, trong khi $\mu$ vẫn có scale
+bình thường ($|\mu|_{\text{mean}}\approx0{,}93$--$0{,}97$). Nhiễu reparameterization
+($\sigma\cdot\epsilon$) không đáng kể so với $\mu$ — tức $z\approx\mu$ gần như tất định ngay cả
+lúc train. Về bản chất, ``VAE'' ở trên hoạt động như một autoencoder tất định thường, dù code
+reparameterization/KL đúng về toán học: \texttt{kl\_weight}$=10^{-4}$ cố định quá nhỏ để cản mạng
+tự thu nhỏ $\sigma$ về 0 nhằm loại bỏ chi phí mà nhiễu gây ra cho reconstruction — khớp đúng xu
+hướng $\mathcal{L}_{\mathrm{KL}}$ tăng dần không hội tụ đã ghi nhận ở trên.
+
+Hai tài liệu tham khảo xác nhận đây là bệnh lý đã biết: Rivera, \emph{``How to train your
+VAE''} (arXiv:2309.13160) chỉ ra KL chuẩn gộp chung việc phạt phương sai cá nhân collapse về 0
+(cần thiết) với việc phạt trung bình cá nhân dạt về 0 (xoá thông tin per-sample); và Fu et al.,
+\emph{``Cyclical Annealing Schedule: A Simple Approach to Mitigating KL Vanishing''} (NAACL 2019,
+Microsoft Research) đặt tên chính xác hiện tượng \textbf{``KL vanishing''} — $\beta$ hằng số khiến
+decoder học cách phớt lờ $z$ — và đề xuất lặp lại chu kỳ tăng $\beta$ từ 0 nhiều lần thay vì tăng
+một lần rồi giữ nguyên.
+
+Kiểm chứng cục bộ trước khi sửa code: fine-tune checkpoint đã collapse 40 bước với
+\texttt{kl\_weight}$=0{,}05$ (500 lần cũ) — $\sigma_{\text{mean}}$ tăng đều từ $0{,}029$ lên
+$0{,}22$--$0{,}36$, xác nhận trực tiếp cơ chế lý thuyết. Đã sửa \texttt{train\_latent\_encoder}:
+thay \texttt{kl\_weight} hằng số bằng lịch trình cyclical annealing (4 chu kỳ, mỗi chu kỳ ramp
+tuyến tính $0\to$\texttt{kl\_weight} nửa đầu rồi giữ nguyên nửa sau). Smoke-test Kaggle (6 bài, 2
+epoch, \texttt{kl\_weight} tối đa $0{,}05$) xác nhận: checkpoint mới có $\sigma_{\text{mean}}\approx0{,}97$
+(gần đúng $\mathcal{N}(0,1)$, so với $0{,}003$ cũ), $\mu$ nhỏ hơn nhiều ($|\mu|_{\text{mean}}\approx0{,}22$)
+— mạng giờ thật sự dựa vào phần xác suất. \texttt{pitch\_std\_semitones} giải mã từ checkpoint
+2-epoch này còn thấp ($0{,}71$ trung bình) — dự kiến, vì 6 bài/2 epoch chưa đủ để encoder học lại
+reconstruction tốt dưới áp lực KL thật lần đầu. Đã khởi động full-corpus retrain (1839 bài, 10
+epoch, \texttt{kl\_weight}$=0{,}05$ cyclical) để có câu trả lời cuối cùng — xem
+\texttt{docs/project\_history.md} \S4.31 để cập nhật kết quả.
+
 \section{DiffRhythm2 Distillation}
 \label{sec:distillation_chapter}
 

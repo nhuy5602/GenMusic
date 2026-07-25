@@ -193,6 +193,23 @@ Verify từng bước trước khi chạy full: local (eval xác định, train 
 
 ---
 
+## ⚠️ Phát hiện sâu hơn: KL "vanishing" — VAE trên chưa thật sự hoạt động
+
+- Nghe thử: audio rè → fix `decode_audio` overlap 2→5 (đúng mặc định BigVGAN). Nhưng test tiếp: **nhiễu ngẫu nhiên thuần qua decoder** cũng cho `pitch_std≈4,2` — gần bằng encoder "khoẻ" (5,85)!
+- **Chẩn đoán**: đọc trực tiếp σ (sigma) của checkpoint trên audio thật → **σ_mean≈0,003** (gần như 0!). Nhiễu reparameterization không đáng kể so với μ (scale≈1) → `z≈μ` gần như tất định. VAE này thực chất đang hoạt động như autoencoder thường.
+- Nguyên nhân: `kl_weight=1e-4` **hằng số** quá nhỏ để cản mạng tự thu nhỏ σ về 0 — đúng hiện tượng **"KL vanishing"** (Fu et al., NAACL 2019, Microsoft Research) và giới hạn KL chuẩn (Rivera, arXiv:2309.13160).
+
+---
+
+## Fix: Cyclical KL Annealing
+
+- Kiểm chứng cục bộ: fine-tune 40 bước với `kl_weight=0,05` (500× cũ) → σ_mean tăng đều 0,029→0,22-0,36. Xác nhận cơ chế đúng.
+- **Đã sửa**: thay `kl_weight` hằng số bằng lịch trình **cyclical annealing** (Fu et al. 2019) — 4 chu kỳ, mỗi chu kỳ ramp 0→`kl_weight` rồi giữ nguyên, lặp lại thay vì tăng một lần.
+- **Smoke-test Kaggle** (6 bài, 2 epoch): σ_mean **0,003→0,97** (gần đúng N(0,1)!), μ nhỏ hơn nhiều (0,93→0,22) — mạng giờ thật sự dùng phần xác suất.
+- `pitch_std` giải mã còn thấp (0,71) ở checkpoint 2-epoch này — dự kiến, chưa đủ train dưới áp lực KL thật. Đã khởi động full-corpus retrain (1839 bài, 10 epoch) để có kết quả cuối.
+
+---
+
 ## Kết quả kiểm chứng hạ tầng (RQ1–RQ2)
 
 | Thiết lập | Kết quả |

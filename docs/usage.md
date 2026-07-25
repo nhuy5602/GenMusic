@@ -91,34 +91,45 @@ why, and `docs/project_history.md` §4.24 for the bugs found/fixed along the
 way). Same `MicroDiT` backbone as mel-space, no architecture flag needed:
 
 ```powershell
-# 1. Pretrain a small encoder against the real, frozen BigVGAN decoder (reconstruction loss only)
-uv run python cli.py train-latent-encoder --dataset dataset/diff_rhythm_dataset --checkpoint outputs/latent_encoder.pt --epochs 40 --batch-size 4
+# 1. Pretrain a small encoder against the real, frozen BigVGAN decoder
+#    (reconstruction loss + KL divergence -- a real VAE bottleneck, see
+#    docs/architecture.md's "sec:vae_bottleneck" section for why this matters)
+uv run python cli.py train-latent-encoder --dataset dataset/diff_rhythm_dataset --checkpoint outputs/latent_encoder.pt --epochs 40 --batch-size 4 --kl-weight 1e-4 --num-workers 4
 
-# 2. Convert the mel dataset into a latent one (64-dim/5Hz) using that encoder
+# 2. Sanity-check the encoder BEFORE trusting it downstream (see note below)
+uv run python scripts/check_latent_encoder_quality.py --encoder-checkpoint outputs/latent_encoder.pt --dataset dataset/diff_rhythm_dataset
+
+# 3. Convert the mel dataset into a latent one (64-dim/5Hz) using that encoder
 uv run python cli.py precompute-latent-dataset --source-dataset dataset/diff_rhythm_dataset --encoder-checkpoint outputs/latent_encoder.pt --out dataset/latent_dataset
 
-# 3. Train the CFM student inside that latent space
+# 4. Train the CFM student inside that latent space
 uv run python cli.py train-self --dataset dataset/latent_dataset --checkpoint outputs/latent_cfm_model.pt --lambda-vocal 0 --epochs 300 --batch-size 8
 
-# 4. Generate -- decodes via the real frozen BigVGAN decoder automatically (config.latent_mode=True), not Vocos
+# 5. Generate -- decodes via the real frozen BigVGAN decoder automatically (config.latent_mode=True), not Vocos
 uv run python cli.py generate-local --text "..." --style "..." --checkpoint outputs/latent_cfm_model.pt --out outputs/latent_demo
 ```
 
-Steps 1 and 4 require the DiffRhythm2 repo cloned onto `PYTHONPATH` (same
+Steps 1, 2, and 5 require the DiffRhythm2 repo cloned onto `PYTHONPATH` (same
 requirement as distillation above), since `bigvgan` is not a pip package —
-needed to load the real frozen decoder they both call. **Before trusting a
-freshly (re)trained encoder**, verify it didn't collapse (a real failure
-mode hit once already — flat/oscillating loss curve, near-zero
-`pitch_std_semitones` when ground-truth latents are decoded directly,
-bypassing the CFM student — see `scripts/evaluate_generation_quality.py` and
-`docs/project_history.md` §4.24's before/after numbers). Distillation
-(`train-distill`, §3a) also works directly on a `latent_dataset`: since the
-student's latent is already at the teacher's own 64-dim/5Hz rate, the
-mel-bin/frame-rate bridging described in §3a is automatically skipped.
+needed to load the real frozen decoder they all call. **Before trusting a
+freshly (re)trained encoder**, always run step 2: a real failure mode hit
+twice already at scale is a collapsed encoder (flat/oscillating loss curve,
+near-zero `pitch_std_semitones` when ground-truth latents are decoded
+directly, bypassing the CFM student). Root cause was a missing probabilistic
+bottleneck; fixed by adding `mu`/`logvar` + reparameterization + KL loss
+(the `--kl-weight` flag in step 1) — see `docs/project_history.md` §4.29-4.30
+for the before/after numbers. If audio decoded through the encoder sounds
+crackly despite a healthy `pitch_std_semitones`, that's a separate issue in
+BigVGAN's chunked `decode_audio` overlap parameter, not the encoder itself —
+see §4.31. Distillation (`train-distill`, §3a) also works directly on a
+`latent_dataset`: since the student's latent is already at the teacher's own
+64-dim/5Hz rate, the mel-bin/frame-rate bridging described in §3a is
+automatically skipped.
 
 On Kaggle, in order (see `scripts/README.md` for the full list):
 ```powershell
-uv run python scripts/run_kaggle_latent_encoder.py --epochs 40 --batch-size 4
+uv run python scripts/run_kaggle_latent_encoder.py --epochs 40 --batch-size 4 --kl-weight 1e-4
+uv run python scripts/run_kaggle_check_latent_encoder_quality.py --encoder-checkpoint outputs/.../latent_encoder.pt
 uv run python scripts/run_kaggle_latent_pipeline.py --encoder-checkpoint outputs/.../latent_encoder.pt --cfm-epochs 300
 ```
 If a CFM training run gets cut off partway (Kaggle sessions have a

@@ -1798,6 +1798,74 @@ collapse ở quy mô dữ liệu lớn, và thêm nó — dù trọng số nhỏ
 thay đổi hẳn hành vi encoder theo hướng tốt. Encoder này đạt điều kiện dùng cho bước
 `precompute-latent-dataset`/CFM training tiếp theo.
 
+### 4.31 `decode_audio` overlap quá thấp gây rè, và phát hiện quan trọng hơn: KL "vanishing" — VAE ở §4.30 chưa thật sự hoạt động
+
+Sau khi nghe thử checkpoint §4.30, người dùng báo âm thanh decoded bị rè ("rè" — crackle định kỳ).
+Đọc thẳng source code thật của `decode_audio` (`DiffRhythm2-main/bigvgan/model.py`) xác nhận: hàm
+này KHÔNG crossfade biên các chunk, chỉ cắt `(overlap//2)*9600` mẫu ở mỗi cạnh chunk rồi nối lại —
+`overlap` quá nhỏ để lại vùng biên bị artifact bởi conv boundary. Code cũ hard-code
+`overlap=min(2, chunk_size-1)`, thấp hơn hẳn mặc định gốc của thư viện (`overlap=5`), không có lý
+do rõ ràng. Sửa thành `overlap=min(5, chunk_size-1)` ở cả `text_to_music_diffusion.py` và
+`latent_encoder_training.py`.
+
+Người dùng sau đó hoài nghi tiếp: "kể cả pass noise vào model vẫn nghe hay" — đúng là một control
+đáng làm (giống tinh thần §4.26). Test trực tiếp: giải mã $x\sim\mathcal N(0,I)$ (không qua
+encoder) cùng shape latent, qua đúng decoder đã sửa overlap, cho `pitch_std_semitones≈4.2` — **rất
+gần** với con số "khoẻ mạnh" của encoder đã fix ở §4.30 (5.33–5.85), thay vì gần 0 như kỳ vọng.
+Loại trừ được overlap là nguyên nhân (test A/B overlap=2 vs overlap=5 trên cùng tensor nhiễu cho
+kết quả gần như nhau: 4.31 vs 4.20) — nghĩa là `pitch_std_semitones` một mình không đủ phân biệt
+"encoder học được điều gì" với "bất kỳ latent biến thiên theo thời gian nào, kể cả nhiễu thuần",
+đúng như giới hạn đã ghi nhận ở §4.26 nhưng còn rõ hơn sau khi checkpoint đã "khoẻ" theo metric cũ.
+
+**Chẩn đoán quyết định**: nạp checkpoint §4.30 thật, cho chạy qua audio thật (không train, chỉ
+forward), đọc trực tiếp `mu`/`logvar`/`sigma=exp(0.5·logvar)`:
+
+| | `sigma` (mean) | `sigma` (min–max) | `logvar` (mean) | `mu` (abs mean / std) |
+|---|---|---|---|---|
+| Checkpoint §4.30 (`kl_weight=1e-4` cố định) | **0,003–0,005** | 0,00001–0,17 | −11 đến −12 | 0,93–0,97 / 1,15–1,2 |
+
+`sigma≈0,003` gần như bằng 0 — nhiễu reparameterization (`σ·ε`) không đáng kể so với `mu`
+(scale≈1), tức là `z≈mu` gần như tất định ngay cả lúc train. Về bản chất, "VAE" ở §4.30 đang hoạt
+động như một autoencoder tất định thường, dù code reparameterization/KL đúng về mặt toán học.
+Nguyên nhân: `kl_weight=1e-4` cố định suốt quá trình train quá nhỏ để cản việc mạng tự thu nhỏ
+`sigma` về 0 nhằm loại bỏ chi phí (với reconstruction) mà nhiễu reparameterization gây ra — đúng
+khớp xu hướng `kl_loss` tăng dần không hội tụ đã ghi nhận ở §4.30 (0,93→3,35 qua 10 epoch): đó
+chính là quá trình collapse đang diễn ra, không phải học tốt.
+
+Người dùng chia sẻ hai bài báo xác nhận đây là bệnh lý đã biết:
+- Rivera, *"How to train your VAE"* (arXiv:2309.13160): KL chuẩn (Kingma & Welling 2014) gộp
+  chung hai hiệu ứng — phạt phương sai cá nhân collapse về 0 (cần thiết) VÀ phạt trung bình cá
+  nhân dạt về 0 (xoá thông tin per-sample nếu trọng số đủ lớn) — đề xuất tách hai term
+  (`KL_G`/`KL_I`) và thêm PatchGAN. Đầy đủ nhưng tốn thời gian implement hơn so với deadline cho
+  phép.
+- Fu et al., *"Cyclical Annealing Schedule: A Simple Approach to Mitigating KL Vanishing"*
+  (NAACL 2019, nghiên cứu Microsoft): đặt tên chính xác hiện tượng này là **"KL vanishing"** —
+  train với `β` (kl_weight) hằng số khiến KL term bị triệt tiêu, decoder học cách phớt lờ `z`.
+  Đề xuất: thay vì `β` tăng dần một lần rồi giữ nguyên (monotonic schedule chuẩn), lặp lại chu kỳ
+  tăng `β` từ 0 nhiều lần (cyclical annealing) — mỗi chu kỳ cho decoder cơ hội mới để phụ thuộc
+  vào `z` giàu thông tin hơn thay vì ổn định vào trạng thái phớt lờ nó.
+
+**Kiểm chứng nhanh trước khi sửa code** (fine-tune cục bộ checkpoint đã collapse, 40 bước, 5 audio
+thật, `kl_weight=0,05` — 500 lần giá trị cũ): `sigma_mean` tăng đều từ 0,029 (bước 0) lên
+0,22–0,36 (bước 30–39) — xác nhận trực tiếp: tăng trọng số KL đảo ngược được collapse, đúng cơ chế
+lý thuyết, không cần đợi Kaggle.
+
+**Đã sửa `train_latent_encoder`** (`src/training/latent_encoder_training.py`): thêm
+`_kl_weight_at(step)` implement cyclical annealing (Fu et al., 4 chu kỳ, mỗi chu kỳ ramp tuyến
+tính 0→`kl_weight` trong nửa đầu rồi giữ nguyên nửa sau) thay cho `kl_weight` hằng số; log thêm
+`kl_weight` hiện tại mỗi step để kiểm tra lịch trình đang thực sự dao động. `run_kaggle_latent_encoder.py`
+thêm passthrough `--kl-weight`.
+
+**Smoke-test Kaggle xác nhận** (6 bài, 2 epoch, `kl_weight` tối đa 0,05): checkpoint mới cho
+`sigma_mean≈0,97` (**gần đúng N(0,1)**, so với 0,003 cũ), `logvar_mean≈−0,08` (gần 0, đúng lý
+thuyết), `mu` giờ nhỏ hơn nhiều (abs\_mean≈0,22 so với 0,93 cũ) — mạng giờ thật sự dựa vào phần
+xác suất thay vì giả tất định qua `mu` lớn. `pitch_std_semitones` giải mã từ checkpoint 2-epoch
+này thấp (0,42–0,94, trung bình 0,71) — nhưng dự kiến: 6 bài/2 epoch với áp lực KL thật lần đầu
+chưa đủ để encoder học lại reconstruction tốt (`recon_loss` thực tế tăng nhẹ 2,79→3,57 qua 2
+epoch của smoke test). `sigma` đúng là điều kiện CẦN của một VAE thật; chất lượng decode cần train
+đủ lâu mới đánh giá được — đã khởi động lại full-corpus retrain (1839 bài, 10 epoch,
+`kl_weight=0,05` cyclical) để có câu trả lời thật.
+
 ---
 
 ## 5. Kết luận và hướng phát triển

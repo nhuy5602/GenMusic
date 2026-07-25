@@ -148,10 +148,19 @@ def train_latent_encoder(
     term is known to regress toward a "safe" low-dynamic-range average once
     the target distribution is diverse enough (docs/project_history.md §4.29
     draws the parallel to the same regression-to-the-mean failure already
-    diagnosed for the CFM loss, §4.11-4.13). Default 1e-4 is a conservative
-    starting point (too large risks posterior collapse the other way -- KL
-    dominating and crushing the latent toward pure prior noise, destroying
-    reconstruction instead)."""
+    diagnosed for the CFM loss, §4.11-4.13).
+
+    kl_weight is applied via a CYCLICAL annealing schedule (Fu et al. 2019,
+    "Cyclical Annealing Schedule: A Simple Approach to Mitigating KL
+    Vanishing"), not as a flat constant -- a flat kl_weight=1e-4, even though
+    the math/gradients were verified correct, empirically let sigma collapse
+    to ~0.003 (near-deterministic encoder, "KL vanishing": the standard
+    failure mode this schedule targets) since the network can freely shrink
+    sigma toward 0 to eliminate reparameterization noise's cost to
+    reconstruction, and a constant weight this small barely resists that.
+    Ramping kl_weight 0->kl_weight repeatedly (see _kl_weight_at below)
+    periodically re-opens the latent "path" instead of letting the encoder
+    settle into ignoring it once and never recovering."""
     torch, DataLoaderClass = _torch()
     from ..models.latent_codec import LatentAudioEncoder, kl_divergence_loss, load_frozen_decoder, multi_scale_mel_loss
 
@@ -226,6 +235,17 @@ def train_latent_encoder(
 
         return learning_rate * 0.5 * (1.0 + math.cos(math.pi * progress))
 
+    kl_anneal_cycles = 4
+    kl_anneal_ratio = 0.5  # fraction of each cycle spent ramping 0->kl_weight; the rest holds at kl_weight
+
+    def _kl_weight_at(step: int) -> float:
+        cycle_length = max(1, total_steps // kl_anneal_cycles)
+        step_in_cycle = step % cycle_length
+        ramp_length = max(1, round(cycle_length * kl_anneal_ratio))
+        if step_in_cycle >= ramp_length:
+            return kl_weight
+        return kl_weight * (step_in_cycle / ramp_length)
+
     started = time.perf_counter()
     losses: list[float] = []
     loss_curve: list[dict[str, float]] = []
@@ -272,7 +292,8 @@ def train_latent_encoder(
             reconstructed_48k = decoder_handle.decoder.decode_audio(latent, overlap=min(5, chunk_size - 1), chunk_size=chunk_size)
             recon_loss = multi_scale_mel_loss(reconstructed_48k, target_48k, sample_rate=decoder_handle.sampling_rate)
             kl_loss = kl_divergence_loss(mu, logvar)
-            loss = recon_loss + kl_weight * kl_loss
+            current_kl_weight = _kl_weight_at(global_step)
+            loss = recon_loss + current_kl_weight * kl_loss
             loss.backward()
             torch.nn.utils.clip_grad_norm_(encoder.parameters(), max_norm=grad_clip_norm)
             optimizer.step()
@@ -289,7 +310,7 @@ def train_latent_encoder(
                 vram_note = ""
                 if selected_device.startswith("cuda"):
                     vram_note = f" peak_vram_gb={torch.cuda.max_memory_allocated(selected_device) / 1e9:.2f}"
-                print(f"epoch={epoch + 1} step={global_step} lr={_lr_at(global_step):.7f} loss={loss_value:.6f} recon={recon_loss_value:.6f} kl={kl_loss_value:.4f}{vram_note}", flush=True)
+                print(f"epoch={epoch + 1} step={global_step} lr={_lr_at(global_step):.7f} loss={loss_value:.6f} recon={recon_loss_value:.6f} kl={kl_loss_value:.4f} kl_weight={current_kl_weight:.6f}{vram_note}", flush=True)
 
         avg_loss = sum(epoch_losses) / max(1, len(epoch_losses))
         avg_recon_loss = sum(epoch_recon_losses) / max(1, len(epoch_recon_losses))
@@ -308,6 +329,8 @@ def train_latent_encoder(
         "datasets": [str(d.resolve()) for d in dataset_dirs],
         "raw_audio_mode": raw_audio_mode,
         "kl_weight": kl_weight,
+        "kl_anneal_cycles": kl_anneal_cycles,
+        "kl_anneal_ratio": kl_anneal_ratio,
         "checkpoint": str(destination.resolve()),
         "device": selected_device,
         "record_count": len(records),

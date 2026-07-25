@@ -28,9 +28,6 @@ I run for X."
 - **`run_kaggle_multi_part_training.py`** — preprocess and train across
   multiple dataset parts (for scaling past a single-part corpus), a
   deliberately separate workflow from the single-dataset scripts above.
-- **`run_pipeline.py`** — local (no Kaggle) end-to-end smoke test:
-  preprocess → train → sample, for verifying your environment before
-  spending any Kaggle GPU time.
 - **`run_kaggle_preprocess_raw_audio.py`** — same preprocessing, but
   `--raw-audio` (skips mel, keeps `waveforms/*.pt` raw 24kHz tensors instead)
   — see `docs/data_preparation.md`'s "`--raw-audio`" section. Consumable by
@@ -77,6 +74,11 @@ fixed. Run in this order:
    existing checkpoint: generates one sample, no training, no dataset
    (~10 minutes). Use this between training rounds instead of a full
    pipeline/resume run just to listen to where a checkpoint currently is.
+- **`run_kaggle_check_latent_encoder_quality.py`** — Kaggle launcher for
+  `check_latent_encoder_quality.py` (see Utilities below): uploads an
+  encoder checkpoint and runs the ground-truth encode/decode sanity check on
+  Kaggle (needs the real `bigvgan` decoder). Run this after step 1 and before
+  trusting the encoder for step 2.
 
 ## Utilities
 

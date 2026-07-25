@@ -195,15 +195,26 @@ student that same compressed space (rather than only resampling the
   HuggingFace `ASLP-lab/DiffRhythm2`) but not its VAE encoder. Rather than
   training a full paper-faithful VAE (adversarial discriminators — too
   costly/risky for this project's data budget), this encoder is trained from
-  scratch with a plain reconstruction loss against the real, **frozen**
-  decoder (`train-latent-encoder`). Architecture: `Conv1d(1→32)` stem, five
-  `_DownsampleBlock`s (each three dilated residual units + a strided
-  downsample conv) with strides `(10,10,8,3,2)` — product 4800, matching the
-  paper's stated encode-side compression ratio — channels doubling
-  `32→64→128→256→512` (capped at 512), then `Conv1d(512→64)`. Loss
-  (`multi_scale_mel_loss`) is the unweighted average of L1-on-log-mel across
-  three STFT scales, `(n_fft, n_mels) ∈ {(512,40), (1024,80), (2048,80)}` —
-  no adversarial term.
+  scratch against the real, **frozen** decoder (`train-latent-encoder`).
+  Architecture: `Conv1d(1→32)` stem, five `_DownsampleBlock`s (each three
+  dilated residual units + a strided downsample conv) with strides
+  `(10,10,8,3,2)` — product 4800, matching the paper's stated encode-side
+  compression ratio — channels doubling `32→64→128→256→512` (capped at 512),
+  then `Conv1d(512→128)` split into `mu`/`logvar` (64 dims each). **Real
+  probabilistic bottleneck**: reparameterization trick (`z = mu +
+  exp(0.5·logvar)·ε` at train time, `z = mu` at eval) plus a KL-divergence
+  term against `LatentAudioEncoder` — a full-corpus collapse (§4.29) traced
+  to the *absence* of this bottleneck (deterministic single-point encoding
+  invites the same regression-to-the-mean pathology as the CFM loss, §4.11)
+  is what motivated adding it; see §4.30 for the fix and the before/after
+  numbers. Reconstruction loss (`multi_scale_mel_loss`) is unchanged: the
+  unweighted average of L1-on-log-mel across three STFT scales, `(n_fft,
+  n_mels) ∈ {(512,40), (1024,80), (2048,80)}`. Total loss is
+  `recon_loss + kl_weight·kl_divergence_loss` (`--kl-weight`, default
+  `1e-4`). **Deliberately not added**: an adversarial/discriminator term —
+  the other half of a paper-faithful VAE, but GAN-training instability was
+  judged not worth the risk under this project's deadline (see §4.30's own
+  reasoning).
 - **`precompute-latent-dataset`** and `MusicDiffusionConfig.latent_mode`
   wire an existing mel dataset into this space; `render_mel_to_wav()`
   branches on `latent_mode` to decode through the frozen BigVGAN decoder
@@ -220,19 +231,28 @@ student that same compressed space (rather than only resampling the
   run. `precompute-latent-dataset` does not yet read a `raw_audio_mode`
   dataset directly (still expects mel).
 
-**Failure mode hit once already, worth knowing before retraining this
-encoder**: with a flat learning rate and no gradient clipping, the loss
-curve oscillated instead of converging, and the resulting encoder collapsed
-— ground-truth latents decoded to a near-monotone, single-pitch signal
-(`pitch_std_semitones` ≈0.9, despite not being literal noise by spectral
-flatness). Fixed with LR warmup (`--warmup-steps`, default 200) + cosine
-decay + gradient-norm clipping (`--grad-clip-norm`, default 1.0), now the
-default training recipe. **Always sanity-check a retrained encoder** by
-decoding a few ground-truth latents directly (bypassing the CFM student
-entirely) and checking `pitch_std_semitones` via
-`scripts/evaluate_generation_quality.py`'s `wav_metrics` before trusting any
-downstream CFM training run — see `docs/project_history.md` §4.24 for the
-full incident and the before/after numbers.
+**Two independent collapse failure modes hit already, worth knowing before
+retraining this encoder**:
+1. At small scale (249 songs), a flat learning rate and no gradient clipping
+   made the loss curve oscillate instead of converge. Fixed with LR warmup
+   (`--warmup-steps`, default 200) + cosine decay + gradient-norm clipping
+   (`--grad-clip-norm`, default 1.0), now the default training recipe
+   (§4.24).
+2. At full scale (1839 songs), the *same* warmup/clipping recipe still
+   collapsed the encoder twice under different hyperparameters — the loss
+   curve looked healthy but decoded ground-truth latents were still
+   near-monotone/single-pitch. Root cause was architectural, not
+   optimization: no probabilistic bottleneck (§4.29-4.30, fixed by the
+   `mu`/`logvar`/KL addition described above).
+
+Both manifest the same way: `pitch_std_semitones` near-zero (≈0.4-0.9) when
+ground-truth latents are decoded directly (bypassing the CFM student
+entirely), despite not being literal noise by spectral flatness, and despite
+a normal-looking training loss curve. **Always sanity-check a retrained
+encoder** this way — `scripts/check_latent_encoder_quality.py` (or its
+Kaggle launcher, `scripts/run_kaggle_check_latent_encoder_quality.py`)
+automates exactly this check — before trusting any downstream CFM training
+run.
 
 ## Conditional Flow Matching (shared by both backbones)
 
