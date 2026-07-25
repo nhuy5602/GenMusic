@@ -21,6 +21,7 @@ dependencies = [
     "openai-whisper>=20231117",
     "demucs>=4.0.0",
     "text2phonemesequence>=0.1.4",
+    "jiwer>=4.0.0",
 ]
 
 [project.optional-dependencies]

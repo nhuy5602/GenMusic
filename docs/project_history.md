@@ -1866,6 +1866,45 @@ epoch của smoke test). `sigma` đúng là điều kiện CẦN của một VAE
 đủ lâu mới đánh giá được — đã khởi động lại full-corpus retrain (1839 bài, 10 epoch,
 `kl_weight=0,05` cyclical) để có câu trả lời thật.
 
+### 4.32 Full-corpus retrain xác nhận fix, đối chiếu với VAE âm thanh thật ngoài đời, và thêm chỉ số WER
+
+**Kết quả full-corpus (1839 bài, 10 epoch, `kl_weight=0,05` cyclical) — thành công, không lỗi**:
+`avg_loss` giảm đều mỗi epoch (2,39→1,94→1,70→...→1,30), `avg_recon` cuối 1,239 (tương đương lần
+chạy cũ không-cyclical, 1,217). Quan trọng hơn: `sigma_mean` trên audio thật giờ là
+**0,11–0,14** (so với 0,003 collapsed và 0,97 của smoke-test 2-epoch chưa hội tụ) —
+`logvar_mean≈−4,4` đến `−4,8`, một điểm cân bằng thật giữa reconstruction và regularization, không
+phải giá trị cực đoan. `pitch_std_semitones` (20s crop) = **5,88; 2,97; 5,86; 3,25; 5,66** (trung
+bình **4,72**) — khoẻ, tương đương/tốt hơn checkpoint cũ (mà `sigma` giả tạo).
+
+**Phân tích deceleration trước khi quyết định bước tiếp**: delta `recon_loss` giữa các epoch giảm
+dần rõ rệt (epoch1→2: −0,48; epoch9→10: chỉ −0,011) — gần plateau ở cấu hình này. Train thêm epoch
+cùng `kl_weight=0,05` sẽ lợi ích rất nhỏ. Nhưng `sigma` mới hồi phục một phần (0,11–0,14), chưa
+tới target lý thuyết ~1,0 — dư địa cải thiện nằm ở **tăng `kl_weight`**, không phải train thêm cùng
+cấu hình. Đã thêm `--resume-checkpoint` cho `train_latent_encoder` (nạp trọng số cũ, optimizer/lịch
+trình mới) để train tiếp từ checkpoint này với `kl_weight=0,15` (5 epoch) mà không phải trả lại chi
+phí của 10 epoch đầu.
+
+**Đối chiếu với VAE âm thanh thật ngoài đời** (tra cứu trước khi quyết định tăng `kl_weight`): Stable
+Audio 2.0's VAE — kiến trúc gần nhất với bài toán này — dùng đúng **`kl_weight=1e-4`** (Stable Audio
+1.0 dùng `1e-6`), y hệt giá trị mặc định ban đầu của project (đã collapse ở đây). Khác biệt then
+chốt giải thích tại sao 1e-4 hoạt động được ở Stable Audio nhưng không ở đây: VAE của họ có thêm
+**adversarial loss (5 discriminator, feature matching)** và **encoder+decoder được train cùng nhau
+từ đầu**; project này cố ý bỏ adversarial loss (rủi ro bất ổn GAN, xem §4.30) và train encoder mới
+ghép với **decoder đông lạnh có sẵn** (chưa từng thấy phân phối latent của encoder mới) — hai điều
+kiện làm bài toán khó hội tụ hơn ở cùng `kl_weight`, hợp lý hoá việc cần `kl_weight` lớn hơn nhiều
+(0,05–0,15) để đạt hiệu quả tương đương. Cũng tìm được một hướng nguyên tắc hơn cho tương lai:
+*"Taming Audio VAEs via Target-KL Regularization"* (arXiv:2605.17085, 2026) đề xuất regress trực
+tiếp KL về một **giá trị mục tiêu** (không phải chọn trọng số `kl_weight` mò mẫm) — sidestep hẳn
+việc đoán trọng số, nhưng chưa kịp implement trong deadline của project này; ghi lại như hướng phát
+triển tiếp theo (§5.2).
+
+**Thêm chỉ số WER (Word Error Rate qua PhoWhisper)** vào `evaluate_generation_quality.py`
+(`--with-wer`, hàm `lyric_wer`): bổ sung trục hoàn toàn mới — độ rõ lời tiếng Việt — mà pitch_std/
+spectral_flatness/voiced_ratio không đo được. Test đầu tiên trên một mẫu train-self cũ (trước fix
+VAE hôm nay) cho kết quả rất quyết đoán: PhoWhisper hallucinate lặp lại "chủ nghĩa xã hội" hàng chục
+lần rồi suy biến thành lặp "từ" — `WER=22,1` (2212%, do transcript dài bất thường) — dấu hiệu rõ
+ràng audio không chứa lời hát thật nào, một tín hiệu dứt khoát hơn hẳn ba chỉ số cũ.
+
 ---
 
 ## 5. Kết luận và hướng phát triển
@@ -1928,6 +1967,12 @@ epoch của smoke test). `sigma` đúng là điều kiện CẦN của một VAE
 
 ### 5.2 Hướng phát triển
 
+- **Đã hoàn tất hôm nay (§4.32)**: đo Word Error Rate bằng PhoWhisper (`evaluate_generation_quality.py --with-wer`,
+  hàm `lyric_wer`) — mục (b) cũ bên dưới nay đã xong, kết quả rất quyết đoán (WER>20 trên audio
+  không có lời thật). Chưa test trên checkpoint mới nhất do chưa có mẫu CFM sinh từ encoder đã fix.
+- **Hướng nguyên tắc hơn cho `kl_weight`, chưa kịp làm (§4.32)**: *Target-KL regularization*
+  (arXiv:2605.17085) — regress KL trực tiếp về giá trị mục tiêu thay vì chọn trọng số mò mẫm,
+  sidestep hẳn việc phải đoán `kl_weight`/lịch trình cyclical annealing. Đáng thử nếu còn quota.
 - **Ưu tiên cao nhất, nhánh latent-space, phiên có quota mới (§4.24): resume CFM training từ
   checkpoint epoch 13, không phải chạy lại từ đầu.** Checkpoint tại
   `outputs/kaggle_latent_pipeline/latentv2-1784664643/downloaded/latent_cfm_model.pt` (thời

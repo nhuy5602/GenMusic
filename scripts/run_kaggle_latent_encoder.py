@@ -10,6 +10,7 @@ clone, since `bigvgan` is only importable that way -- not a pip package).
 import argparse
 import json
 import os
+import shutil
 import sys
 import time
 import subprocess
@@ -86,6 +87,10 @@ try:
     source_root = Path("/kaggle/working/GenMusic")
     shutil.copytree(source_dataset_dir, source_root, dirs_exist_ok=True)
 
+    resume_checkpoint_path = next(source_dataset_dir.glob("resume_encoder.pt"), None)
+    if resume_checkpoint_path:
+        print(f"Found resume checkpoint: {{resume_checkpoint_path}}")
+
     print("--- STEP 2.5: Downloading DiffRhythm2 official repository (needed for the `bigvgan` package) ---")
     diffrhythm2_tar = "/kaggle/working/diffrhythm2.tar.gz"
     urllib.request.urlretrieve("https://github.com/ASLP-lab/DiffRhythm2/archive/refs/heads/main.tar.gz", diffrhythm2_tar)
@@ -124,7 +129,7 @@ try:
         "--batch-size", "{batch_size}",
         "--learning-rate", "{learning_rate}",
         "--device", "cuda",
-{max_records_line}{max_records_per_dataset_line}{warmup_steps_line}{kl_weight_line}    ], "train_latent_encoder")
+{max_records_line}{max_records_per_dataset_line}{warmup_steps_line}{kl_weight_line}    ] + (["--resume-checkpoint", str(resume_checkpoint_path)] if resume_checkpoint_path else []), "train_latent_encoder")
 
     print("LATENT ENCODER PRETRAINING COMPLETED SUCCESSFULLY!")
     print("Checkpoint saved at: /kaggle/working/latent_encoder.pt")
@@ -152,6 +157,7 @@ def main() -> None:
     parser.add_argument("--max-records-per-dataset", type=int, default=None, help="Limit each attached processed dataset to its first N usable records before combining (e.g. 1 audio from each of several parts).")
     parser.add_argument("--warmup-steps", type=int, default=None, help="Override train-latent-encoder's default (200) -- e.g. raise proportionally for a larger dataset/step count.")
     parser.add_argument("--kl-weight", type=float, default=None, help="Override train-latent-encoder's default (1e-4) -- the MAX weight reached by the cyclical annealing schedule, not a flat constant.")
+    parser.add_argument("--resume-checkpoint", default=None, help="Path to a local latent_encoder.pt to continue training from (fresh optimizer/schedule) -- e.g. to push sigma further toward the prior with a higher --kl-weight once reconstruction has already converged.")
     parser.add_argument("--processed-kernel-ref", type=str, default=None, nargs="+", help="Override KAGGLE_PROCESSED_KERNEL_REF for this run. Accepts multiple refs to combine several processed datasets into one training run.")
     parser.add_argument(
         "--raw-audio-part", type=int, default=None, nargs="+", choices=sorted(PROCESSED_RAW_AUDIO_KERNELS),
@@ -183,6 +189,10 @@ def main() -> None:
 
     print("Zipping local source code...")
     write_source_zip(project_root, dataset_dir / "genmusic_vn_source.zip")
+
+    if args.resume_checkpoint:
+        print(f"Attaching resume checkpoint '{args.resume_checkpoint}'...")
+        shutil.copy2(args.resume_checkpoint, dataset_dir / "resume_encoder.pt")
 
     source_dataset_slug = f"genmusic-source-{run_id}"
     source_dataset_ref = f"{username}/{source_dataset_slug}"

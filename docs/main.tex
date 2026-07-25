@@ -1024,9 +1024,21 @@ epoch, \texttt{kl\_weight} tối đa $0{,}05$) xác nhận: checkpoint mới có
 (gần đúng $\mathcal{N}(0,1)$, so với $0{,}003$ cũ), $\mu$ nhỏ hơn nhiều ($|\mu|_{\text{mean}}\approx0{,}22$)
 — mạng giờ thật sự dựa vào phần xác suất. \texttt{pitch\_std\_semitones} giải mã từ checkpoint
 2-epoch này còn thấp ($0{,}71$ trung bình) — dự kiến, vì 6 bài/2 epoch chưa đủ để encoder học lại
-reconstruction tốt dưới áp lực KL thật lần đầu. Đã khởi động full-corpus retrain (1839 bài, 10
-epoch, \texttt{kl\_weight}$=0{,}05$ cyclical) để có câu trả lời cuối cùng — xem
-\texttt{docs/project\_history.md} \S4.31 để cập nhật kết quả.
+reconstruction tốt dưới áp lực KL thật lần đầu.
+
+\textbf{Full-corpus retrain (1839 bài, 10 epoch) xác nhận fix thành công}: $\sigma_{\text{mean}}$
+trên audio thật đạt $0{,}11$--$0{,}14$ (so với $0{,}003$ collapsed), \texttt{pitch\_std\_semitones}
+trung bình $\mathbf{4{,}72}$ (20s crop) — khoẻ, tương đương/tốt hơn checkpoint cũ mà $\sigma$ giả
+tạo. Phân tích deceleration (\texttt{recon\_loss} delta epoch9$\to$10 chỉ $-0{,}011$ so với
+$-0{,}48$ ở epoch1$\to$2) cho thấy gần plateau ở \texttt{kl\_weight}$=0{,}05$ này — train thêm
+epoch cùng cấu hình lợi ích nhỏ; dư địa cải thiện nằm ở tăng \texttt{kl\_weight}, không phải train
+lâu hơn. Đối chiếu bên ngoài: Stable Audio 2.0's VAE dùng đúng \texttt{kl\_weight}$=10^{-4}$ (giá
+trị ban đầu đã collapse ở đây!) — khác biệt là VAE của họ có thêm adversarial loss (5
+discriminator) và encoder+decoder train cùng nhau, trong khi ở đây train encoder mới ghép với
+decoder đông lạnh có sẵn, không có adversarial loss (cố ý, \S\ref{sec:vae_bottleneck}) — hợp lý
+hoá việc cần \texttt{kl\_weight} lớn hơn nhiều để đạt hiệu quả tương đương. Đã thêm
+\texttt{--resume-checkpoint} để tiếp tục train từ checkpoint này với \texttt{kl\_weight}$=0{,}15$
+cao hơn — xem \texttt{docs/project\_history.md} \S4.32 để cập nhật kết quả cuối cùng.
 
 \section{DiffRhythm2 Distillation}
 \label{sec:distillation_chapter}

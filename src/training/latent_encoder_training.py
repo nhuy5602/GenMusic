@@ -112,6 +112,7 @@ def train_latent_encoder(
     grad_clip_norm: float = 1.0,
     num_workers: int = 4,
     kl_weight: float = 1e-4,
+    resume_checkpoint: str | Path | None = None,
 ) -> dict[str, Any]:
     """dataset_dir accepts either one path or a list of paths -- multiple
     independently-preprocessed datasets (e.g. different raw-data parts) are
@@ -160,7 +161,12 @@ def train_latent_encoder(
     reconstruction, and a constant weight this small barely resists that.
     Ramping kl_weight 0->kl_weight repeatedly (see _kl_weight_at below)
     periodically re-opens the latent "path" instead of letting the encoder
-    settle into ignoring it once and never recovering."""
+    settle into ignoring it once and never recovering.
+
+    resume_checkpoint loads a prior run's encoder weights before training
+    starts (fresh optimizer/schedule) -- used to continue pushing sigma
+    toward the N(0,1) prior with a higher kl_weight once reconstruction has
+    already mostly converged, without re-paying the early epochs' cost."""
     torch, DataLoaderClass = _torch()
     from ..models.latent_codec import LatentAudioEncoder, kl_divergence_loss, load_frozen_decoder, multi_scale_mel_loss
 
@@ -182,6 +188,9 @@ def train_latent_encoder(
     selected_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
     encoder = LatentAudioEncoder().to(selected_device)
+    if resume_checkpoint is not None:
+        resume_payload = torch.load(resume_checkpoint, map_location=selected_device, weights_only=False)
+        encoder.load_state_dict(resume_payload["encoder"])
     decoder_handle = load_frozen_decoder(selected_device, repo_id=repo_id)
 
     optimizer = torch.optim.AdamW(encoder.parameters(), lr=learning_rate)
@@ -328,6 +337,7 @@ def train_latent_encoder(
         "backend": "genmusic-vn-latent-encoder",
         "datasets": [str(d.resolve()) for d in dataset_dirs],
         "raw_audio_mode": raw_audio_mode,
+        "resumed_from_checkpoint": str(Path(resume_checkpoint).resolve()) if resume_checkpoint is not None else None,
         "kl_weight": kl_weight,
         "kl_anneal_cycles": kl_anneal_cycles,
         "kl_anneal_ratio": kl_anneal_ratio,

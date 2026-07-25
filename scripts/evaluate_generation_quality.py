@@ -34,6 +34,16 @@ Metrics:
 
 A synthesized white-noise clip is included as a fixed sanity anchor so the
 flatness numbers have a concrete "this is what noise looks like" reference.
+
+- lyric_wer (optional, --with-wer): transcribes generated audio with
+  PhoWhisper (vinai/phowhisper-small) and computes Word Error Rate against
+  the fixed target lyric. Complements the metrics above with an axis they
+  cannot see at all -- intelligible Vietnamese *content*, not just
+  spectral/pitch plausibility. A decisive discriminator in practice: audio
+  with no real singing produces incoherent, repetitive ASR hallucination
+  (e.g. one real check on a pre-VAE-fix sample returned a transcript
+  repeating "chu nghia xa hoi" dozens of times, WER > 20) rather than a
+  merely-imperfect transcript of the real words.
 """
 import json
 import sys
@@ -76,11 +86,39 @@ def wav_metrics(path: Path) -> dict:
     }
 
 
+_ASR_PIPELINE = None
+
+
+def lyric_wer(path: Path, target_text: str) -> dict:
+    """Transcribe `path` with PhoWhisper and score Word Error Rate against
+    `target_text`. Loads the ASR pipeline once (module-level cache) since it
+    is expensive relative to a single transcription."""
+    global _ASR_PIPELINE
+    import soundfile as sf
+    import librosa as _librosa
+    from jiwer import wer as _wer
+
+    if _ASR_PIPELINE is None:
+        from transformers import pipeline
+
+        _ASR_PIPELINE = pipeline("automatic-speech-recognition", model="vinai/phowhisper-small")
+
+    audio, sr = sf.read(str(path))
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+    if sr != 16_000:
+        audio = _librosa.resample(audio.astype(np.float32), orig_sr=sr, target_sr=16_000)
+        sr = 16_000
+    predicted = _ASR_PIPELINE({"array": audio.astype(np.float32), "sampling_rate": sr})["text"]
+    return {"predicted_text": predicted, "target_text": target_text, "wer": float(_wer(target_text.lower(), predicted.lower()))}
+
+
 def main() -> None:
     checkpoint_path = sys.argv[1]
     dataset_dir = Path(sys.argv[2])
     out_dir = Path(sys.argv[3])
     max_records = int(sys.argv[4]) if len(sys.argv) > 4 else 8
+    with_wer = "--with-wer" in sys.argv
     out_dir.mkdir(parents=True, exist_ok=True)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -121,6 +159,8 @@ def main() -> None:
             "generated": wav_metrics(gen_path),
             "real_full_mix_same_vocoder": wav_metrics(real_path),
         }
+        if with_wer:
+            entry["lyric_wer"] = lyric_wer(gen_path, FIXED_TEXT)
         results["samples"].append(entry)
         print(record_id, "gen:", entry["generated"], "real:", entry["real_full_mix_same_vocoder"])
 
@@ -141,6 +181,9 @@ def main() -> None:
         "mean_clip_ratio_generated": float(np.mean([s["generated"]["clip_ratio"] for s in results["samples"]])) if results["samples"] else None,
         "mean_silence_ratio_generated": float(np.mean([s["generated"]["silence_ratio"] for s in results["samples"]])) if results["samples"] else None,
     }
+    if with_wer:
+        wer_values = [s["lyric_wer"]["wer"] for s in results["samples"]]
+        results["summary"]["mean_lyric_wer"] = float(np.mean(wer_values)) if wer_values else None
     (out_dir / "quality_report.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
     print("\nSummary:", json.dumps(results["summary"], indent=2))
 
