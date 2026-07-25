@@ -197,7 +197,14 @@ def render_mel_to_wav(mel, destination: str | Path, config: MusicDiffusionConfig
         with torch.no_grad():
             latent = values.unsqueeze(0).to(decoder_device)
             chunk_size = min(20, max(1, latent.shape[2]))
-            audio_tensor = handle.decoder.decode_audio(latent, overlap=min(2, chunk_size - 1), chunk_size=chunk_size)
+            # BigVGAN's own decode_audio default is overlap=5 (chunk_size=20) --
+            # decode_audio does NOT crossfade chunk boundaries, it just trims
+            # (overlap//2)*9600 samples off each chunk edge and concatenates the
+            # rest; too small an overlap leaves the conv-boundary-artifacted edge
+            # region in the output, audible as periodic crackle/"rè" every
+            # hop_size/5Hz seconds. Previously hardcoded to overlap=min(2, ...),
+            # well below the library default, for no documented reason.
+            audio_tensor = handle.decoder.decode_audio(latent, overlap=min(5, chunk_size - 1), chunk_size=chunk_size)
         audio = audio_tensor.squeeze(0).squeeze(0).cpu().numpy()
         return _write_wav(audio, destination, handle.sampling_rate)
 

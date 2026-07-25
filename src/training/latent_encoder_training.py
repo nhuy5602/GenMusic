@@ -265,7 +265,11 @@ def train_latent_encoder(
             optimizer.zero_grad(set_to_none=True)
             latent, mu, logvar = encoder(target_24k, return_stats=True)
             chunk_size = min(20, max(1, latent.shape[2]))
-            reconstructed_48k = decoder_handle.decoder.decode_audio(latent, overlap=min(2, chunk_size - 1), chunk_size=chunk_size)
+            # See the matching comment in text_to_music_diffusion.py's render_mel_to_wav --
+            # BigVGAN's own default is overlap=5; at crop_seconds=1.0 this branch only ever
+            # produces a single chunk anyway (chunk_size caps at ~5 frames), so it's a no-op
+            # for current training, but kept consistent in case crop_seconds is ever raised.
+            reconstructed_48k = decoder_handle.decoder.decode_audio(latent, overlap=min(5, chunk_size - 1), chunk_size=chunk_size)
             recon_loss = multi_scale_mel_loss(reconstructed_48k, target_48k, sample_rate=decoder_handle.sampling_rate)
             kl_loss = kl_divergence_loss(mu, logvar)
             loss = recon_loss + kl_weight * kl_loss
