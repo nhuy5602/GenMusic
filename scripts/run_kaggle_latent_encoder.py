@@ -257,9 +257,16 @@ def main() -> None:
     processed_kernel_refs = processed_kernel_refs or (
         [tokens["KAGGLE_PROCESSED_KERNEL_REF"]] if tokens.get("KAGGLE_PROCESSED_KERNEL_REF") else None
     )
-    processed_dataset_ref = None if processed_kernel_refs else tokens.get(
-        "KAGGLE_PROCESSED_DATASET_REF", f"{username}/vietnamese-music-processed-dataset"
-    )
+    processed_dataset_ref = None
+    if not processed_kernel_refs:
+        processed_dataset_ref = tokens.get("KAGGLE_PROCESSED_DATASET_REF")
+        if not processed_dataset_ref:
+            raise RuntimeError(
+                "No processed dataset source specified. Pass --raw-audio-part N [N ...] or "
+                "--processed-kernel-ref, or set KAGGLE_PROCESSED_DATASET_REF. There is no default dataset "
+                "name -- a guessed one can silently fail to attach (Kaggle just warns and drops it), and "
+                "the job then errors at STEP 1."
+            )
 
     (kernel_dir / "kernel-metadata.json").write_text(json.dumps({
         "id": kernel_ref,

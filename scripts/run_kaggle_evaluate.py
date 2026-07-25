@@ -144,9 +144,15 @@ def run_kaggle_evaluate(checkpoint_kernel_ref: str, processed_kernel_ref_overrid
     kernel_ref = f"{username}/{kernel_slug}"
 
     processed_kernel_ref = processed_kernel_ref_override or tokens.get("KAGGLE_PROCESSED_KERNEL_REF")
-    processed_dataset_ref = None if processed_kernel_ref else tokens.get(
-        "KAGGLE_PROCESSED_DATASET_REF", f"{username}/vietnamese-music-processed-dataset"
-    )
+    processed_dataset_ref = None
+    if not processed_kernel_ref:
+        processed_dataset_ref = tokens.get("KAGGLE_PROCESSED_DATASET_REF")
+        if not processed_dataset_ref:
+            raise RuntimeError(
+                "No processed dataset source specified. Pass --processed-kernel-ref, or set "
+                "KAGGLE_PROCESSED_DATASET_REF. There is no default dataset name -- a guessed one can "
+                "silently fail to attach (Kaggle just warns and drops it), and the job then errors at STEP 1."
+            )
 
     (kernel_dir / "run_evaluate.py").write_text(_kernel_script_content(str(max_records)), encoding="utf-8")
 

@@ -267,9 +267,15 @@ def main() -> None:
             time.sleep(10)
 
     processed_kernel_ref = args.processed_kernel_ref or tokens.get("KAGGLE_PROCESSED_KERNEL_REF")
-    processed_dataset_ref = None if processed_kernel_ref else tokens.get(
-        "KAGGLE_PROCESSED_DATASET_REF", f"{username}/vietnamese-music-processed-dataset"
-    )
+    processed_dataset_ref = None
+    if not processed_kernel_ref:
+        processed_dataset_ref = tokens.get("KAGGLE_PROCESSED_DATASET_REF")
+        if not processed_dataset_ref:
+            raise RuntimeError(
+                "No processed dataset source specified. Pass --raw-audio-part N or --processed-kernel-ref, "
+                "or set KAGGLE_PROCESSED_DATASET_REF. There is no default dataset name -- a guessed one can "
+                "silently fail to attach (Kaggle just warns and drops it), and the job then errors at STEP 1."
+            )
 
     kernel_slug = f"genmusic-latentpipe-{int(time.time())}"
     kernel_ref = f"{username}/{kernel_slug}"

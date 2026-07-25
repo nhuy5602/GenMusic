@@ -199,12 +199,17 @@ def run_kaggle_distillation(epochs: int = 25, batch_size: int = 8, processed_ker
     (kernel_dir / "run_distill.py").write_text(_kernel_script_content(str(epochs), str(batch_size), str(dim), str(depth), str(heads), str(ff_mult), str(alpha_feature), str(learning_rate), str(beta_repa), str(max_records) if max_records is not None else None, str(lambda_vocal)), encoding="utf-8")
 
     # Processed data source: a preprocess-kernel output (kernel_sources, no credentials
-    # needed) takes priority; falls back to a pre-existing published Dataset for
-    # compatibility with datasets published before this fix.
+    # needed) takes priority; otherwise KAGGLE_PROCESSED_DATASET_REF must be set explicitly.
     processed_kernel_ref = processed_kernel_ref_override or tokens.get("KAGGLE_PROCESSED_KERNEL_REF")
-    processed_dataset_ref = None if processed_kernel_ref else tokens.get(
-        "KAGGLE_PROCESSED_DATASET_REF", f"{username}/vietnamese-music-processed-dataset"
-    )
+    processed_dataset_ref = None
+    if not processed_kernel_ref:
+        processed_dataset_ref = tokens.get("KAGGLE_PROCESSED_DATASET_REF")
+        if not processed_dataset_ref:
+            raise RuntimeError(
+                "No processed dataset source specified. Pass --processed-kernel-ref, or set "
+                "KAGGLE_PROCESSED_DATASET_REF. There is no default dataset name -- a guessed one can "
+                "silently fail to attach (Kaggle just warns and drops it), and the job then errors at STEP 1."
+            )
 
     (kernel_dir / "kernel-metadata.json").write_text(json.dumps({
         "id": kernel_ref,
