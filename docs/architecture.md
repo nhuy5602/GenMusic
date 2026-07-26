@@ -65,7 +65,10 @@ flowchart TD
 - `src/training/latent_encoder_training.py` — pretrains `LatentAudioEncoder`
   against the frozen decoder.
 - `src/training/distill_training.py` — `train-distill`'s teacher-matching
-  loss (works in both mel-space and `latent_mode`).
+  loss. Latent-mode only: `KnowledgeDistillationTrainer.__init__` raises
+  immediately if `config.latent_mode` is not `True` — the earlier mel-space
+  branch (a 64↔100 channel adapter plus a 93.75Hz↔5Hz time resample around
+  the teacher call) was removed rather than kept as a silent fallback.
 - `src/integrations/kaggle_auto.py` — Kaggle dataset/job staging.
 - `src/evaluation/` — objective audio metrics and report plots.
 - `cli.py` — command-line entry point.
@@ -142,8 +145,15 @@ and again at the final `AdaLayerNormZeroFinal`.
 
 **REPA hook**: `MicroDiT` always constructs a `repa_head` (projects a chosen
 intermediate hidden state to 1024-dim) but it's a no-op unless a caller
-passes `repa_layer_idx` — used only by `train-distill`'s optional REPA loss
-(see below), not by `train-self`.
+passes `repa_layer_idx`. In practice this is now permanently unused:
+`compute_repa_target` (`src/training/repa.py`) decodes `x1` via Vocos
+(mel-space-only, 100-channel) then runs it through MuQ, with no
+`latent_mode` implementation, and `train-distill` requires `latent_mode=True`
+unconditionally — so `KnowledgeDistillationTrainer.__init__` raises if
+`beta_repa > 0.0` is passed at all, rather than let the mismatch surface as a
+silently-caught exception inside `compute_repa_target` (which would otherwise
+print a warning and return `None` every step, making `beta_repa` a silent
+no-op). Not currently used by `train-self` either.
 
 ## A retired second backbone: `NativeDiTStudent`
 
@@ -272,10 +282,14 @@ run.
   see `docs/project_history.md` §4.11-4.13) is what most directly determines
   output diversity; changing these weights changes the collapse/diversity
   trade-off directly.
-- **Vocal-auxiliary loss** (`--lambda-vocal`, default 1.0): same recipe
-  against the vocal-only velocity target, using the model's second output
-  head. Recommended `--lambda-vocal 0` in `latent_mode`, since only one
-  latent per record is precomputed (no separate vocal-only latent target).
+- **Vocal-auxiliary loss** (`--lambda-vocal`, default 1.0, `train-distill`
+  only): same recipe against the vocal-only velocity target, using the
+  model's second output head. Structurally disabled in `latent_mode`
+  (mandatory for `train-distill`) regardless of this flag's value: only one
+  full-mix latent per record is precomputed, no separate vocal-only latent
+  target exists for the head to regress against, so `train_epoch` never
+  computes this loss. The parameter is kept only so existing callers passing
+  `lambda_vocal=1.0` (the old mel-space default) keep working unchanged.
 - **Lyric-content-sensitivity terms** (`train_model`'s own defaults:
   `text_contrastive_weight=0.08`, `text_sensitivity_weight=2.0` — these are
   *disabled* at `cfm_loss`'s own function-signature level and only enabled by
@@ -331,42 +345,50 @@ optimizer/scheduler/EMA, same early-stopping machinery.
 
 `src/training/distill_training.py` replicates DiffRhythm2's real teacher call
 contract — `KnowledgeDistillationTrainer` always instantiates a `MicroDiT`
-student, in either feature space.
+student, **latent-mode only** (`config.latent_mode` must be `True`,
+`config.n_mels` must equal the teacher's own native latent width — both
+checked at construction; `run_distillation_training` raises `ValueError`
+immediately on a mismatch, never falls back).
 
-- **Teacher-rate bridging, skipped entirely in `latent_mode`**:
-  `_resample_time_dimension` linearly resamples between the student's rate
-  and the teacher's native 5Hz before/after the teacher call — but only in
-  mel-space, where the student runs at 93.75Hz (a real out-of-distribution
-  bug once existed here — the teacher was being fed sequences ~19x longer
-  than anything in its own training distribution — see
-  `docs/project_history.md` §4.20). In `latent_mode`, the student's tensors
-  are already the real 64-dim/5Hz DiffRhythm2 latent (via
-  `precompute-latent-dataset`), i.e. already at the teacher's native rate —
-  `KnowledgeDistillationTrainer._teacher_velocity` checks
-  `config.latent_mode` and skips the resample entirely rather than resampling
-  an already-5Hz sequence through the mel-space formula (which would
-  silently corrupt it). `_build_block_attn_mask` replicates the teacher's
+- **No teacher-rate or channel bridging code exists anymore.** An earlier
+  mel-space branch resampled between the student's 93.75Hz mel rate and the
+  teacher's native 5Hz (`_resample_time_dimension`) and bridged 100↔64 mel
+  bins (`_resize_mel_bins`, plus a trainable `from_teacher_mel: Linear(64,100)`
+  adapter) around the teacher call. Since `latent_mode` is now mandatory,
+  teacher and student always already share the exact same 64-dim/5Hz
+  representation, so this whole bridge — dead weight that could only ever
+  run in the now-unsupported mel-space path — was deleted outright rather
+  than kept behind an `if latent_mode` branch. `_teacher_velocity` calls the
+  teacher directly on the student's own `(xt, x1)` tensors, no resampling, no
+  adapter. `_build_block_attn_mask` still replicates the teacher's
   block-autoregressive attention pattern over a `[Text, Clean, Noisy]` layout
   (clean context attends causally by block; noisy queries attend only to
-  strictly-earlier clean blocks and their own block's noisy frames) in both
-  feature spaces.
-- **Mel-dim bridge, also a no-op in `latent_mode`**: `_resize_mel_bins`
-  (fixed linear interpolation, not trained) resamples 100↔64 mel bins for the
-  teacher call in mel-space; `needs_mel_resize` is `teacher_mel_dim !=
-  config.n_mels`, which is already `False` in `latent_mode` (both are 64) —
-  no separate branch needed there. In mel-space, a trainable
-  `from_teacher_mel: Linear(64,100)` maps the teacher's output back into the
-  student's space for the loss (kept outside `torch.no_grad()` deliberately
-  — wrapping it would silently zero its gradient, a bug this project hit
-  once already).
+  strictly-earlier clean blocks and their own block's noisy frames).
+- **`x1` construction, and the bug this fixed**: `x1` is simply the
+  precomputed record's latent (`vocal_mel_path` in `latent_mode` already
+  holds the full-mix latent from `precompute-latent-dataset`, summed and
+  encoded once, upstream of training — see `docs/data_preparation.md`). An
+  earlier version of `train_epoch` still ran this through
+  `reconstruct_full_mix` (the mel-space log-energy-sum formula) against a
+  zero-tensor `backing_mel` placeholder (latent-mode records have no real
+  `backing_mel_path`) — silently forcing the real training target
+  strictly positive and roughly halving its variance relative to the true
+  encoder output (confirmed on real data: true latent std 0.934, 53.4%
+  negative values; corrupted target std 0.462, 0% negative). This produced a
+  target with less information than the encoder actually output, quite
+  possibly contributing to (or fully explaining) the near-total output
+  collapse observed on the 15-epoch checkpoint described in the report. Fixed
+  by using the precomputed latent directly, with no `reconstruct_full_mix`
+  call anywhere in the `train-distill` path.
 - **Mixed loss**: `loss = (1 - alpha_feature)·loss_velocity + alpha_feature·loss_gt`
   if the teacher loaded, else `loss_gt` alone (forced `alpha_feature=1.0`).
   `loss_velocity` is **L1** (not MSE — chosen to avoid MSE's tendency toward
   blurry/averaged predictions, per Dieleman 2024 and DMD/ADM). Default
   `alpha_feature=0.5`; `docs/project_history.md` §4.14 found `≈0.8` to be a
-  real, multi-song-verified optimum, not noise. Vocal-aux loss (weight
-  `lambda_vocal`, default 1.0) and an optional REPA loss (weight `beta_repa`,
-  default 0.0, disabled) are added on top unconditionally.
+  real, multi-song-verified optimum, not noise. Vocal-aux loss (`lambda_vocal`)
+  and REPA loss (`beta_repa`) are both structurally inert/rejected now (see
+  above and the REPA hook note) — the mixed loss above is the whole story in
+  practice.
 - **Honest fallback, no silent teacher**: if the real teacher or its lyric
   tokenizer can't be loaded (no internet, DiffRhythm2 repo not on
   `PYTHONPATH`), `train-distill` raises immediately rather than silently
@@ -376,9 +398,10 @@ student, in either feature space.
   project's history describes a `beta_attention` (attention-matrix
   distillation) loss term. It does not exist in the current file — only
   `alpha_feature`, `lambda_vocal`, and `beta_repa` are real loss-weight knobs
-  today. Treat `docs/project_history.md` §4.23 as a historical record of a
-  design that was implemented and later removed/superseded, not as a
-  description of current behavior.
+  today (and the latter two are now inert/rejected, see above). Treat
+  `docs/project_history.md` §4.23 as a historical record of a design that was
+  implemented and later removed/superseded, not as a description of current
+  behavior.
 
 ## Mel and vocoder
 

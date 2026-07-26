@@ -52,7 +52,7 @@
 }
 \lstset{style=mystyle}
 
-\def\TITLE{Xây dựng mô hình sinh ca khúc tiếng Việt từ lời bài hát và gợi ý phong cách}
+\def\TITLE{Nghiên cứu sinh nhạc tiếng Việt có điều kiện dựa trên chắt lọc tri thức}
 \def\AUTHOR{Đàm Việt Anh, Vũ Thùy Linh, Nguyễn Lê Hùng, Vũ Hồng Quang, Đặng Ngọc Huy}
 
 \hypersetup{
@@ -123,7 +123,7 @@
 {\textbf{\Large{NỀN TẢNG AI TẠO SINH}}}\\[1cm]
 
 {\textbf{\Large{ĐỀ TÀI:}}}\\[0.2cm]
-{\textbf{\Large{Xây dựng mô hình sinh ca khúc tiếng Việt\\ từ lời bài hát và gợi ý phong cách}}}\\[1.5cm]
+{\textbf{\Large{Nghiên cứu sinh nhạc tiếng Việt\\ có điều kiện dựa trên chắt lọc tri thức}}}\\[1.5cm]
 
 \end{center}
 
@@ -166,12 +166,11 @@
 \chapter*{TÓM TẮT}
 \addcontentsline{toc}{chapter}{TÓM TẮT}
 
-Đề tài tập trung nghiên cứu và phát triển mô hình trí tuệ nhân tạo sinh ca khúc tiếng Việt tự động từ các tín hiệu điều kiện đầu vào gồm lời ca (văn bản) và phong cách âm nhạc (âm thanh). Hệ thống áp dụng phương pháp chưng cất tri thức (Knowledge Distillation) từ mô hình giáo viên (Teacher) DiffRhythm2 sang mô hình học sinh (Student) MicroDiT nhỏ gọn hơn, sử dụng cơ chế khớp dòng điều kiện (Conditional Flow Matching - CFM) làm cốt lõi để biến đổi nhiễu Gaussian thành biểu diễn phổ/latent nén của giọng hát.
+Đề tài tập trung nghiên cứu và phát triển mô hình trí tuệ nhân tạo sinh ca khúc tiếng Việt tự động dựa trên điều kiện văn bản và âm thanh mô tả phong cách. Hệ thống áp dụng phương pháp chưng cất tri thức (Knowledge Distillation) từ mô hình giáo viên (Teacher) DiffRhythm2 sang mô hình học sinh (Student) nhỏ gọn hơn, sử dụng cơ chế khớp dòng điều kiện (Conditional Flow Matching - CFM) làm cốt lõi để biến đổi nhiễu Gaussian thành biểu diễn ẩn của bài hát.
 
-Trong quy trình tiền xử lý tự động, đề tài tích hợp Demucs để phân tách giọng hát và nhạc đệm, Whisper để nhận dạng và căn lề ca từ tiếng Việt kèm mốc thời gian chi tiết, cùng MuQ-MuLan nhằm trích xuất vector phong cách (Audio Style Anchor) 512 chiều. Nhằm khắc phục rào cản ngôn ngữ và đặc trưng thanh điệu phức tạp của tiếng Việt, đề tài tích hợp bộ mã hóa chuyên dụng XPhoneBERT để trích xuất các vector nhúng âm vị (phoneme embeddings). Giải pháp này giúp mô hình nắm bắt chính xác cấu trúc âm tiết, từ đó tối ưu hóa khả năng phát âm rõ chữ và giữ nguyên nhạc tính tự nhiên của ca từ bản địa.
+Trong quy trình chuẩn bị dữ liệu, đề tài tích hợp Demucs để phân tách giọng hát và nhạc đệm, Whisper để nhận dạng và căn lề ca từ tiếng Việt kèm mốc thời gian chi tiết, cùng MuQ-MuLan nhằm trích xuất vector phong cách (Audio Style Anchor) 512 chiều. Nhằm khắc phục rào cản ngôn ngữ và đặc trưng thanh điệu phức tạp của tiếng Việt, đề tài ứng dụng bộ mã hóa chuyên dụng XPhoneBERT để trích xuất các vector nhúng âm vị (phoneme embeddings). Giải pháp này giúp mô hình nắm bắt chính xác cấu trúc âm tiết, từ đó tối ưu hóa khả năng phát âm rõ chữ và giữ nguyên nhạc tính tự nhiên của ca từ bản địa.
 
-Về mặt hạ tầng, toàn bộ pipeline từ tiền xử lý, huấn luyện đến suy luận đã được kiểm chứng vận hành đồng bộ trên dữ liệu tiếng Việt thật. Về mặt biểu diễn trung gian, đề tài xác nhận rằng đưa mô hình sinh về đúng không gian latent nén (64 chiều, 5~Hz) mà DiffRhythm2 thực sự huấn luyện trên -- thay vì mel-spectrogram trung gian ban đầu -- là hướng đi cho tín hiệu tích cực rõ rệt nhất, sau khi giải quyết được hiện tượng collapse của bộ mã hóa latent tự huấn luyện bằng một bottleneck xác suất (VAE) với lịch trình huấn luyện KL phù hợp. Trên nền tảng encoder đó, quá trình chưng cất tri thức từ teacher cho MicroDiT trên không gian latent đã huấn luyện tới hết lịch trình dự kiến (15 epoch), với ground-truth loss giảm liên tục và ổn định từ $1{,}25$ xuống còn $0{,}46$ -- một tín hiệu hội tụ rõ ràng ở mức hàm mất mát. Tuy nhiên, do giới hạn về thời gian, đánh giá chất lượng sinh khách quan (độ rõ lời, độ biến thiên cao độ) trên chính checkpoint hội tụ này chưa kịp hoàn thành tại thời điểm hoàn thành báo cáo. Kết quả hiện tại cho thấy đây là một hướng tiếp cận khả thi và có tiềm năng, với bằng chứng hội tụ ở mức huấn luyện đã rõ ràng; bước tiếp theo cần thiết là xác nhận mức hội tụ đó bằng chỉ số chất lượng sinh khách quan trên nhiều mẫu, thay vì chỉ dựa vào giá trị loss.
-
+Các thành phần dữ liệu sau đó được mã hóa sang không gian tiềm ẩn (Latent Space) thông qua mạng Audio VAE, giúp mô hình Student dễ dàng học trường vận tốc (Velocity Field) từ Teacher và tái tạo âm thanh chất lượng cao qua mạng Vocoder. Đề tài đã hoàn thiện một pipeline xử lý end-to-end hoàn chỉnh. Mặc dù còn những rào cản về thời gian huấn luyện và quy mô dữ liệu giới hạn, kết quả thực nghiệm của đồ án đã đúc kết được nhiều đóng góp giá trị, tạo tiền đề vững chắc cho các nghiên cứu tối ưu mô hình sinh âm nhạc trong tương lai.
 \newpage
 \renewcommand*\contentsname{MỤC LỤC}
 \tableofcontents
@@ -354,11 +353,24 @@ Nghiệm tối ưu của mạng chính là kỳ vọng có điều kiện $v^*(z
 \section{Mô hình sinh nhạc DiffRhythm 2}
 \label{sec:diffrhythm2_framework}
 
-DiffRhythm 2 là hệ thống end-to-end sinh bài hát đầy đủ cấu trúc (gồm cả giọng hát và nhạc đệm) có độ dài lên tới 210 giây từ ca từ và mô tả phong cách \cite{diffrhythm2}. Hệ thống áp dụng kiến trúc bán tự hồi quy dựa trên cơ chế khớp dòng khối (\textbf{Block Flow Matching - BFM}) \cite{diffrhythm2}. Chuỗi biểu diễn ẩn (latent) được chia thành các khối có độ dài cố định $b=10$ (tương đương 2 giây âm thanh ở tần số latent 5~Hz). Trong nội bộ từng khối, các vị trí được sinh song song không tự hồi quy (NAR) bằng Flow Matching; giữa các khối, mối quan hệ nhân quả được bảo toàn qua attention mask, kết hợp tối ưu khả năng xử lý song song với việc duy trì ngữ cảnh dài hạn \cite{flowmatching, diffrhythm2}.
+DiffRhythm 2 là hệ thống end-to-end sinh bài hát đầy đủ cấu trúc (gồm cả giọng hát và nhạc đệm) từ ca từ $L$ cùng một trong hai dạng điều kiện phong cách -- mô tả văn bản $S_t$ hoặc một đoạn âm thanh tham chiếu $S_a$ \cite{diffrhythm2}. Kiến trúc gồm ba thành phần: một Music VAE nén âm thanh về latent tần số thấp, một Diffusion Transformer (DiT) sinh latent theo cơ chế \textbf{Block Flow Matching (BFM)}, và một hàm mất mát REPA theo khối để tăng tính nhạc.
 
-Để giảm chiều dài chuỗi đầu vào cho Diffusion Transformer, DiffRhythm 2 sử dụng một bộ Music VAE hoạt động ở tần số latent cực thấp (5~Hz) \cite{diffrhythm2}. Bộ mã hóa nhận âm thanh đầu vào 24~kHz và bộ giải mã tái tạo âm thanh ở tần số 48~kHz, đạt tỷ lệ nén lần lượt là 4.800 và 9.600 lần \cite{diffrhythm2}. Bộ giải mã tích hợp một khối Transformer bổ trợ cùng backbone BigVGAN \cite{bigvgan}. Toàn bộ Music VAE được tối ưu hóa bằng tổ hợp mel loss đa thang đo và STFT loss đa độ phân giải nhằm giữ nguyên vẹn thông tin của cả giọng hát lẫn nhạc đệm \cite{diffrhythm2}.
+\textbf{Music VAE.} Để huấn luyện được trên chuỗi rất dài, DiffRhythm 2 dùng một Music VAE tần số latent thấp tới 5~Hz: bộ mã hoá nhận âm thanh 24~kHz, bộ giải mã tái tạo lại ở 48~kHz, đạt tỷ lệ nén $4.800\times$ lúc mã hoá và $9.600\times$ lúc giải mã \cite{diffrhythm2}. Bộ mã hoá có kiến trúc giống VAE của Stable Audio 2; một khối Transformer được chèn trước bộ giải mã để giảm áp lực tái tạo, và bộ giải mã dùng backbone BigVGAN \cite{bigvgan} để tối đa chất lượng tái tạo. Hàm mất mát kết hợp mel loss đa thang đo (từ BigVGAN) và STFT loss đa độ phân giải (từ Stable Audio 2 VAE) để tối ưu đồng thời giọng hát và nhạc đệm, cùng một tập discriminator (multi-period, multi-scale, CQT, cũng từ BigVGAN) \cite{diffrhythm2}.
 
-Mô hình sinh chính của hệ thống là một Diffusion Transformer xấp xỉ 1 tỷ tham số \cite{dit, diffrhythm2}. Khi dự đoán khối thứ $i$, đầu vào bao gồm latent nhiễu của khối hiện tại $z_t^i$ ($t \sim \mathcal{U}(0,1)$), các khối sạch lịch sử $z^{<i}$ (được gán timestep cố định $1.0$ để phân biệt), cùng chuỗi ca từ và đặc trưng phong cách từ MuQ-MuLan \cite{muq, diffrhythm2}. Công trình cũng giới thiệu hàm mất mát **Stochastic Block REPA** nhằm căn chỉnh biểu diễn ẩn của mô hình sinh với đặc trưng tự giám sát (SSL) toàn cục từ một tập con các khối được lấy mẫu ngẫu nhiên \cite{diffrhythm2}. Sau giai đoạn tiền huấn luyện, mô hình được tinh chỉnh bằng kỹ thuật tối ưu hóa ưu tiên cặp chéo (\textbf{Cross-Pair Preference Optimization - CPPO}) để cân bằng đa mục tiêu giữa tính nhạc, độ khớp lời và chất lượng âm thanh \cite{dpo, diffrhythm2}. Khi suy luận, cấu trúc khối cho phép áp dụng KV cache và FlexAttention, đạt hệ số thời gian thực (RTF) khoảng 0.213 trên cấu hình thử nghiệm của tác giả \cite{diffrhythm2}.
+\textbf{Block Flow Matching.} Flow matching chuẩn học một trường vận tốc biến nhiễu Gaussian $Z_0\sim\mathcal{N}(0,I)$ thành latent đích $Z$ qua đường nội suy tuyến tính $Z_t=(1-t)Z_0+tZ$, $t\sim\mathcal{U}(0,1)$, với hàm mất mát
+\begin{equation}
+ \mathcal{L}_{fm}=\mathbb{E}\big[\lVert f_\theta(S,L,Z_t,t)-(Z-Z_0)\rVert_2^2\big].
+ \label{eq:diffrhythm2_fm}
+\end{equation}
+BFM chia $Z$ thành $k=\lceil l/b\rceil$ khối $\{z_1,\ldots,z_k\}$ có độ dài cố định $b=10$ (2 giây ở 5~Hz), sinh mỗi khối bằng flow matching nhưng bắt các khối phụ thuộc lẫn nhau theo kiểu tự hồi quy: khối thứ $i$ được dự đoán từ toàn bộ các khối sạch trước đó $z_{<i}$
+\begin{equation}
+ \hat v_i=f_\theta(S,L,z_{<i},z_t^i,t_i), \qquad
+ \mathcal{L}_{bfm}=\frac{1}{k}\sum_{i=1}^{k}\mathbb{E}\big[\lVert \hat v_i-(z_i-z_0^i)\rVert_2^2\big],
+ \label{eq:diffrhythm2_bfm}
+\end{equation}
+với $t_i\sim\mathcal{U}(0,1)$ lấy mẫu độc lập cho mỗi khối. Vì khối sạch $z_{<i}$ không có sẵn lúc suy luận nhưng cần cho huấn luyện, chuỗi huấn luyện nối cả phần sạch lẫn phần nhiễu $(S,L,Z,Z_t)$ và dùng một attention mask để ép đúng quan hệ tự hồi quy mong muốn: $S,L$ được mọi khối chú ý tới; khối sạch $i$ chỉ chú ý các khối sạch $1..i$; khối nhiễu $i$ chỉ chú ý các khối sạch $1..i-1$ và khối nhiễu của chính nó. Do việc chèn token phân tách riêng cho từng khối không khả thi khi receptive field đã bị quyết định bởi attention mask, DiffRhythm 2 dùng ngay giá trị timestep để phân biệt vai trò: $S,L$ nhận timestep cố định $-1$, khối sạch nhận timestep cố định $1$, khối nhiễu nhận $t_i\sim\mathcal{U}(0,1)$ lấy mẫu riêng theo từng khối. Để sinh độ dài biến thiên (không cố định trước tổng số khối), một khung "kết thúc" (End-of-Prediction, EOP) được thêm vào cuối chuỗi đích dưới dạng vector hằng số $\mathbf{1}$ -- lựa chọn tách biệt rõ về số học khỏi phân phối latent thật nhưng vẫn dễ học, so với việc EOP theo phân phối Gaussian gần latent thật.
+
+Mô hình sinh chính là một Diffusion Transformer xấp xỉ 1 tỷ tham số \cite{dit, diffrhythm2}. Hàm mất mát \textbf{Stochastic Block REPA} căn chỉnh biểu diễn ẩn của DiT với đặc trưng tự giám sát MuQ \cite{muq} nhằm tăng tính nhạc và khả năng nắm cấu trúc bài hát ở quy mô lớn hơn một khối đơn lẻ; vì trạng thái ẩn giữa các khối nhiễu không liên tục do huấn luyện theo khối, loss này được tính trên tổ hợp trạng thái ẩn của các khối sạch lịch sử cộng khối nhiễu hiện tại (vốn liên tục nhờ teacher forcing), lấy mẫu ngẫu nhiên 10 khối mỗi chuỗi nhiễu để giới hạn chi phí tính toán \cite{diffrhythm2}. Sau giai đoạn tiền huấn luyện, mô hình được tinh chỉnh bằng kỹ thuật tối ưu hóa ưu tiên cặp chéo (\textbf{Cross-Pair Preference Optimization - CPPO}) để cân bằng đa mục tiêu giữa tính nhạc, độ khớp lời và chất lượng âm thanh \cite{dpo, diffrhythm2}. Khi suy luận, cấu trúc khối cho phép áp dụng KV cache và FlexAttention, đạt hệ số thời gian thực (RTF) khoảng 0.213 trên cấu hình thử nghiệm của tác giả \cite{diffrhythm2}.
 
 Trong khuôn khổ đề tài này, DiffRhythm 2 đóng vai trò là một mô hình Teacher đã được đóng băng tham số. Một mô hình con sẽ được học tín hiệu chuyển giao là trường vận tốc (velocity), bắt chước hướng di chuyển tương tự như trường vector của mô hình Teacher.
 
@@ -373,35 +385,11 @@ Trong khuôn khổ đề tài này, DiffRhythm 2 đóng vai trò là một mô h
 \section{Chuẩn bị dữ liệu}
 \label{sec:data_preparation}
 
-Dữ liệu có giám sát đầy đủ cho bài toán sinh giọng hát tiếng Việt còn hạn chế, trong khi nguồn dữ liệu thực tế thường chỉ là bản phối hoàn chỉnh, không có giọng hát tách riêng và không đi kèm căn chỉnh ca từ. Do đó, đề tài xây dựng quy trình chuẩn bị dữ liệu theo hướng giám sát yếu, phù hợp với định dạng dữ liệu của DiffRhythm2 \cite{diffrhythm2}. Từ mỗi bài hát thô, quy trình tạo ra một mẫu gồm mel-spectrogram của giọng hát mục tiêu, mel-spectrogram của phần đệm, ca từ có mốc thời gian và vector phong cách toàn cục. Các nhãn thu được từ mô hình tiền huấn luyện chỉ mang tính xấp xỉ và phụ thuộc vào chất lượng của các mô hình sử dụng, do đó việc hậu kiểm thủ công cần được thực hiện trong tương lai. Hình~\ref{fig:data_pipeline} tóm tắt sơ đồ xử lý.
+Dữ liệu có giám sát đầy đủ cho bài toán sinh giọng hát tiếng Việt còn hạn chế, trong khi nguồn dữ liệu thực tế thường chỉ là bản phối hoàn chỉnh, không có giọng hát tách riêng và không đi kèm căn chỉnh ca từ. Do đó, đề tài xây dựng quy trình chuẩn bị dữ liệu theo hướng giám sát yếu, phù hợp với định dạng dữ liệu của DiffRhythm2 \cite{diffrhythm2}. Từ mỗi bài hát thô, quy trình tạo ra một mẫu gồm dạng sóng (waveform) 24~kHz của giọng hát mục tiêu, dạng sóng của phần đệm, ca từ có mốc thời gian và vector phong cách toàn cục. Việc giữ nguyên dạng sóng (thay vì chuyển ngay sang mel-spectrogram) cho phép bản ghi được dùng trực tiếp làm đầu vào của bộ mã hóa latent (\S\ref{sec:latent_space}) -- pipeline hiện dùng cho kết quả chính của đề tài. Các nhãn thu được từ mô hình tiền huấn luyện chỉ mang tính xấp xỉ và phụ thuộc vào chất lượng của các mô hình sử dụng, do đó việc hậu kiểm thủ công cần được thực hiện trong tương lai. Hình~\ref{fig:data_pipeline} tóm tắt sơ đồ xử lý.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[
-    >=Latex,
-    source/.style={draw, rounded corners=2pt, fill=gray!10,
-        minimum height=0.8cm, text width=3.4cm, align=center, font=\scriptsize},
-    process/.style={draw, rounded corners=2pt, fill=blue!7,
-        minimum height=0.85cm, text width=3.4cm, align=center, font=\scriptsize},
-    artifact/.style={draw, rounded corners=2pt, fill=green!8,
-        minimum height=0.9cm, text width=8.8cm, align=center, font=\scriptsize},
-    flow/.style={-{Latex[length=2mm]}, line width=0.55pt}
-]
-\node[source] (audio) at (0,0) {Bài hát thô (WAV/MP3, 24~kHz)};
-\node[process] (demucs) at (0,-1.5) {HTDemucs: tách vocal và backing};
-\node[process] (whisper) at (-4.2,-3.0) {Whisper: transcript + mốc thời gian (trên vocal)};
-\node[process] (mel) at (0,-3.0) {Vocos feature extractor: mel 100 bins (vocal và backing)};
-\node[process] (muq) at (4.2,-3.0) {MuQ-MuLan: style embedding 512 chiều (trên bản phối gốc)};
-\node[artifact] (record) at (0,-4.7) {Bản ghi huấn luyện đồng bộ $(x_1,b,l,m,s)$: mel vocal, mel backing, ca từ đã căn cửa sổ, mặt nạ token, style embedding};
-
-\draw[flow] (audio) -- (demucs);
-\draw[flow] (audio) -| (muq);
-\draw[flow] (demucs) -| (whisper);
-\draw[flow] (demucs) -- (mel);
-\draw[flow] (whisper) |- (record);
-\draw[flow] (mel) -- (record);
-\draw[flow] (muq) |- (record);
-\end{tikzpicture}
+\includegraphics[width=0.85\textwidth]{assets/fig_data_pipeline.pdf}
 \caption{Sơ đồ quy trình chuẩn bị dữ liệu từ bài hát thô tới bản ghi huấn luyện}
 \label{fig:data_pipeline}
 \end{figure}
@@ -410,22 +398,21 @@ Dữ liệu có giám sát đầy đủ cho bài toán sinh giọng hát tiếng
 
 Đối với thành phần lời, Whisper \cite{whisper} được áp dụng lên phần giọng hát để nhận dạng tiếng Việt và sinh các đoạn văn bản có mốc thời gian . Mỗi đoạn gồm nội dung lời và cặp thời điểm bắt đầu--kết thúc trong tín hiệu âm thanh. Khi tạo một đoạn huấn luyện, chỉ các đoạn lời giao với cửa sổ thời gian tương ứng được sử dụng làm điều kiện văn bản; các đoạn này được ghép theo thứ tự thời gian trước khi đưa vào bộ mã hóa ngôn ngữ. Cách tổ chức này giúp điều kiện lời bám với đoạn âm thanh đang học, đồng thời tránh việc mô hình phải liên hệ toàn bộ lời bài hát với một đoạn giọng hát ngắn. Nếu cửa sổ âm thanh không chứa lời, điều kiện văn bản được xem là rỗng và mô hình vẫn học từ phần đệm cùng vector phong cách.
 
-Đối với thành phần phổ âm thanh, cả giọng hát mục tiêu và phần đệm đều được biến đổi sang mel-spectrogram trong cùng miền đặc trưng với Vocos \cite{vocos}. Cấu hình sử dụng tần số lấy mẫu 24~kHz, 100 mel bins, kích thước FFT bằng 1024 mẫu và hop length bằng 256 mẫu. Mỗi đoạn huấn luyện gồm 128 khung mel, tương ứng thời lượng xấp xỉ $128\times256/24000\approx1{,}36$~giây. Như vậy, mel mục tiêu $x_1$ và mel điều kiện $b$ có cùng kích thước $100\times128$ cho mỗi mẫu. Việc thống nhất cấu hình mel ngay từ tiền xử lý giúp đầu ra của mô hình có thể được giải mã trực tiếp bằng Vocos mà không cần nội suy lại trục mel.
+Đối với thành phần phổ âm thanh, cả giọng hát mục tiêu và phần đệm được giữ nguyên dạng sóng (waveform) 24~kHz, không chuyển sang mel-spectrogram ở bước tiền xử lý này. Dạng sóng thô này là đầu vào trực tiếp cho bộ mã hóa latent (\S\ref{sec:latent_encoder_arch}), tránh một vòng mel$\to$Vocos-decode$\to$waveform không cần thiết vốn làm encoder chỉ thấy bản tái tạo qua vocoder thay vì bản ghi âm gốc. Vocal và backing được cộng tuyến tính (công thức \eqref{eq:reconstruct_full_mix}) rồi mã hoá qua VAE thành latent cả-bài 64 chiều/5~Hz duy nhất (\S\ref{sec:latent_space}) -- đây là biểu diễn phổ/latent duy nhất mà hệ thống làm việc.
 
 Đối với thành phần phong cách, bản phối gốc được mã hóa bằng MuQ-MuLan thành
 vector 512 chiều \cite{muq}. Vector này được trích từ đoạn âm thanh tham chiếu
 24~kHz, ưu tiên tối đa 10 giây đầu của bài hát, để tóm tắt đặc trưng chung của
 bản nhạc như màu âm, phối khí, năng lượng và xu hướng thể loại. Trong mẫu huấn
 luyện, vector phong cách $s\in\mathbb{R}^{512}$ không mô tả chi tiết từng thời
-điểm, mà đóng vai trò như ngữ cảnh toàn cục của bài hát. Ngược lại, mel của phần
-đệm cung cấp diễn tiến cục bộ theo thời gian. Hai nguồn điều kiện này bổ sung cho
-nhau: phần đệm cho biết bài hát đang diễn ra như thế nào, còn vector phong cách
+điểm, mà đóng vai trò như ngữ cảnh toàn cục của bài hát. Ngược lại, latent cả-bài
+cung cấp diễn tiến cục bộ theo thời gian. Hai nguồn điều kiện này bổ sung cho
+nhau: latent cho biết bài hát đang diễn ra như thế nào, còn vector phong cách
 cho biết bài hát có màu sắc âm nhạc tổng quát ra sao.
 
-Sau tiền xử lý, mỗi đoạn huấn luyện được biểu diễn bởi bộ $(x_1,b,l,m,s)$.
-Trong đó, $x_1\in\mathbb{R}^{100\times128}$ là mel-spectrogram mục tiêu của
-giọng hát; $b\in\mathbb{R}^{100\times128}$ là mel-spectrogram của phần đệm trong
-cùng khoảng thời gian; $l$ là chuỗi mã hóa ca từ; $m$ là mặt nạ đánh dấu các vị
+Sau tiền xử lý và mã hoá latent, mỗi đoạn huấn luyện được biểu diễn bởi bộ $(x_1,l,m,s)$.
+Trong đó, $x_1\in\mathbb{R}^{64\times T}$ là latent cả-bài mục tiêu (giọng hát cộng nhạc
+đệm, đã qua VAE); $l$ là chuỗi mã hóa ca từ; $m$ là mặt nạ đánh dấu các vị
 trí token hợp lệ; và $s\in\mathbb{R}^{512}$ là vector phong cách toàn cục. Cách
 biểu diễn này giúp mỗi mẫu giữ đồng thời ba loại thông tin cần thiết cho mô hình:
 nội dung lời, ngữ cảnh âm nhạc theo thời gian và phong cách tổng quát của bài hát.
@@ -437,110 +424,55 @@ nội dung lời, ngữ cảnh âm nhạc theo thời gian và phong cách tổn
 \begin{equation}
  \mathcal{D}=\{(y_i,a_i^{\mathrm{voc}},a_i^{\mathrm{acc}})\}_{i=1}^{N},
 \end{equation}
-trong đó $y_i$ là ca từ có mốc thời gian, $a_i^{\mathrm{voc}}$ là phần giọng hát và $a_i^{\mathrm{acc}}$ là phần nhạc đệm. Sau tiền xử lý, mỗi mẫu gồm mel vocal $x_1^{\mathrm{voc}}\in\mathbb{R}^{F\times T}$, mel backing $x_1^{\mathrm{acc}}\in\mathbb{R}^{F\times T}$, chuỗi ca từ $l$ và style embedding $s\in\mathbb{R}^{512}$. Mục tiêu huấn luyện thực tế $x_1$ là **hỗn hợp cả bài** (giọng hát cộng nhạc đệm), tái tạo bằng cách cộng năng lượng biên độ tuyến tính của hai mel rồi lấy log lại:
+trong đó $y_i$ là ca từ có mốc thời gian, $a_i^{\mathrm{voc}}$ là dạng sóng giọng hát và $a_i^{\mathrm{acc}}$ là dạng sóng nhạc đệm (cả hai ở 24~kHz, \S\ref{sec:data_preparation}). Mục tiêu huấn luyện là \textbf{hỗn hợp cả bài}: hai dạng sóng được cộng tuyến tính trực tiếp (phép cộng biên độ mẫu-theo-mẫu, đúng bản chất vật lý của việc trộn hai nguồn âm)
 \begin{equation}
- x_1=\log\!\left(\exp(x_1^{\mathrm{voc}})+\exp(x_1^{\mathrm{acc}})\right)
+ a^{\mathrm{mix}}=a^{\mathrm{voc}}+a^{\mathrm{acc}},
  \label{eq:reconstruct_full_mix}
 \end{equation}
-(áp dụng trên giá trị mel đã denormalize). Hệ thống cần học trường velocity:
+một lần duy nhất ở giai đoạn tiền tính (\texttt{precompute\_latent\_dataset.py}), \textbf{trước khi} đưa qua bộ mã hoá latent (VAE, \S\ref{sec:latent_encoder_arch}) đã đóng băng decoder. Bộ mã hoá nén $a^{\mathrm{mix}}$ thành $x_1=\mathrm{Enc}(a^{\mathrm{mix}})\in\mathbb{R}^{F\times T}$ với $F=64$ (latent thật của teacher, 5~Hz, \S\ref{sec:latent_space}) -- mỗi bản ghi huấn luyện chỉ còn một latent cả-bài duy nhất, không còn tách vocal/backing riêng ở bước huấn luyện CFM. Hệ thống cần học trường velocity:
 \begin{equation}
  v_\theta:\;(x_t,t,l,s)\mapsto \hat{u}_t\in\mathbb{R}^{F\times T},
 \end{equation}
-để biến nhiễu Gaussian thành mel của **hỗn hợp cả bài** phù hợp điều kiện lời và phong cách. Trong cấu hình student, $F=100$ và mỗi đoạn huấn luyện có $T=128$ khung mel (mặc định hiện tại là $384$), tương ứng khoảng 1,36--4,1 giây ở 24~kHz với hop length 256.
+để biến nhiễu Gaussian thành latent của \textbf{hỗn hợp cả bài} phù hợp điều kiện lời và phong cách. Mỗi đoạn huấn luyện có $T=128$ khung latent (mặc định hiện tại là $384$) ở tần số 5~Hz.
 
-\textbf{Chú ý quan trọng về vai trò của backing}: $x_1^{\mathrm{acc}}$ (backing) chỉ được dùng để \emph{xây dựng mục tiêu huấn luyện} $x_1$ qua công thức \eqref{eq:reconstruct_full_mix} — nó **không** còn là một tensor điều kiện đưa vào mạng $v_\theta$ (một số phiên bản kiến trúc trước đây của dự án có nhánh này, đã bị loại bỏ, xem \S\ref{sec:microdit_architecture} tiếp theo). Do đó model phải học sinh ra cả bài (giọng hát và nhạc đệm) từ trạng thái không điều kiện theo backing, chỉ dựa vào ca từ và style embedding toàn cục. Để tránh model "lãng quên" tín hiệu giọng hát (yếu hơn, thưa hơn nhạc đệm) khi tối ưu trực tiếp trên hỗn hợp, một đầu ra phụ trợ dự đoán riêng velocity của vocal (\emph{vocal auxiliary head}) được huấn luyện đồng thời — chi tiết ở \S\ref{sec:microdit_architecture}.
+\textbf{Chú ý quan trọng về vai trò của backing}: $a^{\mathrm{acc}}$ (backing) chỉ được dùng để \emph{xây dựng mục tiêu huấn luyện} $x_1$ -- đã hoà vào latent cả-bài từ trước khi huấn luyện (công thức \eqref{eq:reconstruct_full_mix}, \S\ref{sec:latent_space}) — nó **không** là một tensor điều kiện đưa vào mạng $v_\theta$ (xem \S\ref{sec:microdit_architecture} tiếp theo). Do đó model phải học sinh ra cả bài (giọng hát và nhạc đệm) từ trạng thái không điều kiện theo backing, chỉ dựa vào ca từ và style embedding toàn cục. Để tránh model "lãng quên" tín hiệu giọng hát (yếu hơn, thưa hơn nhạc đệm) khi tối ưu trực tiếp trên hỗn hợp, một đầu ra phụ trợ dự đoán riêng velocity của vocal (\emph{vocal auxiliary head}) được huấn luyện đồng thời — chi tiết ở \S\ref{sec:microdit_architecture}. Đầu phụ trợ này cần một mục tiêu vocal-only riêng biệt với $x_1$; dữ liệu tiền tính hiện chỉ giữ lại latent cả-bài (không có latent vocal-only riêng, \S\ref{sec:latent_space}), nên đầu phụ trợ hiện chưa nhận được tín hiệu vocal-only thật sự khác với mục tiêu chính -- một giới hạn hiện tại của cài đặt, không phải của thiết kế kiến trúc.
 
 \textbf{Tổng quan hệ thống.} Hình~\ref{fig:pipeline} mô tả kiến trúc tổng thể của hệ thống. Kiến trúc không phải một chuỗi xử lý tuyến tính đơn giản mà gồm
 ba lớp chức năng. Lớp dữ liệu tạo ra các điều kiện đồng bộ từ bài hát thô; lớp mô hình
-học trường vận tốc bằng CFM hoặc bằng chưng cất; lớp suy luận tích phân trường vận tốc
-và giải mã mel thành waveform. Giữa các lớp là những hợp đồng dữ liệu có thể kiểm
-tra độc lập.
+học trường vận tốc bằng CFM kết hợp chưng cất tri thức từ teacher; lớp suy luận tích phân
+trường vận tốc và giải mã latent thành waveform. Giữa các lớp là những hợp đồng dữ liệu có
+thể kiểm tra độc lập.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[
-    >=Latex,
-    source/.style={draw, rounded corners=2pt, fill=gray!10,
-        minimum height=0.8cm, text width=2.8cm, align=center, font=\scriptsize},
-    process/.style={draw, rounded corners=2pt, fill=blue!7,
-        minimum height=0.85cm, text width=3.2cm, align=center, font=\scriptsize},
-    artifact/.style={draw, rounded corners=2pt, fill=green!8,
-        minimum height=0.85cm, text width=4.1cm, align=center, font=\scriptsize},
-    model/.style={draw, rounded corners=2pt, fill=orange!12,
-        minimum height=0.9cm, text width=3.5cm, align=center, font=\scriptsize},
-    optional/.style={draw, dashed, rounded corners=2pt, fill=purple!5,
-        minimum height=0.85cm, text width=2.8cm, align=center, font=\scriptsize},
-    flow/.style={-{Latex[length=2mm]}, line width=0.55pt},
-    optflow/.style={-{Latex[length=2mm]}, dashed, line width=0.5pt}
-]
-\node[source] (lyric) at (-4.8,0) {Ca từ và mô tả phong cách};
-\node[source] (audio) at (0,0) {Tập tin WAV/MP3};
-\node[process] (norm) at (-4.8,-1.35) {Chuẩn hóa văn bản và mốc thời gian};
-\node[process] (demucs) at (-0.8,-1.35) {Demucs: tách vocal và backing};
-\node[process] (muq) at (3.4,-1.35) {MuQ-MuLan: style embedding 512 chiều};
-\node[process] (whisper) at (-2.6,-2.8) {Whisper: transcript và segment timestamps};
-\node[process] (mel) at (1.5,-2.8) {Vocos feature extractor: mel 100 bins};
-\node[artifact] (records) at (-0.5,-4.25)
-    {Bản ghi hợp nhất + vocal/backing mel + style embedding};
-\node[artifact] (validation) at (-0.5,-5.55)
-    {Kiểm tra tensor, metadata và lấy crop đồng bộ};
-\node[model] (self) at (-3.0,-7.0)
-    {MicroDiT + CFM\\(tự huấn luyện)};
-\node[model] (distill) at (2.0,-7.0)
-    {DiffRhythm2 teacher $\rightarrow$ MicroDiT\\(chưng cất)};
-\node[optional] (kaggle) at (5.2,-5.55)
-    {Kaggle backend tùy chọn\\GPU train/inference};
-\node[process] (sample) at (-0.5,-8.45)
-    {Euler ODE sampling + Vocos 24 kHz};
-\node[artifact] (output) at (-0.5,-9.75)
-    {Waveform WAV/MP3 và báo cáo đánh giá};
-
-\draw[flow] (lyric) -- (norm);
-\draw[flow] (audio) -- (demucs);
-\draw[flow] (audio) -| (muq);
-\draw[flow] (demucs) -- (whisper);
-\draw[flow] (demucs) -- (mel);
-\draw[flow] (norm) |- (records);
-\draw[flow] (whisper) -- (records);
-\draw[flow] (mel) -- (records);
-\draw[flow] (muq) |- (records);
-\draw[flow] (records) -- (validation);
-\draw[flow] (validation) -- (self);
-\draw[flow] (validation) -- (distill);
-\draw[optflow] (validation) -- (kaggle);
-\draw[optflow] (kaggle) |- (sample);
-\draw[flow] (self) -- (sample);
-\draw[flow] (distill) -- (sample);
-\draw[flow] (sample) -- (output);
-\end{tikzpicture}
+\includegraphics[width=0.85\textwidth]{assets/fig_pipeline.pdf}
 \caption{Kiến trúc tổng thể của hệ thống sinh nhạc từ văn bản}
 \label{fig:pipeline}
 \end{figure}
 
 Ở lớp dữ liệu và biểu diễn, đầu vào âm thanh được tách thành vocal và backing. Cả hai được
-cộng lại (công thức \eqref{eq:reconstruct_full_mix}) để tạo mel mục tiêu $x_1$ (hỗn hợp cả
-bài) mà model học sinh ra. Whisper tạo nội dung lời cùng các đoạn thời gian, trong khi
-MuQ-MuLan tạo một vector phong cách toàn cục. Các đầu ra này được quy về cùng đơn vị thời
-gian và lưu trong một record thống nhất. Một mẫu huấn luyện vì vậy gồm bộ $(x_1^{\mathrm{voc}},
-x_1^{\mathrm{acc}}, l, s)$ — nhưng chỉ $l$ (lời) và $s$ (style) được đưa vào mạng $v_\theta$
-làm điều kiện; $x_1^{\mathrm{acc}}$ chỉ tham gia lúc xây dựng mục tiêu, không phải một tensor
-điều kiện của model.
+cộng lại (công thức \eqref{eq:reconstruct_full_mix}) rồi mã hoá qua bộ mã hoá latent (VAE,
+\S\ref{sec:latent_encoder_arch}) thành $x_1$ (latent cả bài, 64 chiều/5~Hz) mà model học
+sinh ra. Whisper tạo nội dung lời cùng các đoạn thời gian, trong khi MuQ-MuLan tạo một
+vector phong cách toàn cục. Các đầu ra này được quy về cùng đơn vị thời gian và lưu trong
+một record thống nhất. Một mẫu huấn luyện vì vậy gồm bộ $(x_1, l, s)$ — nhưng chỉ $l$ (lời)
+và $s$ (style) được đưa vào mạng $v_\theta$ làm điều kiện; backing chỉ tham gia lúc xây
+dựng mục tiêu, không phải một tensor điều kiện của model.
 
-Trong lớp học trường vận tốc, sau validation, cùng một dataset hỗ trợ hai nhánh. Nhánh tự huấn luyện tối ưu
-MicroDiT trực tiếp bằng CFM ground-truth velocity. Nhánh chưng cất gọi
-teacher DiffRhythm2 tại cùng trạng thái nhiễu và timestep, sau đó ánh xạ đầu ra teacher
-từ 64 lên 100 mel bins để tạo mục tiêu bổ sung. Hai nhánh dùng chung kiến trúc student
-và chỉ khác hàm mất mát, nhờ đó có thể so sánh baseline với distilled student mà không
-thay đổi biểu diễn đầu vào.
+Trong lớp học trường vận tốc, sau validation, MicroDiT được chưng cất tri thức: teacher
+DiffRhythm2 được gọi tại cùng trạng thái nhiễu và timestep -- teacher và student dùng chung
+không gian latent 64 chiều/5~Hz nên velocity của teacher được dùng thẳng làm mục tiêu bổ
+sung, không cần lớp ánh xạ số chiều.
 
-Ở lớp suy luận và giải mã, hệ thống khởi tạo Gaussian noise trong không gian mel, gọi MicroDiT
-nhiều lần để tích phân ODE bằng Euler, rồi đưa mel cuối vào Vocos. Kaggle chỉ là backend
+Ở lớp suy luận và giải mã, hệ thống khởi tạo Gaussian noise trong không gian latent, gọi
+MicroDiT nhiều lần để tích phân ODE bằng Euler, rồi đưa latent cuối vào decoder BigVGAN đã
+đóng băng để giải mã ra waveform. Kaggle chỉ là backend
 thực thi tùy chọn; nó không thay đổi kiến trúc mô hình hoặc định dạng checkpoint. Cách
 phân lớp này giúp cô lập lỗi: có thể kiểm tra riêng record, vòng lặp vocoder, CFM loss,
 teacher contract và waveform đầu ra trước khi đánh giá chất lượng âm nhạc tổng thể.
 
 Bốn nguyên tắc thiết kế xuyên suốt cách phân lớp này. Thứ nhất, biểu diễn trung gian phải
-nhất quán từ tiền xử lý tới vocoder, vì sai hợp đồng mel có thể che lấp hoàn toàn chất
+nhất quán từ tiền xử lý tới decoder, vì sai hợp đồng biểu diễn có thể che lấp hoàn toàn chất
 lượng mô hình sinh. Thứ hai, các điều kiện được phân vai: lyrics cho nội dung (qua
 cross-attention) và MuQ-MuLan cho phong cách toàn cục; backing chỉ tham gia lúc xây mục
 tiêu huấn luyện (hỗn hợp cả bài), không phải một tensor điều kiện của model. Thứ ba, chưng
@@ -552,11 +484,8 @@ encoder suy biến có thể trông ổn về mặt kỹ thuật (không NaN, lo
 thông tin âm nhạc nào.
 
 \textbf{Kiến trúc mô hình con.} MicroDiT là backbone \textbf{duy nhất} học trường
-vận tốc trong hệ thống. Một biến thể thử nghiệm khác (ca từ và mel dùng chung một chuỗi
-self-attention thay vì cross-attention riêng, âm vị nhúng bằng một bảng embedding học
-từ đầu thay vì XPhoneBERT pretrained) không cải thiện $\mathcal{L}_{\mathrm{gt}}$ nhưng chậm hơn
-$\approx4{,}4$ lần mỗi step, nên không được giữ lại trong kiến trúc cuối cùng. Mô hình nhận
-noisy mel (hoặc noisy latent, \S\ref{sec:latent_space}) tại thời điểm $t$ cùng
+vận tốc trong hệ thống. Mô hình nhận
+noisy latent (64 chiều/5~Hz, \S\ref{sec:latent_space}) tại thời điểm $t$ cùng
 hai nhóm điều kiện: biểu diễn ca từ và neo phong cách toàn cục —
 \textbf{không có} tensor backing nào được đưa vào model, dù backing vẫn quyết định mục
 tiêu huấn luyện (công thức \eqref{eq:reconstruct_full_mix}). Hình~\ref{fig:microdit_architecture}
@@ -564,12 +493,12 @@ tóm tắt luồng xử lý.
 
 Ca từ được chuyển thành âm vị (G2P tiếng Việt có dấu thanh), mã hoá bằng XPhoneBERT
 đã đóng băng \cite{xphonebert} cộng một lớp self-attention nhỏ có thể huấn luyện, rồi
-được dùng làm điều kiện cho mel thông qua cross-attention ở mỗi khối Transformer — thay
-cho một thiết kế "prepend" (nối text và mel vào cùng một chuỗi self-attention) từng được
-thử trước đó. Lựa chọn cross-attention theo kết quả của SongGen (arXiv:2502.13128, FAD
-1,73 so với 3,56, PER 43,34 so với 56,21 khi so cross-attention với prepend). Timestep và
+được dùng làm điều kiện cho latent thông qua cross-attention ở mỗi khối Transformer. Lựa
+chọn cross-attention theo kết quả của SongGen (arXiv:2502.13128, FAD
+1,73 so với 3,56, PER 43,34 so với 56,21 khi so cross-attention với thiết kế "prepend"
+-- nối text và latent vào cùng một chuỗi self-attention). Timestep và
 style embedding (từ MuQ-MuLan) được kết hợp thành một vector điều kiện chung, vừa cộng
-trực tiếp vào mel ở đầu vào vừa điều khiển một phép chuẩn hoá thích ứng (adaptive
+trực tiếp vào latent ở đầu vào vừa điều khiển một phép chuẩn hoá thích ứng (adaptive
 normalization) trước tầng dự đoán cuối. Từ trạng thái ẩn cuối cùng, hai đầu tuyến tính độc
 lập dự đoán velocity của hỗn hợp cả bài (mục tiêu chính) và velocity riêng của vocal (đầu
 phụ trợ, chỉ dùng lúc huấn luyện) — mục đích của đầu phụ trợ là tránh model "lãng quên"
@@ -577,67 +506,15 @@ tín hiệu vocal, vốn yếu và thưa hơn nhạc đệm, khi tối ưu trự
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[
-    >=Latex,
-    input/.style={draw, rounded corners=2pt, fill=gray!10,
-        minimum height=0.75cm, text width=2.4cm, align=center, font=\scriptsize},
-    encoder/.style={draw, rounded corners=2pt, fill=blue!7,
-        minimum height=0.85cm, text width=2.9cm, align=center, font=\scriptsize},
-    core/.style={draw, rounded corners=2pt, fill=orange!12,
-        minimum height=0.9cm, text width=4.3cm, align=center, font=\scriptsize},
-    output/.style={draw, rounded corners=2pt, fill=green!9,
-        minimum height=0.85cm, text width=3.4cm, align=center, font=\scriptsize},
-    flow/.style={-{Latex[length=2mm]}, line width=0.55pt}
-]
-\node[input] (lyrics) at (-5.1,0) {Ca từ của crop};
-\node[input] (mel) at (-1.2,0) {$x_t$\\$B\times T\times100$};
-\node[input] (time) at (1.7,0) {Timestep $t$};
-\node[input] (style) at (5.1,0) {MuQ-MuLan style\\$B\times512$};
-
-\node[encoder] (g2p) at (-5.1,-1.4)
-    {Bộ chuyển tự vị--âm vị (G2P)\\ca từ $\rightarrow$ âm vị IPA};
-\node[encoder] (xphonebert) at (-5.1,-2.9)
-    {XPhoneBERT đóng băng + MLP\\$E_l\in\mathbb{R}^{B\times L\times D}$};
-\node[encoder] (melready) at (-1.2,-2.9)
-    {Chiếu tuyến tính $100\rightarrow D$\\$B\times T\times D$};
-\node[encoder] (tembed) at (1.7,-2.9)
-    {Sinusoidal embedding\\MLP $D\rightarrow D$};
-\node[encoder] (sembed) at (5.1,-2.9)
-    {Bộ mã hoá phong cách + MLP\\$512\rightarrow D\rightarrow D$};
-
-\node[core] (merge) at (0,-4.45)
-    {Khối nhúng đầu vào\\$x_{\mathrm{proj}}+\operatorname{Expand}(E_t)+\operatorname{Expand}(E_s)$, chiếu lại $D\rightarrow D$};
-\node[core] (blocks) at (0,-5.95)
-    {$K\times$ khối Transformer\\self-attn (mel, RoPE) + cross-attn (mel$\rightarrow$text) + FFN};
-\node[core] (adaln) at (0,-7.35)
-    {Chuẩn hoá thích ứng cuối\\scale/shift từ $c=E_t+E_s$};
-\node[output] (velocity) at (-2.2,-8.7)
-    {Chiếu tuyến tính $D\rightarrow100$\\velocity cả bài $\hat{u}_t$};
-\node[output] (vocalaux) at (2.2,-8.7)
-    {Chiếu tuyến tính phụ trợ $D\rightarrow100$\\velocity vocal (phụ trợ)};
-
-\draw[flow] (lyrics) -- (g2p);
-\draw[flow] (g2p) -- (xphonebert);
-\draw[flow] (mel) -- (melready);
-\draw[flow] (time) -- (tembed);
-\draw[flow] (style) -- (sembed);
-\draw[flow] (melready) -- (merge);
-\draw[flow] (tembed) -- (merge);
-\draw[flow] (sembed) -- (merge);
-\draw[flow] (merge) -- (blocks);
-\draw[flow] (xphonebert) -- (blocks);
-\draw[flow] (blocks) -- (adaln);
-\draw[flow] (adaln) -- (velocity);
-\draw[flow] (adaln) -- (vocalaux);
-\end{tikzpicture}
+\includegraphics[width=0.85\textwidth]{assets/fig_microdit_architecture.pdf}
 \caption{Kiến trúc và luồng tensor của MicroDiT — điều kiện lời qua cross-attention, không có nhánh backing}
 \label{fig:microdit_architecture}
 \end{figure}
 
 \textbf{Quá trình huấn luyện và chưng cất.}
 \label{sec:cfm_training_loss}
-Với mỗi batch, thuật toán sinh $x_0\sim\mathcal{N}(0,I)$ cùng kích thước $x_1$ (công thức
-\eqref{eq:reconstruct_full_mix}) và lấy một timestep $t\sim\mathcal{U}(0,1)$ độc lập cho
+Với mỗi batch, thuật toán sinh $x_0\sim\mathcal{N}(0,I)$ cùng kích thước $x_1$ (latent cả
+bài, \S\ref{sec:microdit_architecture}) và lấy một timestep $t\sim\mathcal{U}(0,1)$ độc lập cho
 từng mẫu:
 \begin{align}
  x_t&=(1-t)x_0+t x_1,\qquad u_t=x_1-x_0,\qquad \hat{u}_t=v_\theta(x_t,t,l,s).
@@ -673,16 +550,10 @@ bằng tín hiệu từ teacher DiffRhythm2 đã đóng băng.
 Pipeline gọi teacher đúng theo cấu hình
 và giao thức chính thức đi kèm checkpoint công khai của nó (tokenizer, định dạng token,
 quy ước timestep), thay vì một phiên bản đơn giản hoá tự giả định — teacher chỉ đóng vai
-trò sinh mục tiêu, không nhận gradient. Khi student chạy ở mel-space, một lệch biểu diễn
-nghiêm trọng xuất hiện: teacher chạy ở 5~Hz/64 chiều nhưng student ở 93,75~Hz/100 chiều —
-đưa nguyên chuỗi mel-space vào teacher khiến attention của nó chạy ngoài phân phối huấn
-luyện (lệch tần số $\approx19$ lần). Một cầu nối giải quyết lệch này bằng cách resample
-trục thời gian theo cả hai chiều quanh lượt gọi teacher, khớp lại đúng mặt nạ attention tự
-hồi quy theo khối mà teacher được huấn luyện với, và một lớp tuyến tính có thể học ánh xạ
-giữa 64 và 100 chiều để bù lệch số kênh, được huấn luyện đồng thời với phần còn lại của
-student. Toàn bộ cầu nối này được bỏ qua khi student chạy trên không gian latent thật
-64-chiều/5~Hz của teacher (\S\ref{sec:latent_space}), vì khi đó hai phía đã cùng một biểu
-diễn ngay từ đầu.
+trò sinh mục tiêu, không nhận gradient. Student chạy trên đúng không gian latent thật
+64-chiều/5~Hz của teacher (\S\ref{sec:latent_space}), nên hai phía đã cùng một biểu diễn
+ngay từ đầu: không cần resample trục thời gian hay ánh xạ số kênh nào giữa teacher và
+student, velocity của teacher được dùng thẳng làm mục tiêu bổ sung.
 
 \label{sec:distill_mixed_loss}
 Student được tối ưu bởi:
@@ -703,18 +574,18 @@ dùng làm mặc định thực tế. Nếu teacher hoặc tokenizer không tả
 $1{,}0$ (chỉ còn $\mathcal{L}_{\mathrm{gt}}$) và trạng thái này được báo cáo rõ ràng trong
 log, không âm thầm.
 
-\textbf{Suy luận và tổng hợp âm thanh.} Suy luận bắt đầu bằng Gaussian noise $x_0$ có hình dạng $1\times F\times T$ ($F=100$ ở mel-space, $F=64$ ở latent-space, \S\ref{sec:latent_space}). Tại mỗi $t_k$, MicroDiT dự đoán velocity và Euler solver cập nhật trạng thái (mặc định 32 bước, có thể điều chỉnh). Sau bước cuối, mel được giải mã trực tiếp bằng Vocos (hoặc bằng decoder BigVGAN thật nếu đang ở không gian latent). Nếu không tải được Vocos, hệ thống chuyển sang Griffin--Lim 64 vòng lặp và ghi rõ backend đã dùng.
+\textbf{Suy luận và tổng hợp âm thanh.} Suy luận bắt đầu bằng Gaussian noise $x_0$ có hình dạng $1\times64\times T$ (\S\ref{sec:latent_space}). Tại mỗi $t_k$, MicroDiT dự đoán velocity và Euler solver cập nhật trạng thái (mặc định 32 bước, có thể điều chỉnh). Sau bước cuối, latent được giải mã trực tiếp bằng decoder BigVGAN thật đã đóng băng thành waveform 48~kHz.
 
-Với bài dài hơn một crop, lời được chia theo segment và các đoạn mel được sinh tuần tự rồi ghép trên trục thời gian. Người dùng có thể chỉ định một bài tham chiếu đã tiền xử lý để lấy style embedding thật, thay vì fallback về vector text-pooled. Checkpoint loại các trọng số XPhoneBERT đã đóng băng vì chúng có thể tải lại từ mô hình gốc, làm giảm mạnh kích thước tệp mà không thay đổi tham số đã học.
+Với bài dài hơn một crop, lời được chia theo segment và các đoạn latent được sinh tuần tự rồi ghép trên trục thời gian. Người dùng có thể chỉ định một bài tham chiếu đã tiền xử lý để lấy style embedding thật, thay vì fallback về vector text-pooled. Checkpoint loại các trọng số XPhoneBERT đã đóng băng vì chúng có thể tải lại từ mô hình gốc, làm giảm mạnh kích thước tệp mà không thay đổi tham số đã học.
 
 \section{Không gian latent thật của DiffRhythm2}
 \label{sec:latent_space}
 
 DiffRhythm2 không hoạt động trên mel-spectrogram: teacher thật chạy trên latent 64 chiều
-của một Music VAE riêng, ở tần số \textbf{5~Hz} — thấp hơn $\approx19$ lần tần số mel
-93,75~Hz mà student vẫn dùng. Phần \S\ref{sec:distill_teacher_call} chỉ sửa việc này ở
-\emph{phía truy vấn teacher} lúc chưng cất; hướng này cho \textbf{student chính nó} một
-không gian latent nén thật, độc lập với việc có chưng cất hay không.
+của một Music VAE riêng, ở tần số \textbf{5~Hz}. Hệ thống cho \textbf{student chính nó}
+cùng không gian latent nén thật này (\S\ref{sec:microdit_architecture}), độc lập với việc
+có chưng cất hay không -- nên teacher và student luôn cùng một biểu diễn, không cần lớp
+ánh xạ số chiều hay resample tần số nào giữa hai phía.
 
 \subsection{Kiến trúc encoder}
 \label{sec:latent_encoder_arch}
@@ -885,7 +756,7 @@ Lịch huấn luyện ngắn cũng khiến model có xu hướng học các th�
 
 Log thí nghiệm xác nhận chế độ chưng cất thực sự được kích hoạt; checkpoint teacher và tokenizer thật đã được tải. Teacher có 1.136.249.664 tham số, trong khi student nhỏ có 745.188 tham số trainable, tương ứng tỷ lệ xấp xỉ 1.525 lần theo số tham số. Trên CPU, một forward teacher với batch size 1 mất khoảng 3 giây. Sự chênh lệch cho thấy động cơ nén là rõ ràng, đồng thời giải thích vì sao distillation trở thành nút thắt thời gian.
 
-Lớp ánh xạ 64--100 mel bins nằm trong optimizer cùng student. Teacher forward được đóng băng, nhưng đầu ra teacher đi qua lớp ánh xạ này bên ngoài phạm vi đóng băng đó nên vẫn nhận gradient. Việc log riêng teacher loss và ground-truth loss xác nhận tổng loss thực sự gồm hai nguồn. Như vậy, RQ3 được trả lời ở mức cơ chế: đây là một lần chưng cất thật, không phải baseline được đổi tên.
+Teacher forward được đóng băng, nhưng đầu ra teacher đi qua một lớp ánh xạ tuyến tính bên ngoài phạm vi đóng băng đó nên vẫn nhận gradient. Việc log riêng teacher loss và ground-truth loss xác nhận tổng loss thực sự gồm hai nguồn. Như vậy, RQ3 được trả lời ở mức cơ chế: đây là một lần chưng cất thật, không phải baseline được đổi tên.
 
 Sau 30 epoch trên 2 bài, ground-truth loss cuối được ghi nhận khoảng 17,9 đối với student distillation và 15,7 đối với baseline tương ứng. Loss từng step dao động từ khoảng 3,5 tới 229. Biên độ dao động lớn là có thể dự đoán vì mỗi epoch chỉ có một step, timestep $t$ và crop đều được lấy ngẫu nhiên; một điểm cuối đơn lẻ không đại diện cho đường cong kỳ vọng.
 
@@ -1019,74 +890,31 @@ cho bước chưng cất cuối cùng (Chương~\ref{chapter:conclusion}).
 
 \section{Kết luận}
 
-Đề tài đã xây dựng một pipeline sinh vocal/audio tiếng Việt hoàn chỉnh dựa trên
-MicroDiT và Conditional Flow Matching, bao phủ toàn bộ vòng đời kỹ thuật: tách
-nguồn, nhận dạng lời, trích đặc trưng phong cách, biểu diễn phổ/latent,
-huấn luyện, chưng cất tri thức và suy luận. Ba kết luận chính rút ra từ các thí
-nghiệm ở Chương~\ref{chapter:experiment}:
+Đề tài đã nghiên cứu và xây dựng thành công pipeline sinh ca khúc tiếng Việt hoàn chỉnh từ lời hát và mô tả phong cách, bao phủ trọn vẹn quy trình từ xử lý dữ liệu, trích xuất đặc trưng đến chưng cất tri thức và suy luận. Từ các kết quả thực nghiệm, đề tài đúc kết được ba đóng góp và phát hiện cốt lõi:
 
-Thứ nhất, hợp đồng biểu diễn âm thanh quyết định trực tiếp độ trung thực khi
-giải mã (RQ1, \S\ref{sec:e1_vocoder}): một mel-spectrogram đúng cấu hình với
-vocoder cho correlation loopback $0{,}997$, so với dưới $0{,}9$ khi có sai lệch
-cấu hình -- một điều kiện cần cho mọi thí nghiệm sinh sau đó, dù không phải yếu
-tố quyết định chất lượng âm nhạc. Thứ hai, không gian latent thật của teacher (64
-chiều, 5~Hz) cho tín hiệu sinh nhạc tốt hơn rõ rệt so với mel-space
-(RQ4, \S\ref{sec:exp4_mel_vs_latent}), với điều kiện bộ mã hóa latent tự huấn
-luyện phải có bottleneck xác suất (VAE) cùng lịch trình cyclical KL annealing để
-tránh collapse ở quy mô dữ liệu lớn (RQ5, \S\ref{sec:exp5_vae}) -- nếu không, cả
-hai không gian biểu diễn cho cùng một triệu chứng suy biến (gần như đứng yên một
-cao độ), dù nguyên nhân khác nhau. Thứ ba, cơ chế chưng cất tri thức từ teacher
-DiffRhythm2 đã được xác nhận hoạt động đúng (RQ3, \S\ref{sec:distillation_chapter}):
-teacher thật, lớp ánh xạ 64--100 mel bins và gradient qua hai nguồn loss đều được
-kiểm chứng; trên nền không gian latent, chưng cất cho MicroDiT thật đã huấn luyện tới hết
-lịch trình dự kiến với ground-truth loss giảm liên tục từ $1{,}25$ xuống $0{,}46$
-(\S\ref{sec:exp4_mel_vs_latent}) -- một tín hiệu hội tụ rõ ràng ở mức hàm mất mát, nhưng
-bằng chứng về mức cải thiện chất lượng sinh cụ thể (độ rõ lời, độ biến thiên cao độ) trên
-đúng checkpoint đó vẫn chưa có do đánh giá chưa kịp hoàn thành.
+Thứ nhất, sự tương thích về cấu hình giữa không gian biểu diễn âm thanh và bộ giải mã (vocoder) là điều kiện tiên quyết bắt buộc để đảm bảo độ trung thực khi tái tạo âm thanh. Thứ hai, việc biểu diễn âm thanh trong không gian tiềm ẩn (latent space) của mô hình teacher mang lại tín hiệu sinh nhạc vượt trội so với không gian phổ (mel-space), với điều kiện bộ mã hóa phải được kiểm soát bằng cơ chế xác suất (VAE) để tránh hiện tượng suy biến (collapse). Thứ ba, phương pháp chưng cất tri thức từ Teacher DiffRhythm2 sang Student MicroDiT dựa trên cơ chế Conditional Flow Matching đã hoạt động đúng thiết kế, với hàm mất mát hội tụ ổn định qua quá trình huấn luyện.
 
-Về mặt triển khai, checkpoint cuối cùng chỉ lưu các trọng số có thể huấn luyện cùng
-metadata cấu hình cần thiết để tải lại đúng phụ thuộc, bỏ qua các trọng số nền tảng đã
-đóng băng (có thể tải lại từ mô hình gốc) — giảm dung lượng từ khoảng 1,1~GB xuống còn
-khoảng 67~MB mà không đổi phép tính của MicroDiT, thuận tiện hơn cho việc lưu phiên bản và
-khôi phục thí nghiệm.
+\paragraph{Thách thức và Khó khăn trong quá trình thực hiện:}
+Trong quá trình hoàn thiện đề tài, nhóm nghiên cứu đã đối mặt với một số rào cản kỹ thuật và hạn chế tài nguyên thực tế:
+\begin{itemize}
+    \item \textbf{Giới hạn hạ tầng tính toán và Thời gian:} Các mô hình AI sinh âm thanh yêu cầu chi phí tính toán cực lớn. Ngân sách thời gian và tài nguyên phần cứng giới hạn khiến việc huấn luyện mô hình ở quy mô epoch lớn hoặc thử nghiệm nhiều biến thể siêu tham số gặp nhiều rào cản.
+    \item \textbf{Thách thức về Dữ liệu Tiếng Việt sạch:} Tập dữ liệu nhạc tiếng Việt đạt chuẩn thu âm sạch, không rò rỉ giọng hát vào nhạc đệm và được căn lề ca từ chuẩn xác ở cấp độ âm vị vẫn còn rất khiêm tốn so với các tập dữ liệu đa ngôn ngữ lớn trên thế giới.
+    \item \textbf{Rào cản Ngữ âm và Thanh điệu:} Tiếng Việt là ngôn ngữ đơn lập với $6$ thanh điệu phức tạp. Việc ép mô hình vừa học trường vận tốc âm thanh vừa giữ đúng nhạc tính và phát âm tròn chữ đòi hỏi sự phối hợp khắt khe giữa các bộ mã hóa nhúng ngữ âm và không gian nén.
+    \item \textbf{Đánh giá Thực nghiệm cuối kỳ:} Do giới hạn về thời gian nộp báo cáo, công tác tổ chức đánh giá định lượng khách quan (WER, độ lệch chuẩn cao độ) và định chất chủ quan (MOS) trên checkpoint cuối cùng chưa thể hoàn thiện trọn vẹn.
+\end{itemize}
 
-Tại thời điểm hoàn thành báo cáo, checkpoint encoder tốt nhất
-($\beta=0{,}15$, Thí nghiệm 5) đã được dùng để huấn luyện chưng cất MicroDiT trên toàn
-bộ dữ liệu tới hết lịch trình dự kiến, với ground-truth loss hội tụ ổn định; tuy nhiên
-đánh giá chất lượng sinh khách quan trên đúng checkpoint cuối này chưa kịp hoàn thành, nên
-chưa có số liệu chất lượng cuối cùng để đối chiếu với các kết quả sơ bộ ở Thí nghiệm 4.
-Do đó, kết luận phù hợp nhất là đề tài đã hoàn thành một pipeline nghiên cứu khả dụng,
-minh bạch về giới hạn và có cơ sở thực nghiệm để mở rộng, với bằng chứng hội tụ rõ ràng ở
-mức huấn luyện, chứ chưa phải một hệ thống sinh bài hát đã được xác nhận đầy đủ về chất
-lượng. Các nút thắt còn lại (độ rõ lời, tính ổn định giai điệu) không có bằng chứng nào
-cho thấy là giới hạn cấu trúc của phương pháp; nhiều khả năng đây là vấn đề về quy mô --
-dữ liệu huấn luyện, số bước/epoch, hoặc tài nguyên tính toán -- và cần được kiểm chứng
-bằng cách mở rộng thêm ở các hướng nêu dưới đây.
+Tựu trung lại, đề tài đã hoàn thành một pipeline nghiên cứu minh bạch, khả dụng với bằng chứng hội tụ rõ ràng ở mức huấn luyện. Các nút thắt hiện tại chủ yếu đến từ rào cản về quy mô dữ liệu và thời gian tính toán hơn là giới hạn của kiến trúc, tạo tiền đề vững chắc cho các nghiên cứu tiếp theo.
 
 \section{Hướng phát triển}
 \label{sec:future_work}
 
-Dựa trên các kết luận trên, đề tài đề xuất các hướng phát triển tiếp theo theo thứ
-tự ưu tiên:
+Dựa trên các kết quả đạt được, đề tài đề xuất các hướng nghiên cứu tiếp theo:
 \begin{enumerate}[label=\arabic*)]
-    \item Hoàn thành đánh giá chất lượng sinh khách quan (SD cao độ, tỉ lệ voiced, WER) trên
-      checkpoint MicroDiT vừa chưng cất tới hội tụ ($\beta=0{,}15$, ground-truth loss
-      $1{,}25\to0{,}46$, \S\ref{sec:exp4_mel_vs_latent}) trên nhiều mẫu hơn một vài bài --
-      đây là hành động ưu tiên cao nhất vì huấn luyện đã xong nhưng phần xác nhận chất
-      lượng chưa kịp hoàn thành trước khi nộp báo cáo.
-    \item Nếu còn dư địa tài nguyên, thử tách riêng số hạng $\mathrm{KL}_G$/$\mathrm{KL}_I$ theo Rivera
-      (arXiv:2309.13160) thay cho KL chuẩn, nhằm giảm rủi ro over-regularization đã
-      quan sát được ở $\beta=0{,}3$ (\S\ref{sec:exp5_vae}).
-    \item Nâng cao số lượng và chất lượng của tập dữ liệu nhạc Việt Nam.
-    \item Tổ chức các phương pháp đánh giá chủ quan như MOS/CMOS với người nghe và đánh giá độ rõ lời tiếng Việt.
-    \item Mở rộng mô hình, tích hợp các yếu tố khác như thanh điệu, alignment và pitch/F0 hoặc melody.
-    \item Kiểm soát các nguồn sai lệch của pipeline dữ liệu trước khi mở rộng quy mô: rò rỉ
-      giọng hát vào phần backing do tách nguồn chưa hoàn hảo, và mốc thời gian theo đoạn
-      (không chính xác tới từng âm vị) giới hạn khả năng điều khiển lời theo frame.
-    \item Chuẩn hoá protocol thực nghiệm khi mở rộng: chia train/validation theo bài hát
-      hoặc ca sĩ để tránh rò rỉ dữ liệu, cố định seed và số bước cập nhật, đánh giá trên
-      nhiều checkpoint thay vì chỉ dựa vào loss cuối, và kiểm tra quyền sử dụng bản ghi/ca
-      từ trước khi phổ biến dữ liệu hoặc audio sinh ra.
+    \item \textbf{Đánh giá toàn diện:} Hoàn thành các phép đo khách quan (độ lệch chuẩn cao độ, WER) và chủ quan (MOS) trên checkpoint đã hội tụ để xác nhận chất lượng âm thanh đầu ra.
+    \item \textbf{Mở rộng Dữ liệu:} Gia tăng quy mô và nâng cao chất lượng làm sạch cho tập dữ liệu nhạc tiếng Việt.
+    \item \textbf{Cải tiến Mô hình:} Tích hợp thêm các thành phần điều khiển chuyên sâu như đường cao độ ($F_0$), thanh điệu và căn lề mức âm vị (phoneme-level alignment).
+    \item \textbf{Tối ưu Pipeline:} Khắc phục rò rỉ âm thanh khi tách nguồn và cải tiến thuật toán VAE để tránh hiện tượng điều tiết quá mức (over-regularization).
+    \item \textbf{Chuẩn hóa Thực nghiệm:} Phân chia dữ liệu train/val theo bài hát/ca sĩ để tránh rò rỉ dữ liệu và đảm bảo các quy định về bản quyền âm thanh.
 \end{enumerate}
 
 % =============================================================

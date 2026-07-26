@@ -77,10 +77,13 @@ log-mel correlation on real audio.
 
 ## Optional: converting to latent-space (64-dim/5Hz)
 
-The dataset above is mel-space, consumed directly by `train-self` (the
-default). To instead train the student inside DiffRhythm2's own compressed
-Music VAE latent space, run `cli.py precompute-latent-dataset` on top of
-this output — it re-decodes each record's mel through Vocos, re-encodes with a
+The dataset above is mel-space, consumed directly by `train-self`. **This
+conversion step is not optional for `train-distill`**: `KnowledgeDistillationTrainer`
+now requires `config.latent_mode=True` unconditionally (raises immediately
+otherwise, see `docs/architecture.md`) — there is no mel-space distillation
+path anymore. To train the student inside DiffRhythm2's own compressed Music
+VAE latent space, run `cli.py precompute-latent-dataset` on top of this
+output — it re-decodes each record's mel through Vocos, re-encodes with a
 trained `LatentAudioEncoder`, and writes a new dataset directory with the same
 `records.jsonl`/`config.json` shape but `mels/*.pt` holding 64-dim/5Hz latents
 instead of mel tensors, plus `config.json`'s `latent_mode: true`. See
