@@ -13,13 +13,31 @@ the FIXED code removes that confound: if collapse is still just as severe from
 step zero, the bug fix alone isn't sufficient to explain/fix it; if a fresh
 model shows more diverse output early on, that points at the entrenched-weights
 explanation instead.
+
+Source code is fetched by `git clone` + `git checkout <pinned SHA>` straight
+from GitHub inside the kernel, instead of zipping the local tree and uploading
+it as a fresh Kaggle Dataset every run (the old approach: slow to upload, and
+left a redundant full source copy baked into every downloaded kernel output --
+see docs/project_history.md). This means the kernel only ever sees committed,
+*pushed* code; run_kaggle_scratch_distill_pilot() pushes the current HEAD
+before launching and refuses to run with uncommitted local changes.
+
+Distillation (the teacher DiffRhythm2 forward pass) is skipped entirely here,
+not just down-weighted: the kernel never clones DiffRhythm2-main or installs
+its requirements, so `_load_teacher()` fails its `import diffrhythm2...` and
+falls back to teacher=None (pure ground-truth CFM loss, see
+src/training/distill_training.py). That forward pass was the dominant per-step
+cost (a ~1B-parameter model called every step even under torch.no_grad()), so
+skipping it buys far more steps per unit of Kaggle GPU-hour -- useful while the
+open question is "does cross-attention/AdaLN-Zero sharpen with more training
+steps", which doesn't need the teacher signal to answer.
 """
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
-import subprocess
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -30,18 +48,16 @@ from src.integrations.kaggle_auto import (
     kaggle_cli_command,
     load_kaggle_api_tokens,
     resolve_kaggle_username,
-    write_source_zip,
 )
 
+GIT_REMOTE_URL = "https://github.com/nhuy5602/GenMusic.git"
 
-def _kernel_script_content(epochs: int, batch_size: int = 2) -> str:
+
+def _kernel_script_content(epochs: int, batch_size: int, commit_sha: str) -> str:
     return f'''import json
 import os
-import shutil
 import subprocess
 import sys
-import tarfile
-import urllib.request
 from pathlib import Path
 
 try:
@@ -53,39 +69,25 @@ try:
     latent_dataset = str(records_file.parent.resolve())
     print(f"Using latent dataset: {{latent_dataset}}")
 
-    print("--- STEP 2: Setting up source code ---")
-    source_dataset_dir = next(
-        (d for d in input_dir.rglob("*") if d.is_dir() and "genmusic-source-" in d.name.lower()),
-        None
-    )
-    if not source_dataset_dir:
-        raise RuntimeError("Could not find the source code dataset directory.")
+    print("--- STEP 2: Cloning source code from GitHub (pinned commit {commit_sha}) ---")
     source_root = Path("/kaggle/working/GenMusic")
-    shutil.copytree(source_dataset_dir, source_root, dirs_exist_ok=True)
-
-    print("--- STEP 2.2: Downloading DiffRhythm2 official repository (needed for `bigvgan`) ---")
-    diffrhythm2_tar = "/kaggle/working/diffrhythm2.tar.gz"
-    urllib.request.urlretrieve("https://github.com/ASLP-lab/DiffRhythm2/archive/refs/heads/main.tar.gz", diffrhythm2_tar)
-    with tarfile.open(diffrhythm2_tar) as tar:
-        tar.extractall(str(source_root))
+    subprocess.run(["git", "clone", "{GIT_REMOTE_URL}", str(source_root)], check=True)
+    subprocess.run(["git", "checkout", "{commit_sha}"], cwd=str(source_root), check=True)
 
     print("--- STEP 2.5: Installing system packages (espeak-ng) ---")
     subprocess.run(["apt-get", "update", "-y"], check=False)
     subprocess.run(["apt-get", "install", "-y", "--fix-missing", "espeak-ng"], check=True)
 
-    print("--- STEP 3: Installing python dependencies ---")
+    print("--- STEP 3: Installing python dependencies (no DiffRhythm2/bigvgan -- distillation is skipped) ---")
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "librosa", "soundfile", "transformers", "vocos", "muq"], check=True)
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "text2phonemesequence"], check=True)
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", str(source_root / "DiffRhythm2-main/requirements.txt")], check=True)
 
-    os.environ["PYTHONPATH"] = (
-        str(source_root) + os.pathsep + str(source_root / "DiffRhythm2-main") + os.pathsep + os.environ.get("PYTHONPATH", "")
-    )
+    os.environ["PYTHONPATH"] = str(source_root) + os.pathsep + os.environ.get("PYTHONPATH", "")
 
     print("--- STEP 3.5: Checking CUDA compatibility ---")
     subprocess.run([sys.executable, "-c", "import torch; print(f'torch={{torch.__version__}} cuda={{torch.cuda.is_available()}}'); a=torch.randn(2,2,device=\\'cuda\\'); print((a@a))"], check=True)
 
-    print("--- STEP 4: train-distill FROM SCRATCH (no --resume-checkpoint) for {epochs} epoch(s) ---")
+    print("--- STEP 4: train-distill FROM SCRATCH, no teacher, for {epochs} epoch(s) ---")
     cli = str(source_root / "cli.py")
     student_checkpoint = "/kaggle/working/distilled_student_scratch.pt"
     subprocess.run([
@@ -98,7 +100,7 @@ try:
         "--depth", "4",
         "--heads", "4",
         "--ff-mult", "4",
-        "--alpha-feature", "0.8",
+        "--alpha-feature", "1.0",
         "--learning-rate", "1e-4",
         "--beta-repa", "0.0",
         "--lambda-vocal", "1.0",
@@ -126,53 +128,29 @@ def run_kaggle_scratch_distill_pilot(dataset_kernel_ref: str, epochs: int = 1, b
     if not username or not kaggle_auth_available(tokens) or not cli:
         raise RuntimeError("Missing KAGGLE_USERNAME or Kaggle auth (KAGGLE_API_TOKEN=KGAT_... / legacy KAGGLE_KEY)")
 
+    dirty = subprocess.run(["git", "status", "--short"], cwd=project_root, capture_output=True, text=True, check=True).stdout.strip()
+    if dirty:
+        raise RuntimeError(
+            "Working tree has uncommitted changes -- the Kaggle kernel clones from GitHub, so it would "
+            "not see them. Commit first:\n" + dirty
+        )
+    commit_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=project_root, capture_output=True, text=True, check=True).stdout.strip()
+    print(f"Pushing current HEAD ({commit_sha[:10]}) to origin so the kernel can clone it...")
+    subprocess.run(["git", "push"], cwd=project_root, check=True)
+
     run_id = f"scratchpilot-{int(time.time())}"
     job_dir = project_root / "outputs" / "kaggle_scratch_pilot" / run_id
-    dataset_dir = job_dir / "dataset"
     kernel_dir = job_dir / "kernel"
-
-    for d in (dataset_dir, kernel_dir):
-        d.mkdir(parents=True, exist_ok=True)
+    kernel_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 70)
     print(f"Initializing Kaggle Scratch-Distill Pilot Job: {run_id}")
     print("=" * 70)
 
-    print("Zipping local source code...")
-    write_source_zip(project_root, dataset_dir / "genmusic_vn_source.zip")
-
-    source_dataset_slug = f"genmusic-source-{run_id}"
-    source_dataset_ref = f"{username}/{source_dataset_slug}"
-
-    dataset_title = f"Scratch Pilot {run_id}"
-    assert 6 <= len(dataset_title) <= 50, f"dataset title length {len(dataset_title)} out of Kaggle's 6-50 range: {dataset_title!r}"
-    (dataset_dir / "dataset-metadata.json").write_text(json.dumps({
-        "title": dataset_title,
-        "id": source_dataset_ref,
-        "licenses": [{"name": "other"}]
-    }, indent=2))
-
-    print(f"Uploading source code to Kaggle Dataset '{source_dataset_ref}'...")
-    try:
-        subprocess.run(cli + ["datasets", "create", "-p", str(dataset_dir), "-r", "zip"], env={**os.environ, **tokens}, check=True)
-    except subprocess.CalledProcessError as e:
-        print(f"[WARNING] Kaggle dataset creation returned an error (often transient): {e}. Proceeding anyway...")
-
-    print("Waiting for source dataset to be ready...")
-    time.sleep(20)
-    for _ in range(60):
-        try:
-            res = subprocess.run(cli + ["datasets", "status", source_dataset_ref], env={**os.environ, **tokens}, capture_output=True, text=True, check=False)
-            if "ready" in res.stdout.lower():
-                break
-        except Exception:
-            pass
-        time.sleep(10)
-
     kernel_slug = f"genmusic-scratchpilot-{int(time.time())}"
     kernel_ref = f"{username}/{kernel_slug}"
 
-    (kernel_dir / "run_scratch_pilot.py").write_text(_kernel_script_content(epochs, batch_size), encoding="utf-8")
+    (kernel_dir / "run_scratch_pilot.py").write_text(_kernel_script_content(epochs, batch_size, commit_sha), encoding="utf-8")
 
     (kernel_dir / "kernel-metadata.json").write_text(json.dumps({
         "id": kernel_ref,
@@ -184,14 +162,13 @@ def run_kaggle_scratch_distill_pilot(dataset_kernel_ref: str, epochs: int = 1, b
         "enable_gpu": True,
         "enable_tpu": False,
         "enable_internet": True,
-        "dataset_sources": [source_dataset_ref],
+        "dataset_sources": [],
         "kernel_sources": [dataset_kernel_ref],
         "competition_sources": []
     }, indent=2))
 
     print(f"Pushing Scratch-Distill Pilot Kernel to Kaggle: {kernel_ref}...")
 
-    time.sleep(20)
     for attempt in range(3):
         try:
             subprocess.run(cli + ["kernels", "push", "-p", str(kernel_dir)], env={**os.environ, **tokens}, check=True)
