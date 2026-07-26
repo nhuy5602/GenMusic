@@ -844,6 +844,27 @@ hơn nhiều của đề tài này, chứ không phải sửa lại cho đúng t
 gian còn lại của đề tài, nguyên nhân gốc (cross-attention gần-đều và style embedding lệch
 biên độ) được ghi nhận là hiện tượng đã định vị được nhưng chưa khắc phục.
 
+Một giả thuyết bổ sung được kiểm tra riêng: liệu key/value của cross-attention (chính là
+\texttt{text\_embeds}) có thiếu một phép chuẩn hoá biên độ trước khi so khớp với query đã
+qua RMSNorm hay không. Đo trực tiếp trên một mẫu lời thật cho thấy tỉ lệ biên độ key/query
+chỉ khoảng $0{,}53\times$ -- lệch nhưng không ở mức có thể một mình giải thích entropy gần
+tối đa -- và khi thêm thử một RMSNorm (chưa huấn luyện) lên key, entropy attention gần như
+không đổi ($4{,}8017\to4{,}8014$ nats trên 128 token, so với tối đa lý thuyết $4{,}8520$),
+nên giả thuyết "thiếu chuẩn hoá key" bị loại. Đo tiếp độ tương tự cosine theo cặp token cho
+thấy nguyên nhân thực sự nằm ở tầng \texttt{text\_refine} (lớp self-attention nhỏ có thể
+huấn luyện đặt sau XPhoneBERT đã đóng băng, \S\ref{sec:microdit_architecture}): ngay trước
+\texttt{text\_refine}, các token âm vị đã có phần khác biệt (cosine trung bình $0{,}867$,
+$\text{std}=0{,}035$), nhưng ngay sau \texttt{text\_refine} -- chính là key/value mà
+cross-attention nhận -- gần như trùng nhau (cosine trung bình $0{,}997$,
+$\text{std}=0{,}0008$). Một self-attention chưa huấn luyện đủ có xu hướng hành xử như một
+phép trung bình hoá (cùng lý do gây entropy gần-đều ở cross-attention), và áp dụng phép này
+lên một tập token đã khá giống nhau khiến đầu ra hầu như đồng nhất bất kể nội dung từng
+token -- cross-attention phía sau khi đó không còn nội dung khác biệt nào để chọn lọc, dù
+key/query có được chuẩn hoá đúng biên độ hay không. \texttt{cross\_attn\_query\_scale} đo
+được ở checkpoint này cũng gần như chưa dịch khỏi giá trị khởi tạo $1{,}0$ (dao động
+$1{,}0000$--$1{,}0018$ qua 4 khối), xác nhận thêm rằng đây là hạn chế của ngân sách huấn
+luyện (124 step) chứ chưa phải giới hạn kiến trúc.
+
 \chapter{KẾT LUẬN VÀ HƯỚNG PHÁT TRIỂN}
 \label{chapter:conclusion}
 
@@ -875,7 +896,7 @@ Dựa trên các kết quả đạt được, đề tài đề xuất các hư�
     \item \textbf{Cải tiến Mô hình:} Tích hợp thêm các thành phần điều khiển chuyên sâu như đường cao độ ($F_0$), thanh điệu và căn lề mức âm vị (phoneme-level alignment).
     \item \textbf{Tối ưu Pipeline:} Khắc phục rò rỉ âm thanh khi tách nguồn và cải tiến thuật toán VAE để tránh hiện tượng điều tiết quá mức (over-regularization).
     \item \textbf{Chuẩn hóa Thực nghiệm:} Phân chia dữ liệu train/val theo bài hát/ca sĩ để tránh rò rỉ dữ liệu và đảm bảo các quy định về bản quyền âm thanh.
-    \item \textbf{Khắc phục đa dạng đầu ra:} Huấn luyện đủ lâu để kiểm chứng liệu cổng AdaLN-Zero (\S\ref{sec:exp_diversity}) có mở ra và vượt qua thiết kế điều kiện cộng trực tiếp cũ hay không; song song, thử các cơ chế căn chỉnh cross-attention rõ ràng hơn giữa khung latent và token lời (ví dụ theo mốc thời gian hoặc phoneme alignment) để giảm entropy gần-đều hiện tại của attention.
+    \item \textbf{Khắc phục đa dạng đầu ra:} Huấn luyện đủ lâu để kiểm chứng liệu cổng AdaLN-Zero (\S\ref{sec:exp_diversity}) có mở ra và vượt qua thiết kế điều kiện cộng trực tiếp cũ hay không; ưu tiên trước tiên là \texttt{text\_refine} -- đo được đang làm đồng nhất token âm vị (cosine theo cặp $0{,}867\to0{,}997$ trước/sau lớp này) trước khi tới cross-attention, nên bản thân cross-attention không còn nội dung khác biệt để chọn lọc dù key/query đã đúng biên độ; song song, thử các cơ chế căn chỉnh cross-attention rõ ràng hơn giữa khung latent và token lời (ví dụ theo mốc thời gian hoặc phoneme alignment) để giảm entropy gần-đều hiện tại của attention.
 \end{enumerate}
 
 % =============================================================
