@@ -551,11 +551,13 @@ từng mẫu:
 Thay vì MSE trần, hàm mất mát kết hợp bốn thành phần để chống hiện tượng
 \emph{regression-to-the-mean}/"distributional averaging" -- xu hướng model hội tụ về một
 mức năng lượng trung bình phẳng thay vì phân biệt đúng các đoạn có/không có tiếng hát,
-quan sát được khi chỉ dùng MSE trần ở các thử nghiệm ban đầu của đề tài:
+quan sát được khi chỉ dùng MSE trần ở các thử nghiệm ban đầu của đề tài. Trong đó, $w$ là
+trọng số theo năng lượng frame (chuẩn hoá về trung bình 1) và $\hat{x}_1$ là mẫu sạch tái
+tạo một bước:
 \begin{align}
- w &= 1+2\cdot\sigma\!\big(2(\bar{x}_1-Q_{0.55}(\bar{x}_1))\big) \quad\text{(trọng số theo năng lượng frame, chuẩn hoá về trung bình 1)},\\
+ w &= 1+2\cdot\sigma\!\big(2(\bar{x}_1-Q_{0.55}(\bar{x}_1))\big),\\
  \mathcal{L}_{\mathrm{vel}} &= \operatorname{mean}\!\big[w\cdot(\hat{u}_t-u_t)^2\big],\\
- \hat{x}_1 &= x_t+(1-t)\hat{u}_t \quad\text{(mẫu sạch tái tạo một bước)},\\
+ \hat{x}_1 &= x_t+(1-t)\hat{u}_t,\\
  \mathcal{L}_{\mathrm{recon}} &= \operatorname{mean}\!\big[w\cdot|\hat{x}_1-x_1|\big],\\
  \mathcal{L}_{\Delta} &= \operatorname{L1}(\Delta_t\hat{x}_1,\Delta_t x_1)+\operatorname{L1}(\Delta_f\hat{x}_1,\Delta_f x_1),\\
  \mathcal{L}_{\mathrm{gt}} &= \mathcal{L}_{\mathrm{vel}}+0{,}15\,\mathcal{L}_{\mathrm{recon}}+0{,}05\,\mathcal{L}_{\Delta}.
@@ -753,7 +755,7 @@ tiên ở \S\ref{sec:future_work}, thay vì kết luận sớm dựa trên loss 
 \label{sec:exp5_vae}
 
 Encoder ở Thí nghiệm 2 dòng (B) collapse hoàn toàn khi chỉ dùng loss reconstruction thuần
-($SD cao độ\approx0{,}44$--$0{,}78$). Bốn cấu hình được so sánh trên
+(SD cao độ $\approx0{,}44$--$0{,}78$). Bốn cấu hình được so sánh trên
 toàn bộ 1839 bài (10 epoch cho hai cấu hình đầu; 5 epoch tiếp tục từ checkpoint có sẵn cho
 hai cấu hình sau), đo trên audio thật (không qua CFM student): $\sigma_{\text{mean}}$
 (bottleneck có thật sự xác suất), SD cao độ (chất lượng
