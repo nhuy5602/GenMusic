@@ -162,6 +162,12 @@ def run_kaggle_scratch_distill_pilot(dataset_kernel_ref: str, epochs: int = 1, b
         "enable_gpu": True,
         "enable_tpu": False,
         "enable_internet": True,
+        # Without this, Kaggle picks the accelerator automatically and can hand out an
+        # older Tesla P100 (Pascal, sm_60) -- the preinstalled PyTorch in the current
+        # Kaggle image no longer ships sm_60 kernels (dropped Pascal support), so a P100
+        # session fails immediately with "CUDA error: no kernel image is available for
+        # execution on the device". Pin T4 explicitly to avoid that GPU lottery.
+        "machine_shape": "NvidiaTeslaT4",
         "dataset_sources": [],
         "kernel_sources": [dataset_kernel_ref],
         "competition_sources": []
