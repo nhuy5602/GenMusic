@@ -1,7 +1,6 @@
-"""Bounded pilot: train-distill FROM SCRATCH (fresh randomly-initialized
-MicroDiT, no --resume-checkpoint) for a handful of epochs (default 1), reusing
-an already-precomputed latent dataset (no re-encoding). Uses --amp +
---num-workers for speed.
+"""Bounded pilot: train FROM SCRATCH (fresh randomly-initialized MicroDiT) for
+a handful of epochs (default 1), reusing an already-precomputed latent dataset
+(no re-encoding).
 
 Meant to isolate one question the resume-pilot cannot answer cleanly: the
 resume-pilot resumes a checkpoint that was fully trained (15 epochs) against a
@@ -22,15 +21,18 @@ see docs/project_history.md). This means the kernel only ever sees committed,
 *pushed* code; run_kaggle_scratch_distill_pilot() pushes the current HEAD
 before launching and refuses to run with uncommitted local changes.
 
-Distillation (the teacher DiffRhythm2 forward pass) is skipped entirely here,
-not just down-weighted: the kernel never clones DiffRhythm2-main or installs
-its requirements, so `_load_teacher()` fails its `import diffrhythm2...` and
-falls back to teacher=None (pure ground-truth CFM loss, see
-src/training/distill_training.py). That forward pass was the dominant per-step
-cost (a ~1B-parameter model called every step even under torch.no_grad()), so
-skipping it buys far more steps per unit of Kaggle GPU-hour -- useful while the
-open question is "does cross-attention/AdaLN-Zero sharpen with more training
-steps", which doesn't need the teacher signal to answer.
+Uses the `train-self` CLI command (ground-truth CFM loss only), NOT
+`train-distill`: the latter hard-refuses to run without a real, loadable
+DiffRhythm2 teacher (src/training/distill_training.py's run_distillation_training
+raises rather than silently falling back to a fake stand-in teacher), and this
+pilot deliberately never clones/installs DiffRhythm2-main. `train-self` trains
+the same MicroDiT backbone (src/models/dit_transformer.py) via a different
+top-level function (src/training/self_diffusion.py's train_model) that has no
+such teacher dependency. Skipping the teacher forward pass (a ~1B-parameter
+model that was being called every step even under torch.no_grad()) buys far
+more steps per unit of Kaggle GPU-hour -- useful while the open question is
+"does cross-attention/AdaLN-Zero sharpen with more training steps", which
+doesn't need the teacher signal to answer.
 """
 import argparse
 import json
@@ -87,26 +89,29 @@ try:
     print("--- STEP 3.5: Checking CUDA compatibility ---")
     subprocess.run([sys.executable, "-c", "import torch; print(f'torch={{torch.__version__}} cuda={{torch.cuda.is_available()}}'); a=torch.randn(2,2,device=\\'cuda\\'); print((a@a))"], check=True)
 
-    print("--- STEP 4: train-distill FROM SCRATCH, no teacher, for {epochs} epoch(s) ---")
+    print("--- STEP 4: train-self FROM SCRATCH (ground-truth CFM only, no teacher) for {epochs} epoch(s) ---")
+    # NOT train-distill: that command hard-refuses to run without a real, loadable
+    # DiffRhythm2 teacher (src/training/distill_training.py raises rather than silently
+    # falling back to a fake stand-in teacher) -- since this pilot deliberately skips
+    # cloning/installing DiffRhythm2, train-distill would just error out immediately.
+    # train-self is the actual ground-truth-only path, and uses the SAME MicroDiT
+    # backbone (src/models/dit_transformer.py) that train-distill trains, so it exercises
+    # the same AdaLN-Zero/cross-attention code under test here.
     cli = str(source_root / "cli.py")
     student_checkpoint = "/kaggle/working/distilled_student_scratch.pt"
     subprocess.run([
-        sys.executable, cli, "train-distill",
+        sys.executable, cli, "train-self",
         "--dataset", latent_dataset,
-        "--student-checkpoint", student_checkpoint,
+        "--checkpoint", student_checkpoint,
         "--epochs", "{epochs}",
         "--batch-size", "{batch_size}",
         "--dim", "256",
         "--depth", "4",
         "--heads", "4",
         "--ff-mult", "4",
-        "--alpha-feature", "1.0",
         "--learning-rate", "1e-4",
-        "--beta-repa", "0.0",
         "--lambda-vocal", "1.0",
         "--log-every-steps", "20",
-        "--num-workers", "2",
-        "--amp",
         "--device", "cuda",
     ], env=os.environ, check=True)
 
