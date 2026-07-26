@@ -42,7 +42,7 @@ except ImportError:
 # mel format anymore, since it was the direct cause of that distortion.
 _MEL_CONFIG = MusicDiffusionConfig()
 SAMPLE_RATE = _MEL_CONFIG.sample_rate
-N_MELS = _MEL_CONFIG.n_mels
+N_MELS = _MEL_CONFIG.latent_dim
 N_FFT = _MEL_CONFIG.n_fft
 HOP_LENGTH = _MEL_CONFIG.hop_length
 STYLE_EMBED_DIM = 512  # MuQ-MuLan / DiffRhythm2 teacher cond_dim
@@ -462,12 +462,12 @@ def preprocess_raw_audio(
 
     # Write dataset config. raw_audio_mode=true tells downstream tools (see
     # docs/data_preparation.md) that vocal_wav_path/backing_wav_path hold raw
-    # waveform tensors (samples,), not mel tensors -- n_mels/n_fft/hop_length
+    # waveform tensors (samples,), not mel tensors -- latent_dim/n_fft/hop_length
     # are irrelevant to this dataset but kept for schema-compatibility with
     # code that reads MusicDiffusionConfig defaults.
     config_data = {
         "sample_rate": SAMPLE_RATE,
-        "n_mels": N_MELS,
+        "latent_dim": N_MELS,
         "n_fft": N_FFT,
         "hop_length": HOP_LENGTH,
         "raw_audio_mode": raw_audio,

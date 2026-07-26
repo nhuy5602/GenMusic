@@ -51,7 +51,7 @@ class ConditioningParityTests(unittest.TestCase):
         )
 
         self.assertEqual(generated.dim(), 3)
-        self.assertEqual(generated.shape[1], config.n_mels)
+        self.assertEqual(generated.shape[1], config.latent_dim)
         call = model.calls[0]
         self.assertTrue(torch.equal(call["style"], style.unsqueeze(0)))
         self.assertEqual(call["texts"], ["lyrics"])
@@ -65,7 +65,7 @@ class ConditioningParityTests(unittest.TestCase):
         def fake_sample(_model, _texts, frames, **kwargs):
             sampled_texts.append(_texts)
             self.assertTrue(torch.equal(kwargs["style_prompt"], style))
-            return torch.zeros((1, config.n_mels, frames), dtype=torch.float32)
+            return torch.zeros((1, config.latent_dim, frames), dtype=torch.float32)
 
         def fake_render(_mel, destination, _config, vocoder_type="vocos"):
             path = Path(destination)

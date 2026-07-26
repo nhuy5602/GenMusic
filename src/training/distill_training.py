@@ -5,7 +5,7 @@ This implementation replicates the *exact* call contract of the official teacher
 `sample_block_cache`), instead of guessing architecture dimensions or fabricating
 inputs. See docs/project_history.md for the reverse-engineering
 notes this is based on. In short, the teacher's DiT processes lyric tokens and
-the noisy mel latent as ONE shared sequence (lyric tokens get `time=-1` as a
+the noisy latent as ONE shared sequence (lyric tokens get `time=-1` as a
 sentinel, noisy frames get their real flow-matching `t`); style conditioning is
 a single 512-dim MuQ-MuLan embedding added at every position. We replicate that
 by concatenating [text_tokens; noisy_latent] and running one non-cached forward
@@ -31,7 +31,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from src.models.text_to_music_diffusion import MusicDiffusionConfig, reconstruct_full_mix
+from src.models.text_to_music_diffusion import MusicDiffusionConfig
 from src.models.dit_transformer import MicroDiT
 from src.training.self_diffusion import (
     MusicDiffusionDataset,
@@ -43,27 +43,6 @@ from src.training.self_diffusion import (
 )
 
 TEACHER_COND_DIM = 512
-
-
-def _resize_mel_bins(mel: torch.Tensor, target_bins: int) -> torch.Tensor:
-    """Deterministic resize across the mel-frequency-bin axis (last dim) via linear
-    interpolation. Used to bridge the student's mel-filterbank dimension into the
-    teacher's, without a trainable layer whose output would feed into the frozen
-    teacher's no_grad-scoped forward pass and therefore never receive a gradient
-    anyway (see docs/project_history.md)."""
-    batch, seq_len, n_mels = mel.shape
-    flattened = mel.reshape(batch * seq_len, 1, n_mels)
-    resized = F.interpolate(flattened, size=target_bins, mode="linear", align_corners=False)
-    return resized.reshape(batch, seq_len, target_bins)
-
-
-def _resample_time_dimension(x: torch.Tensor, target_len: int) -> torch.Tensor:
-    """Deterministic resize across the temporal axis (middle dim) via linear interpolation
-    to bridge the student's frame rate (93.75 Hz) and the teacher's VAE frame rate (5 Hz)."""
-    # x shape: [B, T_orig, C] -> transpose to [B, C, T_orig] for F.interpolate
-    transposed = x.transpose(1, 2)
-    resized = F.interpolate(transposed, size=target_len, mode="linear", align_corners=False)
-    return resized.transpose(1, 2)
 
 
 def _build_block_attn_mask(
@@ -300,58 +279,70 @@ class KnowledgeDistillationTrainer:
         device: str = "cpu",
         alpha_feature: float = 0.5,
         parse_lyrics_fn=None,
-        teacher_mel_dim: int | None = None,
         teacher_block_size: int = 10,
         beta_repa: float = 0.0,
         repa_layer_idx: int = 2,
         lambda_vocal: float = 1.0,
+        use_amp: bool = False,
     ):
+        # train-distill only supports the real latent-space representation (64
+        # chiều/5 Hz, matching the teacher's own Music VAE exactly) -- the earlier
+        # mel-space branch (with a 64<->100 channel adapter and a 93.75Hz<->5Hz
+        # time resample around the teacher call) has been removed rather than kept
+        # as a silent fallback: a config/dataset mismatch here must raise loudly
+        # instead of quietly running the wrong bridging math.
+        if not config.latent_mode:
+            raise ValueError(
+                "KnowledgeDistillationTrainer requires config.latent_mode=True -- "
+                "train-distill only supports the real 64-dim/5Hz latent-space "
+                "dataset produced by precompute_latent_dataset.py. Mel-space "
+                "distillation is no longer supported; use a latent-mode dataset."
+            )
         self.teacher = teacher_model.to(device) if teacher_model is not None else None
         self.student = student_model.to(device)
         self.config = config
         self.optimizer = optimizer
         self.device = device
+        # fp16 autocast only helps (and is only numerically safe/supported) on
+        # CUDA -- silently disabled on CPU rather than erroring, so callers can
+        # pass --amp unconditionally without checking the device first.
+        self.use_amp = bool(use_amp) and str(device).startswith("cuda")
+        self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
         self.teacher_block_size = teacher_block_size
         self.parse_lyrics_fn = parse_lyrics_fn
-        # Weight of the REPA-style representation-alignment auxiliary loss (see
-        # src/training/repa.py). 0.0 (default) disables it entirely -- the extra
-        # Vocos decode + frozen-MuQ forward per step and the student's optional
-        # hidden-state capture are both skipped, so existing runs that don't
-        # pass this are unaffected.
+        # REPA (src/training/repa.py) decodes x1 via Vocos (mel-only, 100-channel)
+        # then runs it through MuQ -- there is no latent-mode implementation of
+        # this loss (config.latent_mode is required True above, so Vocos would
+        # always receive 64-channel latent values it never trained on). Rather
+        # than let that mismatch surface as a silently-caught exception inside
+        # compute_repa_target (which prints a warning and returns None, making
+        # beta_repa a silent no-op every step), reject it outright. The
+        # parameter is kept (rather than removed) only so existing callers that
+        # already pass beta_repa=0.0 keep working unchanged.
+        if beta_repa > 0.0:
+            raise ValueError(
+                "beta_repa > 0.0 is not supported -- compute_repa_target "
+                "(src/training/repa.py) decodes via Vocos, which is mel-space-only "
+                "and has no latent-mode implementation. Pass beta_repa=0.0."
+            )
         self.beta_repa = beta_repa
         self.repa_layer_idx = repa_layer_idx
         # Weight of the auxiliary vocal-only prediction loss ("Mixed Pro", see
-        # MicroDiT.vocal_proj_out's docstring). 0.0 disables it -- the model
-        # still has the head (negligible parameter cost) but it never receives
-        # gradient and is never computed.
+        # MicroDiT.vocal_proj_out's docstring) -- stored but structurally inert
+        # now: latent_mode (required above) only carries a full-mix latent, no
+        # separate vocal-only latent for this head to regress against, so
+        # train_epoch never computes it regardless of this value. Kept as a
+        # parameter only so existing callers passing lambda_vocal=1.0 (the old
+        # mel-space default) keep working unchanged.
         self.lambda_vocal = lambda_vocal
         # If the teacher (or its tokenizer) is unavailable, there is no
         # distillation signal to blend in -- fall back to pure ground-truth CFM.
         self.alpha_feature = 1.0 if (self.teacher is None or parse_lyrics_fn is None) else alpha_feature
 
-        # The teacher's real checkpoint (mel_dim=64, read from its own config.json)
-        # does not match our student's Vocos-native mel space (mel_dim=100, chosen
-        # to fix the vocoder distortion bug -- see docs/project_history.md §4.1).
-        # Bridging student->teacher (to_teacher_mel) uses a fixed deterministic
-        # interpolation across the mel-bin axis, NOT a trainable layer: its output
-        # feeds directly into the frozen teacher's forward pass, which must stay
-        # torch.no_grad()-scoped (backward through the ~1.14B-param teacher every
-        # step would be prohibitively expensive) -- so a "trainable" layer here
-        # would silently never receive a gradient (see docs/project_history.md
-        # for the bug this replaces). Bridging teacher->student (from_teacher_mel) has
-        # no such constraint (it only touches the teacher's already-computed output),
-        # so it stays a real trainable linear adapter.
-        self.teacher_mel_dim = teacher_mel_dim
-        self.needs_mel_resize = self.teacher is not None and teacher_mel_dim is not None and teacher_mel_dim != config.n_mels
-        self.from_teacher_mel = nn.Linear(teacher_mel_dim, config.n_mels).to(device) if self.needs_mel_resize else None
-
         if self.teacher is not None:
             self.teacher.eval()
             for param in self.teacher.parameters():
                 param.requires_grad = False
-
-    def adapter_parameters(self) -> list[torch.nn.Parameter]:
-        return list(self.from_teacher_mel.parameters()) if self.from_teacher_mel is not None else []
 
     def _teacher_velocity(
         self, xt: torch.Tensor, x1: torch.Tensor, t: torch.Tensor, texts: list[str], style_prompt: torch.Tensor,
@@ -367,24 +358,12 @@ class KnowledgeDistillationTrainer:
         text_time = torch.full((batch_size, text_len), -1.0, device=self.device, dtype=xt.dtype)
         text_position_ids = torch.arange(text_len, device=self.device).unsqueeze(0).repeat(batch_size, 1)
 
-        # 1. Downsample the time dimension of student's Mel to match the teacher's VAE 5 Hz frame rate.
-        # In latent_mode the student's own tensors are already the real 64-dim/5Hz
-        # DiffRhythm2 latent (see precompute-latent-dataset / LatentAudioEncoder,
-        # docs/architecture.md), i.e. already at the teacher's native rate -- no
-        # resampling needed, and none of the 93.75Hz mel-frame-rate math applies.
-        teacher_fps = 5.0
-        if self.config.latent_mode:
-            teacher_seq_len = seq_len
-            teacher_xt, teacher_x1 = xt, x1
-        else:
-            student_fps = self.config.sample_rate / self.config.hop_length  # 93.75 Hz
-            teacher_seq_len = max(1, round(seq_len * (teacher_fps / student_fps)))
-            teacher_xt = _resample_time_dimension(xt, teacher_seq_len)
-            teacher_x1 = _resample_time_dimension(x1, teacher_seq_len)
-        
-        # 2. Resize the frequency dimension from 100 to 64
-        teacher_xt = _resize_mel_bins(teacher_xt, self.teacher_mel_dim) if self.needs_mel_resize else teacher_xt
-        teacher_x1 = _resize_mel_bins(teacher_x1, self.teacher_mel_dim) if self.needs_mel_resize else teacher_x1
+        # Student tensors are already the real 64-dim/5Hz DiffRhythm2 latent
+        # (config.latent_mode is asserted True in __init__), i.e. already at the
+        # teacher's own native rate and channel count -- no time resampling and no
+        # channel adapter needed; teacher and student share one representation.
+        teacher_seq_len = seq_len
+        teacher_xt, teacher_x1 = xt, x1
 
         with torch.no_grad():
             # Z: Clean sequence
@@ -422,16 +401,8 @@ class KnowledgeDistillationTrainer:
                 past_key_value=None,
             )
             pred = outputs[0] if isinstance(outputs, tuple) else outputs
-            teacher_velocity = pred[:, text_len + teacher_seq_len:].detach()  # (B, teacher_seq_len, 64)
+            teacher_velocity = pred[:, text_len + teacher_seq_len:].detach()  # (B, seq_len, 64)
 
-        # 3. Map the channel dimension from 64 to 100 using trainable adapter
-        if self.from_teacher_mel is not None:
-            teacher_velocity = self.from_teacher_mel(teacher_velocity)  # (B, teacher_seq_len, 100)
-
-        # 4. Upsample the teacher's predicted velocity back to student's original sequence length
-        # (no-op in latent_mode, where teacher_seq_len == seq_len already).
-        if teacher_seq_len != seq_len:
-            teacher_velocity = _resample_time_dimension(teacher_velocity, seq_len)  # (B, seq_len, 100)
         return teacher_velocity
 
     def train_epoch(self, dataloader, *, log_every_steps: int = 100, global_step: int = 0) -> list[dict[str, float | None]]:
@@ -449,18 +420,18 @@ class KnowledgeDistillationTrainer:
         epoch_losses = []
 
         for batch in dataloader:
-            vocal_mel = batch["vocal_mel"].to(self.device)  # (B, n_mels, seq_len)
-            backing_mel = batch["backing_mel"].to(self.device)  # (B, n_mels, seq_len)
+            vocal_mel = batch["vocal_mel"].to(self.device)  # (B, 64, seq_len) -- the precomputed full-mix latent
             style_anchor = batch["style_anchor"].to(self.device)  # (B, 512) precomputed MuQ-MuLan embedding
             texts = batch["text"]
 
-            vocal_x1 = vocal_mel.transpose(1, 2)  # (B, seq_len, n_mels) -- vocal-only, for the auxiliary loss only
-            # Primary target is now the full song (vocal + accompaniment, see
-            # reconstruct_full_mix's docstring) -- matches both what the teacher
-            # DiffRhythm2 actually generates and models natively, and this
-            # project's own scope (a complete song, not an isolated a cappella
-            # vocal track).
-            x1 = reconstruct_full_mix(vocal_x1, backing_mel.transpose(1, 2), self.config)
+            # vocal_mel_path already holds the full-mix latent (precompute_latent_dataset.py
+            # sums vocal+backing waveforms and encodes ONCE, upstream of training) -- x1 IS
+            # this tensor directly, matching both what the teacher DiffRhythm2 actually
+            # generates and models natively, and this project's own scope (a complete song,
+            # not an isolated a cappella vocal track). There is no separate backing tensor
+            # to recombine here (that combination already happened before encoding).
+            vocal_x1 = vocal_mel.transpose(1, 2)  # (B, seq_len, 64)
+            x1 = vocal_x1
             x0 = torch.randn_like(x1)
 
             batch_size = x1.shape[0]
@@ -484,36 +455,18 @@ class KnowledgeDistillationTrainer:
 
             self.optimizer.zero_grad(set_to_none=True)
 
-            want_repa = self.beta_repa > 0.0
-            want_vocal_aux = self.lambda_vocal > 0.0
-
-            # Not wrapped in torch.no_grad() here -- from_teacher_mel (inside
-            # _teacher_velocity) is a real trainable adapter and needs gradient
-            # tracking; only the frozen teacher's own forward pass is no_grad-scoped.
-            # xt/x1 are now the full-mix quantities, matching the teacher's own
-            # native scope directly -- no separate teacher-context reconstruction
-            # needed anymore (student and teacher now share the same target).
-            v_teacher = self._teacher_velocity(xt, x1, t, texts, style_anchor)
-
-            student_repa_hidden, vocal_aux = None, None
-            if want_repa or want_vocal_aux:
-                student_kwargs = {}
-                if want_repa:
-                    student_kwargs["repa_layer_idx"] = self.repa_layer_idx
-                if want_vocal_aux:
-                    student_kwargs["return_vocal_aux"] = True
-                student_result = self.student(
-                    x=xt, texts=texts, timestep=t, style_prompt=style_anchor, **student_kwargs,
-                )
-                # Unpack per dit_transformer.MicroDiT.forward's contract:
-                # (out,) + (repa_hidden,) if want_repa + (vocal_aux,) if want_vocal_aux.
-                rest = list(student_result[1:])
-                v_student = student_result[0]
-                if want_repa:
-                    student_repa_hidden = rest.pop(0)
-                if want_vocal_aux:
-                    vocal_aux = rest.pop(0)
-            else:
+            # Neither auxiliary loss can be active by the time we get here: beta_repa
+            # must be 0.0 (enforced in __init__, REPA has no latent-mode
+            # implementation) and lambda_vocal has no distinct vocal-only target to
+            # train against in latent_mode (dataset only carries the full-mix
+            # latent) -- so the student always takes the plain forward path, no
+            # extra head outputs requested.
+            autocast_ctx = torch.autocast(device_type="cuda", dtype=torch.float16, enabled=self.use_amp)
+            with autocast_ctx:
+                # Not wrapped in torch.no_grad() here -- the teacher-matching path
+                # inside _teacher_velocity needs gradient tracking on the student
+                # side; only the frozen teacher's own forward pass is no_grad-scoped.
+                v_teacher = self._teacher_velocity(xt, x1, t, texts, style_anchor)
                 v_student = self.student(x=xt, texts=texts, timestep=t, style_prompt=style_anchor)
 
             target_velocity = x1 - x0
@@ -553,34 +506,18 @@ class KnowledgeDistillationTrainer:
             else:
                 loss = loss_gt
 
+            # Vocal-auxiliary and REPA losses are structurally disabled in
+            # latent_mode (see __init__) -- kept as None here (rather than
+            # computed conditionally) so the report schema below stays stable
+            # for anything that reads distillation_report.json.
             loss_vocal_aux = None
-            if want_vocal_aux:
-                # Auxiliary vocal-only prediction target ("Mixed Pro", see
-                # MicroDiT.vocal_proj_out's docstring) -- same x0/t as the main
-                # full-mix process, just against the vocal-only clean target,
-                # so the model still explicitly tracks the vocal component
-                # instead of only learning the (easier, louder) joint mix.
-                vocal_target_velocity = vocal_x1 - x0
-                vocal_frame_energy = vocal_x1.mean(dim=-1)
-                vocal_activity_threshold = torch.quantile(vocal_frame_energy.detach(), 0.55, dim=1, keepdim=True)
-                vocal_activity = torch.sigmoid((vocal_frame_energy - vocal_activity_threshold) * 2.0)
-                vocal_frame_weights = (1.0 + 2.0 * vocal_activity).unsqueeze(-1)
-                vocal_frame_weights = vocal_frame_weights / vocal_frame_weights.mean(dim=(1, 2), keepdim=True).clamp_min(1e-6)
-                loss_vocal_aux = ((vocal_aux - vocal_target_velocity).square() * vocal_frame_weights).mean()
-                loss = loss + self.lambda_vocal * loss_vocal_aux
-
             loss_repa = None
-            if want_repa:
-                from .repa import compute_repa_target, repa_loss
 
-                repa_target = compute_repa_target(x1, self.config, self.device)
-                loss_repa = repa_loss(student_repa_hidden, repa_target)
-                if loss_repa is not None:
-                    loss = loss + self.beta_repa * loss_repa
-
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(list(self.student.parameters()) + self.adapter_parameters(), 1.0)
-            self.optimizer.step()
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(self.optimizer)  # so clip_grad_norm_ sees true (unscaled) gradients
+            torch.nn.utils.clip_grad_norm_(list(self.student.parameters()), 1.0)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
 
             epoch_losses.append({
                 "loss": float(loss.detach().cpu()),
@@ -618,6 +555,9 @@ def run_distillation_training(
     lambda_vocal: float = 1.0,
     max_records: int | None = None,
     log_every_steps: int = 100,
+    resume_checkpoint: str | Path | None = None,
+    num_workers: int = 0,
+    use_amp: bool = False,
 ) -> dict[str, Any]:
     torch, _, _, DataLoaderClass = _torch()
 
@@ -653,12 +593,22 @@ def run_distillation_training(
             "Use train-self for ground-truth-only training instead -- train-distill never silently "
             "falls back to a fake/randomly-initialized stand-in teacher."
         )
+    # train-distill only supports the real latent-space dataset (config.latent_mode=True,
+    # latent_dim=64 matching the teacher's own Music VAE exactly) -- no mel<->latent adapter
+    # exists anymore, so a mismatched (mel-space) dataset must raise here, not silently
+    # run through since-removed bridging math.
     teacher_mel_dim = teacher_config.get("mel_dim") if teacher_config else None
-    if teacher_mel_dim is not None and teacher_mel_dim != config.n_mels:
-        print(
-            f"Teacher mel_dim={teacher_mel_dim} != dataset n_mels={config.n_mels}; "
-            "bridging with a trainable linear adapter (see docs/project_history.md).",
-            flush=True,
+    if not config.latent_mode:
+        raise ValueError(
+            f"train-distill requires a latent-mode dataset (config.latent_mode=True); got "
+            f"latent_mode=False (latent_dim={config.latent_dim}). Precompute the dataset via "
+            "precompute_latent_dataset.py first -- mel-space distillation is no longer supported."
+        )
+    if teacher_mel_dim is not None and teacher_mel_dim != config.latent_dim:
+        raise ValueError(
+            f"Dataset latent_dim={config.latent_dim} does not match teacher's native latent dim "
+            f"{teacher_mel_dim} -- no channel adapter exists anymore, so this dataset was not "
+            "produced by the current precompute_latent_dataset.py against this teacher checkpoint."
         )
 
     parse_lyrics_fn, tokenizer_status = _load_lyric_tokenizer()
@@ -670,6 +620,19 @@ def run_distillation_training(
         config, roberta_model=roberta_model, dim=dim, depth=depth, heads=heads, ff_mult=ff_mult, style_dim=TEACHER_COND_DIM,
     ).to(selected_device)
 
+    if resume_checkpoint is not None:
+        # Load a prior run's weights, fresh optimizer/schedule -- same pattern as
+        # train-latent-encoder's --resume-checkpoint. Architecture (dim/depth/
+        # heads/ff_mult) must match what the checkpoint was saved with; a mismatch
+        # here would silently drop most weights via load_state_dict(strict=False).
+        resume_payload = torch.load(resume_checkpoint, map_location=selected_device, weights_only=False)
+        missing, unexpected = model_student.load_state_dict(resume_payload["model"], strict=False)
+        print(
+            f"Resumed student weights from {resume_checkpoint} "
+            f"(missing={len(missing)}, unexpected={len(unexpected)})",
+            flush=True,
+        )
+
     dataset = MusicDiffusionDataset(dataset_dirs, config, max_records=max_records)
 
     def collate_fn(batch):
@@ -679,7 +642,11 @@ def run_distillation_training(
         texts = [item["text"] for item in batch]
         return {"vocal_mel": vocal_mels, "backing_mel": backing_mels, "style_anchor": style_anchors, "text": texts}
 
-    dataloader = DataLoaderClass(dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    dataloader = DataLoaderClass(
+        dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn,
+        num_workers=max(0, num_workers), pin_memory=(selected_device == "cuda"),
+        persistent_workers=num_workers > 0,
+    )
 
     trainer = KnowledgeDistillationTrainer(
         teacher_model=teacher_backbone,
@@ -688,13 +655,13 @@ def run_distillation_training(
         optimizer=None,
         device=selected_device,
         alpha_feature=alpha_feature,
-        teacher_mel_dim=teacher_mel_dim,
         parse_lyrics_fn=parse_lyrics_fn,
         teacher_block_size=teacher_config.get("block_size", 10) if teacher_config else 10,
         beta_repa=beta_repa,
         lambda_vocal=lambda_vocal,
+        use_amp=use_amp,
     )
-    trainable_params = [p for p in model_student.parameters() if p.requires_grad] + trainer.adapter_parameters()
+    trainable_params = [p for p in model_student.parameters() if p.requires_grad]
     trainer.optimizer = torch.optim.AdamW(trainable_params, lr=learning_rate)
     # Always true here -- the raises above guarantee a real teacher + tokenizer.
     distillation_active = True
@@ -749,10 +716,7 @@ def run_distillation_training(
         "distillation_active": distillation_active,
         "teacher_status": teacher_status,
         "tokenizer_status": tokenizer_status,
-        "teacher_mel_dim": teacher_mel_dim,
-        "student_mel_dim": config.n_mels,
-        "mel_adapter_used": trainer.needs_mel_resize,
-        "mel_adapter_trainable": trainer.from_teacher_mel is not None,
+        "latent_dim": config.latent_dim,
         "student_checkpoint": str(student_checkpoint.resolve()),
         "epochs": epochs,
         "step_count": len(losses),

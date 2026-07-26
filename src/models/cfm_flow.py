@@ -260,7 +260,7 @@ def sample_cfm(model, texts: list[str], frames: int, config: MusicDiffusionConfi
     batch_size = len(texts)
     
     # 1. Start with Gaussian noise x0 at t = 0
-    xt = torch.randn((batch_size, frames, config.n_mels), device=device)
+    xt = torch.randn((batch_size, frames, config.latent_dim), device=device)
     
     normalized_style = _prepare_style_condition(
         style_prompt,

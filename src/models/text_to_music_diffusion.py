@@ -20,11 +20,20 @@ import numpy as np
 @dataclass(frozen=True)
 class MusicDiffusionConfig:
     # Mel parameters intentionally match Vocos's "charactr/vocos-mel-24khz" native
-    # feature extractor exactly (sample_rate, n_fft, hop_length, n_mels, log scale).
+    # feature extractor exactly (sample_rate, n_fft, hop_length, latent_dim, log scale).
     # This lets predicted mels be decoded directly with no resampling/interpolation
     # hack, which was previously destroying almost all signal (see docs/experiments).
     sample_rate: int = 24_000
-    n_mels: int = 100
+    # Channel count of whatever representation the model actually works in:
+    # 100 real Vocos mel bins when latent_mode=False, or 64 VAE latent
+    # channels when latent_mode=True (the only mode train-distill supports,
+    # see KnowledgeDistillationTrainer.__init__) -- one field serves both
+    # because only one of the two is ever active for a given config. Named
+    # `n_mels` until this rename; still called `n_mels`/`mel` in unrelated
+    # real-mel-spectrogram code elsewhere (preprocess_raw_vietnamese.py,
+    # latent_codec.py's multi-scale mel loss) that has nothing to do with
+    # this config field.
+    latent_dim: int = 100
     n_fft: int = 1024
     hop_length: int = 256
     # 384 frames is 4.096 seconds at 24 kHz / hop 256. Keeping train and
@@ -53,10 +62,13 @@ class MusicDiffusionConfig:
 def _config_from_dict(data: dict) -> "MusicDiffusionConfig":
     """Build a config from a saved dict, ignoring unknown keys.
 
-    Checkpoints/configs saved by older code (the removed Conv1D architecture)
-    may carry fields no longer in this dataclass -- drop them rather than
+    Checkpoints/configs saved by older code (the removed Conv1D architecture,
+    or before the `n_mels`->`latent_dim` rename) may carry fields no longer
+    in this dataclass, or the old field name -- migrate/drop rather than
     failing to load an otherwise-fine checkpoint.
     """
+    if "n_mels" in data and "latent_dim" not in data:
+        data = {**data, "latent_dim": data["n_mels"]}
     known = {field.name for field in fields(MusicDiffusionConfig)}
     return MusicDiffusionConfig(**{key: value for key, value in data.items() if key in known})
 
@@ -116,7 +128,7 @@ def compute_mel_spectrogram(waveform, config: "MusicDiffusionConfig"):
     can be handed straight to ``Vocos.decode`` with no resampling/interpolation.
 
     ``waveform`` may be a 1D numpy array / torch tensor of samples at
-    ``config.sample_rate``. Returns a ``(n_mels, frames)`` float32 torch tensor.
+    ``config.sample_rate``. Returns a ``(latent_dim, frames)`` float32 torch tensor.
     """
     torch, _ = _torch()
     import torchaudio
@@ -130,7 +142,7 @@ def compute_mel_spectrogram(waveform, config: "MusicDiffusionConfig"):
         sample_rate=config.sample_rate,
         n_fft=config.n_fft,
         hop_length=config.hop_length,
-        n_mels=config.n_mels,
+        n_mels=config.latent_dim,  # torchaudio's own kwarg name; our field is config.latent_dim
         center=True,
         power=1.0,
     )
@@ -167,12 +179,12 @@ def estimate_minimum_lyric_duration(text: str, *, words_per_second: float = 2.2,
 
 
 def render_mel_to_wav(mel, destination: str | Path, config: MusicDiffusionConfig, vocoder_type: str = "vocos") -> Path:
-    """Render a log-mel tensor/array (n_mels, frames) into a WAV file.
+    """Render a log-mel tensor/array (latent_dim, frames) into a WAV file.
 
     ``vocoder_type="vocos"`` (default, recommended) decodes with the pretrained
     neural vocoder "charactr/vocos-mel-24khz". It requires ``config`` to match
     Vocos's native mel format exactly (sample_rate=24000, n_fft=1024,
-    hop_length=256, n_mels=100 -- the ``MusicDiffusionConfig`` defaults), so the
+    hop_length=256, latent_dim=100 -- the ``MusicDiffusionConfig`` defaults), so the
     mel is handed to Vocos unmodified with no lossy resampling. If the config
     does not match, or Vocos is unavailable, this falls back to a proper
     multi-iteration Griffin-Lim mel inversion (``vocoder_type="griffinlim"``),
@@ -209,13 +221,13 @@ def render_mel_to_wav(mel, destination: str | Path, config: MusicDiffusionConfig
         return _write_wav(audio, destination, handle.sampling_rate)
 
     vocos_native = (
-        config.sample_rate == 24_000 and config.n_fft == 1024 and config.hop_length == 256 and config.n_mels == 100
+        config.sample_rate == 24_000 and config.n_fft == 1024 and config.hop_length == 256 and config.latent_dim == 100
     )
     if vocoder_type == "vocos":
         if not vocos_native:
             print(
                 f"⚠️ Warning: config ({config.sample_rate}Hz, n_fft={config.n_fft}, hop={config.hop_length}, "
-                f"n_mels={config.n_mels}) does not match Vocos's native mel format; falling back to Griffin-Lim "
+                f"latent_dim={config.latent_dim}) does not match Vocos's native mel format; falling back to Griffin-Lim "
                 "instead of resampling (resampling previously caused severe distortion)."
             )
         else:
@@ -442,7 +454,7 @@ def structured_random_mel(config: MusicDiffusionConfig, frames: int, *, seed: in
     torch, _ = _torch()
     generator = torch.Generator().manual_seed(seed)
     time = torch.linspace(0.0, 1.0, frames).unsqueeze(0)
-    frequency = torch.linspace(0.0, 1.0, config.n_mels).unsqueeze(1)
+    frequency = torch.linspace(0.0, 1.0, config.latent_dim).unsqueeze(1)
     harmonic = torch.sin(2 * math.pi * (frequency * 2.5 + time * (1.0 + seed % 5)))
-    noise = torch.randn((config.n_mels, frames), generator=generator) * 0.18
+    noise = torch.randn((config.latent_dim, frames), generator=generator) * 0.18
     return (harmonic * 0.8 + noise - 0.5).float()

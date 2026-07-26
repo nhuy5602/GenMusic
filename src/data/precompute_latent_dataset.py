@@ -110,7 +110,7 @@ def precompute_latent_dataset(
 
     output_config = replace(
         MusicDiffusionConfig(),
-        n_mels=DECODER_IN_CHANNELS,
+        latent_dim=DECODER_IN_CHANNELS,
         sample_rate=DECODER_FPS,  # repurposed: "frames per second" of this representation
         hop_length=1,
         frames_per_chunk=frames_per_chunk,

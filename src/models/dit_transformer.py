@@ -1,3 +1,5 @@
+import math
+
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -101,28 +103,89 @@ class TimestepEmbedding(nn.Module):
 
 
 class InputEmbedding(nn.Module):
-    """Mel projection block with additive timestep/style conditioning.
+    """Mel projection block -- pure projection, no conditioning here.
 
-    Lyric conditioning is no longer folded in here: the previous scheme
-    concatenated text and mel tokens into one self-attention sequence
-    ("prepend"-style). SongGen (arXiv:2502.13128) found cross-attention lyric
-    conditioning clearly beats that (FAD 1.73 vs 3.56, PER 43.34 vs 56.21), so
-    lyric conditioning now happens via a dedicated cross-attention sublayer in
-    each transformer block instead (see CrossAttentionDecoderLayer below) --
-    this embedding only ever sees the mel sequence.
+    Lyric conditioning happens via a dedicated cross-attention sublayer in
+    each transformer block (see CrossAttentionDecoderLayer). Timestep/style
+    conditioning happens via AdaLN-Zero modulation inside each block (see
+    AdaLNZeroModulation) instead of an additive injection here: an additive
+    term this early (norm ~0.6 vs the projected mel signal's norm ~30-100)
+    is small enough that the network can learn to route around it entirely
+    -- confirmed empirically via a layer-by-layer activation-divergence probe
+    showing style-conditioned outputs converging to cosine similarity
+    >0.9999 regardless of how different the two style anchors were. AdaLN
+    forces the conditioning vector to directly rescale/shift every block's
+    hidden state, so it cannot be a no-op.
     """
     def __init__(self, mel_dim: int, out_dim: int):
         super().__init__()
         self.proj_x = nn.Linear(mel_dim, out_dim)
         self.proj_final = nn.Linear(out_dim, out_dim)
 
-    def forward(self, x: torch.Tensor, time_emb: torch.Tensor, style_emb: torch.Tensor) -> torch.Tensor:
-        x_proj = self.proj_x(x)
-        seq_len = x_proj.shape[1]
-        style_emb_expanded = style_emb.unsqueeze(1).repeat(1, seq_len, 1)
-        time_emb_expanded = time_emb.unsqueeze(1).repeat(1, seq_len, 1)
-        merged = x_proj + style_emb_expanded + time_emb_expanded
-        return self.proj_final(merged)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.proj_final(self.proj_x(x))
+
+
+def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+
+
+class AdaLNZeroModulation(nn.Module):
+    """Predicts per-block (shift, scale, gate) triples for the self-attention,
+    cross-attention, and MLP sublayers from the timestep+style conditioning
+    vector `c` (DiT-style AdaLN-Zero, Peebles & Xie 2022, extended to also
+    cover the cross-attention sublayer this architecture adds on top of the
+    original DiT block).
+
+    Zero-initialized so every block starts as an identity function at init
+    (gate=0 means the sublayer's output doesn't affect the residual stream
+    yet) -- standard for stabilizing deep conditioned transformers, and it
+    also means conditioning is injected via a multiplicative gate the model
+    must actively learn to open, rather than an always-on additive term it
+    can just as easily learn to ignore.
+    """
+    def __init__(self, dim: int, cond_dim: int):
+        super().__init__()
+        self.silu = nn.SiLU()
+        self.linear = nn.Linear(cond_dim, dim * 9)
+        nn.init.zeros_(self.linear.weight)
+        nn.init.zeros_(self.linear.bias)
+
+    def forward(self, c: torch.Tensor):
+        return self.linear(self.silu(c)).chunk(9, dim=-1)
+
+
+class SinusoidalPositionalEncoding(nn.Module):
+    """Deterministic additive sinusoidal position encoding (Vaswani et al.,
+    2017), added to content right before cross-attention.
+
+    `nn.MultiheadAttention` itself carries no positional information at all --
+    a mel-frame query and a lyric-token key are pure bags of content vectors;
+    permuting either sequence's tokens would not change a single attention
+    score. A layer-by-layer activation probe found cross-attention weights
+    had entropy essentially equal to the uniform maximum regardless of how
+    much training a checkpoint had seen (124 to ~2100 steps), i.e. behaving
+    as plain average-pooling. Giving each side its own ordinal position
+    signal (mel-frame index for the query side, lyric-token index for the
+    key side) is a strictly-better-than-nothing prior -- though the two index
+    scales don't correspond to the same real timeline (a text-token index has
+    no fixed real-time duration the way a 5~Hz mel-frame index does), so this
+    is NOT true cross-modal time alignment; a real fix needs the per-word
+    Whisper timestamps already produced in preprocessing but not yet threaded
+    into the model (see docs/main.tex, Hướng phát triển).
+    """
+    def __init__(self, dim: int, max_len: int = 4096):
+        super().__init__()
+        position = torch.arange(max_len).unsqueeze(1).float()
+        div_term = torch.exp(torch.arange(0, dim, 2).float() * (-math.log(10000.0) / dim))
+        pe = torch.zeros(max_len, dim)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer("pe", pe, persistent=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        seq_len = x.shape[1]
+        return x + self.pe[:seq_len].unsqueeze(0).to(dtype=x.dtype)
 
 
 class CrossAttentionDecoderLayer(nn.Module):
@@ -140,7 +203,7 @@ class CrossAttentionDecoderLayer(nn.Module):
     no Llama equivalent (LlamaAttention is hardcoded to self-attention), so
     it's a standard nn.MultiheadAttention sublayer instead.
     """
-    def __init__(self, config: LlamaConfig, layer_idx: int):
+    def __init__(self, config: LlamaConfig, layer_idx: int, cond_dim: int):
         super().__init__()
         self.self_attn = LlamaAttention(config=config, layer_idx=layer_idx)
         self.mlp = LlamaMLP(config)
@@ -150,6 +213,30 @@ class CrossAttentionDecoderLayer(nn.Module):
         self.cross_attn = nn.MultiheadAttention(
             config.hidden_size, config.num_attention_heads, batch_first=True,
         )
+        # AdaLN-Zero: timestep+style conditioning modulates self-attn,
+        # cross-attn, AND MLP (see AdaLNZeroModulation) -- style/timestep
+        # conditioning now has a direct, multiplicative hook into the
+        # cross-attention branch too, not just an additive injection at the
+        # input (see InputEmbedding's docstring for why that was too weak).
+        self.ada_ln = AdaLNZeroModulation(config.hidden_size, cond_dim)
+        # Learnable query scale ("inverse temperature") for cross-attention:
+        # a layer-by-layer activation probe found cross-attn weights had
+        # entropy essentially equal to the uniform maximum (i.e. it was
+        # behaving as plain average-pooling over lyric tokens, not real
+        # content-based attention) in checkpoints trained anywhere from 124 to
+        # ~2100 steps. RMSNorm fixes the per-token norm of the query before
+        # attention, so nn.MultiheadAttention's own in_proj_weight is, in
+        # principle, already free to learn a larger effective scale and
+        # sharpen the softmax -- but a single scalar gives gradient descent a
+        # much more direct, low-variance path to do so than reshaping an
+        # entire projection matrix from a 248-song dataset. Init to 1.0
+        # (matches un-scaled behavior) so this starts as a no-op.
+        self.cross_attn_query_scale = nn.Parameter(torch.tensor(1.0))
+        # Ordinal position signal for cross-attention (see
+        # SinusoidalPositionalEncoding's docstring) -- shared module applied
+        # separately to the mel-frame query positions and the lyric-token key
+        # positions, since they're different sequences with different lengths.
+        self.cross_attn_pos_enc = SinusoidalPositionalEncoding(config.hidden_size)
 
     def forward(
         self,
@@ -157,11 +244,18 @@ class CrossAttentionDecoderLayer(nn.Module):
         text_embeds: torch.Tensor,
         text_key_padding_mask: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        c: torch.Tensor,
     ) -> torch.Tensor:
+        (
+            shift_msa, scale_msa, gate_msa,
+            shift_cross, scale_cross, gate_cross,
+            shift_mlp, scale_mlp, gate_mlp,
+        ) = self.ada_ln(c)
+
         # 1. Self-attention over mel tokens only (no padding among mel frames,
         # so no attention mask is needed here -- fully bidirectional).
         residual = hidden_states
-        normed = self.input_layernorm(hidden_states)
+        normed = modulate(self.input_layernorm(hidden_states), shift_msa, scale_msa)
         # LlamaAttention.forward()'s return tuple length varies across
         # transformers versions (2-tuple vs 3-tuple with past_key_value) --
         # train-distill's kernel installs DiffRhythm2's requirements.txt, which
@@ -170,23 +264,28 @@ class CrossAttentionDecoderLayer(nn.Module):
         # element (the attention output) is ever needed here.
         self_attn_result = self.self_attn(hidden_states=normed, position_embeddings=position_embeddings)
         attn_out = self_attn_result[0] if isinstance(self_attn_result, tuple) else self_attn_result
-        hidden_states = residual + attn_out
+        hidden_states = residual + gate_msa.unsqueeze(1) * attn_out
 
         # 2. Cross-attention: mel queries attend to lyric/text keys+values.
         # nn.MultiheadAttention's key_padding_mask uses True == ignore, the
         # opposite convention from text_key_padding_mask (True == valid token).
         residual = hidden_states
-        normed = self.cross_attn_layernorm(hidden_states)
+        normed = modulate(self.cross_attn_layernorm(hidden_states), shift_cross, scale_cross)
+        scaled_query = self.cross_attn_pos_enc(normed) * self.cross_attn_query_scale
+        # Position encoding on the key only, not the value -- the value must
+        # stay pure lyric content; only the key/query pair needs an ordinal
+        # signal to compute attention scores from.
+        text_keys = self.cross_attn_pos_enc(text_embeds)
         cross_out, _ = self.cross_attn(
-            query=normed, key=text_embeds, value=text_embeds,
+            query=scaled_query, key=text_keys, value=text_embeds,
             key_padding_mask=~text_key_padding_mask, need_weights=False,
         )
-        hidden_states = residual + cross_out
+        hidden_states = residual + gate_cross.unsqueeze(1) * cross_out
 
         # 3. Feed-forward
         residual = hidden_states
-        normed = self.post_attention_layernorm(hidden_states)
-        hidden_states = residual + self.mlp(normed)
+        normed = modulate(self.post_attention_layernorm(hidden_states), shift_mlp, scale_mlp)
+        hidden_states = residual + gate_mlp.unsqueeze(1) * self.mlp(normed)
         return hidden_states
 
 
@@ -299,7 +398,7 @@ class MicroDiT(nn.Module):
             nn.Linear(self.cond_dim, self.cond_dim)
         )
 
-        self.input_embed = InputEmbedding(config.n_mels, dim)
+        self.input_embed = InputEmbedding(config.latent_dim, dim)
         # Projects an intermediate transformer hidden state up to a frozen
         # self-supervised audio encoder's feature dimension (REPA-style
         # representation-alignment auxiliary loss, see docs/project_history.md --
@@ -328,7 +427,7 @@ class MicroDiT(nn.Module):
         # ever needed by the now-removed attention-distillation capture hook.
         llama_config._attn_implementation = "sdpa"
         self.transformer_blocks = nn.ModuleList(
-            [CrossAttentionDecoderLayer(llama_config, layer_idx=i) for i in range(depth)]
+            [CrossAttentionDecoderLayer(llama_config, layer_idx=i, cond_dim=self.cond_dim) for i in range(depth)]
         )
         self.rotary_emb = LlamaRotaryEmbedding(config=llama_config)
         # Trainable self-attention refinement over the (frozen+projected) lyric
@@ -336,7 +435,7 @@ class MicroDiT(nn.Module):
         self.text_refine = TextSelfAttentionLayer(llama_config)
         
         self.norm_out = AdaLayerNormZeroFinal(dim, self.cond_dim)
-        self.proj_out = nn.Linear(dim, config.n_mels)
+        self.proj_out = nn.Linear(dim, config.latent_dim)
         # Auxiliary vocal-only prediction head ("Mixed Pro" in SongGen,
         # arXiv:2502.13128): the model's primary target is now the full song
         # (vocal + accompaniment, see reconstruct_full_mix in
@@ -346,7 +445,7 @@ class MicroDiT(nn.Module):
         # hidden state with proj_out but predicts vocal-only velocity as an
         # auxiliary training signal only -- it is never used at inference
         # unless a caller explicitly asks for it.
-        self.vocal_proj_out = nn.Linear(dim, config.n_mels)
+        self.vocal_proj_out = nn.Linear(dim, config.latent_dim)
 
     def forward(
         self,
@@ -386,9 +485,11 @@ class MicroDiT(nn.Module):
         s_emb = self.style_embed(style_vector) # (batch_size, cond_dim)
         c = t_emb_scalar + s_emb
 
-        # 3. Project and embed the mel sequence only (lyric conditioning now
-        # happens via cross-attention inside each block, not concatenation).
-        x = self.input_embed(x, t_emb_scalar, s_emb)
+        # 3. Project the mel sequence only (lyric conditioning happens via
+        # cross-attention inside each block; timestep/style conditioning
+        # happens via AdaLN-Zero modulation inside each block, see
+        # CrossAttentionDecoderLayer -- not an additive injection here).
+        x = self.input_embed(x)
 
         # 4. Rotary position IDs over the mel sequence only
         pos_ids = torch.arange(seq_len, device=device).unsqueeze(0).repeat(batch_size, 1)
@@ -398,7 +499,7 @@ class MicroDiT(nn.Module):
         for i, block in enumerate(self.transformer_blocks):
             x = block(
                 x, text_embeds=text_embeds, text_key_padding_mask=text_mask,
-                position_embeddings=rotary_embed,
+                position_embeddings=rotary_embed, c=c,
             )
             if repa_layer_idx is not None and i == repa_layer_idx:
                 # Hidden state right after this block, before the final

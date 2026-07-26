@@ -255,14 +255,45 @@ class SelfDiffusionTests(unittest.TestCase):
         self.assertIsInstance(status, str)
         self.assertTrue(status)
 
-    def test_mel_adapter_gradient_flow(self) -> None:
+    def test_train_distill_rejects_non_latent_config(self) -> None:
+        # train-distill only supports the real 64-dim/5Hz latent-space dataset --
+        # the old mel-space branch (with a 64<->100 channel adapter and a
+        # 93.75Hz<->5Hz time resample around the teacher call) has been removed
+        # outright rather than kept as a silent fallback, so a mismatched
+        # (non-latent) config must raise immediately, not run through
+        # since-deleted bridging math.
+        import torch.nn as nn
+        from src.models.dit_transformer import MicroDiT
+        from src.models.text_to_music_diffusion import MusicDiffusionConfig
+
+        class FakeTeacher(nn.Module):
+            def __init__(self, cond_dim=512, mel_dim=64):
+                super().__init__()
+                self.text_embed = nn.Embedding(600, cond_dim)
+                self.latent_embed = nn.Sequential(nn.Linear(mel_dim, cond_dim))
+                self.proj_out = nn.Linear(cond_dim, mel_dim)
+
+            def forward(self, x, time, position_ids, style_prompt, attn_mask, use_cache=False, past_key_value=None):
+                return self.proj_out(x), None, None
+
+        config = MusicDiffusionConfig(frames_per_chunk=16)  # latent_mode defaults to False
+        student = MicroDiT(config, dim=32, depth=1, heads=2, ff_mult=1, style_dim=512)
+        with self.assertRaises(ValueError):
+            KnowledgeDistillationTrainer(
+                teacher_model=FakeTeacher(), student_model=student, config=config, optimizer=None,
+                device="cpu", alpha_feature=0.5, parse_lyrics_fn=lambda text: [500, 3, 4, 511],
+            )
+
+    def test_teacher_velocity_flows_gradient_in_latent_mode(self) -> None:
         # Regression test for a real bug: to_teacher_mel/from_teacher_mel used to be
         # computed entirely inside train_epoch's torch.no_grad() block, so neither
         # ever received a gradient despite being registered as trainable adapter
-        # params (see docs/project_history.md). to_teacher_mel is now a
-        # fixed deterministic resize (its output feeds the frozen teacher's own
-        # no_grad-scoped forward pass, which must stay cheap); from_teacher_mel stays
-        # a real trainable adapter and must receive a real gradient.
+        # params (see docs/project_history.md). Now that train-distill only
+        # supports latent-mode (teacher and student share the same 64-dim/5Hz
+        # representation directly, no adapter at all), this instead confirms the
+        # teacher call itself stays gradient-free (frozen, no_grad-scoped) while
+        # the student's own forward pass -- computed against the teacher's
+        # detached output -- receives a real gradient.
         import torch
         import torch.nn as nn
         from src.models.dit_transformer import MicroDiT
@@ -278,62 +309,78 @@ class SelfDiffusionTests(unittest.TestCase):
             def forward(self, x, time, position_ids, style_prompt, attn_mask, use_cache=False, past_key_value=None):
                 return self.proj_out(x), None, None
 
-        config = MusicDiffusionConfig(frames_per_chunk=16)
+        config = MusicDiffusionConfig(frames_per_chunk=16, latent_dim=64, latent_mode=True)
         student = MicroDiT(config, dim=32, depth=1, heads=2, ff_mult=1, style_dim=512)
         trainer = KnowledgeDistillationTrainer(
             teacher_model=FakeTeacher(), student_model=student, config=config, optimizer=None,
-            device="cpu", alpha_feature=0.5, parse_lyrics_fn=lambda text: [500, 3, 4, 511], teacher_mel_dim=64,
+            device="cpu", alpha_feature=0.5, parse_lyrics_fn=lambda text: [500, 3, 4, 511],
         )
-        self.assertFalse(hasattr(trainer, "to_teacher_mel"))
-        self.assertIsNotNone(trainer.from_teacher_mel)
+        self.assertFalse(hasattr(trainer, "from_teacher_mel"))
+        self.assertFalse(hasattr(trainer, "needs_mel_resize"))
 
-        xt = torch.randn(2, 16, 100)
-        x1 = torch.randn(2, 16, 100)
+        xt = torch.randn(2, 16, 64)
+        x1 = torch.randn(2, 16, 64)
         t = torch.rand(2)
         style = torch.randn(2, 512)
         v_teacher = trainer._teacher_velocity(xt, x1, t, ["xin chao"] * 2, style)
+        self.assertEqual(v_teacher.shape, (2, 16, 64))
         v_student = student(x=xt, texts=["xin chao"] * 2, timestep=t, style_prompt=style)
         (v_student - v_teacher).pow(2).mean().backward()
 
-        self.assertIsNotNone(trainer.from_teacher_mel.weight.grad)
-        self.assertGreater(trainer.from_teacher_mel.weight.grad.abs().sum().item(), 0.0)
+        student_grad_norms = [p.grad.abs().sum().item() for p in student.parameters() if p.grad is not None]
+        self.assertTrue(student_grad_norms, "no gradient reached the student from the teacher-matching loss")
 
-    def test_repa_loss_flows_gradient(self) -> None:
-        # Regression/smoke test for the REPA-style representation-alignment
-        # auxiliary loss (see src/training/repa.py, docs/project_history.md): with
-        # beta_repa > 0, train_epoch must (a) request the student's projected
-        # intermediate hidden state via repa_layer_idx, (b) populate loss_repa
-        # (not silently skip it), and (c) produce a real, nonzero gradient on
-        # student.repa_head specifically (not just the usual loss_gt path).
-        # compute_repa_target is monkeypatched to a fixed-shape random tensor --
-        # no network access to a real frozen MuQ/Vocos should be required for
-        # this unit test to prove the gradient wiring is correct.
+    def test_repa_loss_rejected_in_latent_mode(self) -> None:
+        # REPA (src/training/repa.py) decodes x1 via Vocos (mel-only, 100-channel)
+        # then runs it through MuQ -- there is no latent-mode implementation, and
+        # train-distill now requires config.latent_mode=True unconditionally. So
+        # beta_repa > 0 must raise immediately at construction time, instead of
+        # silently no-op'ing (compute_repa_target would otherwise catch its own
+        # shape-mismatch exception and return None every step).
         import torch
         from src.models.dit_transformer import MicroDiT
         from src.models.text_to_music_diffusion import MusicDiffusionConfig
 
-        config = MusicDiffusionConfig(frames_per_chunk=16)
+        config = MusicDiffusionConfig(frames_per_chunk=16, latent_dim=64, latent_mode=True)
+        student = MicroDiT(config, dim=32, depth=2, heads=2, ff_mult=1, style_dim=512)
+        with self.assertRaises(ValueError):
+            KnowledgeDistillationTrainer(
+                teacher_model=None, student_model=student, config=config,
+                optimizer=torch.optim.AdamW(student.parameters(), lr=1e-4),
+                device="cpu", alpha_feature=1.0, parse_lyrics_fn=None,
+                beta_repa=1.0, repa_layer_idx=0,
+            )
+
+    def test_train_epoch_runs_in_latent_mode_without_teacher(self) -> None:
+        # Smoke test: train_epoch's plain (no repa, no vocal-aux) forward path
+        # must run end-to-end on a latent-mode batch and produce a finite loss,
+        # with gradient reaching the student.
+        import torch
+        from src.models.dit_transformer import MicroDiT
+        from src.models.text_to_music_diffusion import MusicDiffusionConfig
+
+        config = MusicDiffusionConfig(frames_per_chunk=16, latent_dim=64, latent_mode=True)
         student = MicroDiT(config, dim=32, depth=2, heads=2, ff_mult=1, style_dim=512)
         trainer = KnowledgeDistillationTrainer(
-            teacher_model=None, student_model=student, config=config, optimizer=torch.optim.AdamW(student.parameters(), lr=1e-4),
-            device="cpu", alpha_feature=1.0, parse_lyrics_fn=None, teacher_mel_dim=None,
-            beta_repa=1.0, repa_layer_idx=0,
+            teacher_model=None, student_model=student, config=config,
+            optimizer=torch.optim.AdamW(student.parameters(), lr=1e-4),
+            device="cpu", alpha_feature=1.0, parse_lyrics_fn=None,
         )
 
         batch = {
-            "vocal_mel": torch.randn(2, 100, 16),
-            "backing_mel": torch.randn(2, 100, 16),
+            "vocal_mel": torch.randn(2, 64, 16),
+            "backing_mel": torch.zeros(2, 64, 16),
             "style_anchor": torch.randn(2, 512),
             "text": ["xin chao"] * 2,
         }
-        fake_target = torch.randn(2, 16, 1024)
-        with patch("src.training.repa.compute_repa_target", return_value=fake_target):
-            epoch_losses = trainer.train_epoch([batch])
+        epoch_losses = trainer.train_epoch([batch])
 
         self.assertEqual(len(epoch_losses), 1)
-        self.assertIsNotNone(epoch_losses[0]["loss_repa"])
-        grad_norms = [p.grad.abs().sum().item() for p in student.repa_head.parameters() if p.grad is not None]
-        self.assertTrue(grad_norms, "no gradient reached the student's repa_head")
+        self.assertTrue(torch.isfinite(torch.tensor(epoch_losses[0]["loss"])))
+        self.assertIsNone(epoch_losses[0]["loss_repa"])
+        self.assertIsNone(epoch_losses[0]["loss_vocal_aux"])
+        grad_norms = [p.grad.abs().sum().item() for p in student.parameters() if p.grad is not None]
+        self.assertTrue(grad_norms, "no gradient reached the student")
 
     def test_train_distill_raises_when_teacher_unavailable(self) -> None:
         # train-distill must never silently downgrade to ground-truth-only training

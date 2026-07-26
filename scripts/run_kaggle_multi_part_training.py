@@ -239,7 +239,7 @@ try:
     dataset_config = json.loads((combined_root / "config.json").read_text(encoding="utf-8"))
     reference_backing_source = combined_root / reference_record["backing_mel_path"]
     full_backing = torch.load(reference_backing_source, map_location="cpu", weights_only=True).float()
-    if full_backing.dim() != 2 or full_backing.shape[0] != int(dataset_config["n_mels"]):
+    if full_backing.dim() != 2 or full_backing.shape[0] != int(dataset_config.get("latent_dim", dataset_config.get("n_mels"))):
         raise ValueError("Unexpected reference backing shape: " + repr(tuple(full_backing.shape)))
     start_frame = int(reference_start_seconds * int(dataset_config["sample_rate"]) / int(dataset_config["hop_length"]))
     duration_frames = int(reference_duration * int(dataset_config["sample_rate"]) / int(dataset_config["hop_length"]))

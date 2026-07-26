@@ -488,7 +488,7 @@ def create_random_dataset(output_dir: str | Path, *, count: int = 16, frames: in
     mel_dir = root / "mels"
     mel_dir.mkdir(parents=True, exist_ok=True)
     if target_bytes:
-        bytes_per_sample = config.n_mels * max(frames, payload_frames) * 4
+        bytes_per_sample = config.latent_dim * max(frames, payload_frames) * 4
         count = max(int(count), math.ceil(int(target_bytes) / max(1, bytes_per_sample)))
     records = []
     random.seed(seed)
@@ -613,7 +613,7 @@ def validate_dataset(dataset_dir: str | Path, *, report_path: str | Path | None 
     invalid = []
     records = _read_records(root)
     config_data = json.loads((root / "config.json").read_text(encoding="utf-8")) if (root / "config.json").exists() else asdict(MusicDiffusionConfig())
-    expected_mels = int(config_data.get("n_mels", 64))
+    expected_mels = int(config_data.get("latent_dim", config_data.get("n_mels", 64)))
     for record in records:
         for stem_name, path in _record_paths(root, record):
             if not path.exists():
