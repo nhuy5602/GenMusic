@@ -503,13 +503,6 @@ nhưng không công bố encoder tương ứng, nên đề tài chỉ cần tự
 \subsection{Kiến trúc encoder và decoder}
 \label{sec:latent_encoder_arch}
 
-\begin{figure}[H]
-\centering
-\includegraphics[width=0.75\textwidth]{assets/fig_vae_architecture.pdf}
-\caption{Kiến trúc VAE latent: encoder tích chập tự huấn luyện, decoder BigVGAN đóng băng}
-\label{fig:vae_architecture}
-\end{figure}
-
 Thay vì train lại một VAE đầy đủ đúng-như-paper (bao gồm cả bộ discriminator đối kháng và
 decoder GAN riêng, quá tốn/rủi ro cho ngân sách của đề tài), phương pháp giữ nguyên
 \textbf{decoder GAN BigVGAN} \cite{bigvgan} của teacher ở trạng thái \textbf{đông lạnh}
@@ -518,7 +511,14 @@ mới} (khoảng 11 triệu tham số), với tỉ lệ nén thời gian đượ
 số encode-side thật của teacher (64 chiều, 5~Hz). Cấu trúc hai vai này -- encoder tự huấn
 luyện ghép với decoder GAN đã có sẵn của teacher -- cho phép tận dụng chất lượng tái tạo cao
 của BigVGAN mà không phải gánh chi phí và rủi ro bất ổn khi tự huấn luyện một discriminator
-đối kháng từ đầu.
+đối kháng từ đầu. Hình~\ref{fig:vae_architecture} tóm tắt luồng xử lý.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.75\textwidth]{assets/fig_vae_architecture.pdf}
+\caption{Kiến trúc VAE latent: encoder tích chập tự huấn luyện, decoder BigVGAN đóng băng}
+\label{fig:vae_architecture}
+\end{figure}
 
 Encoder train trực tiếp trên waveform 24~kHz gốc (vocal+backing đã tách qua Demucs), không
 qua bước trung gian mel/Vocos nào — tránh mất pha do một vòng vocoder phụ không cần thiết.
