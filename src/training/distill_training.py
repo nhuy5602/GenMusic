@@ -31,7 +31,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from src.models.text_to_music_diffusion import MusicDiffusionConfig
+from src.models.text_to_music_diffusion import MusicDiffusionConfig, _config_from_dict
 from src.models.dit_transformer import MicroDiT
 from src.training.self_diffusion import (
     MusicDiffusionDataset,
@@ -569,7 +569,7 @@ def run_distillation_training(
     # All combined datasets are assumed to share the same mel/config format (they
     # should, since they're preprocessed by the same pipeline) -- only the first
     # dataset's config.json is actually read.
-    config = MusicDiffusionConfig(**json.loads((root / "config.json").read_text(encoding="utf-8")))
+    config = _config_from_dict(json.loads((root / "config.json").read_text(encoding="utf-8")))
     # Auto-calibrate mel_mean/mel_std the same way train-self does (self_diffusion.py's
     # train_model) -- without this, MusicDiffusionDataset applies identity normalization
     # (mel_mean=0, mel_std=1 defaults), leaving the student to fit raw, unnormalized
