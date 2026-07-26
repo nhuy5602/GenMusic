@@ -126,7 +126,15 @@ def main() -> None:
     model, config, payload = load_checkpoint(checkpoint_path, device=device)
 
     records = [json.loads(line) for line in (dataset_dir / "records.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
-    records = [r for r in records if (dataset_dir / r["backing_mel_path"]).exists()][:max_records]
+    # Latent-space datasets (precompute_latent_dataset.py) store one already-mixed
+    # full-mix latent per record under vocal_mel_path and have no backing_mel_path
+    # (the mix happens before encoding, not after); mel-space datasets keep vocal
+    # and backing separate and need reconstruct_full_mix below.
+    latent_mode = bool(getattr(config, "latent_mode", False))
+    if latent_mode:
+        records = [r for r in records if (dataset_dir / r["vocal_mel_path"]).exists()][:max_records]
+    else:
+        records = [r for r in records if (dataset_dir / r["backing_mel_path"]).exists()][:max_records]
     print(f"Evaluating {len(records)} sample record(s).")
 
     # Fixed sanity anchor: what does the metric read on literal white noise?
@@ -140,10 +148,18 @@ def main() -> None:
     results = {"white_noise_anchor": noise_metrics, "samples": []}
     for record in records:
         record_id = record["id"]
-        backing_mel = _load_mel(dataset_dir / record["backing_mel_path"])
-        style_anchor = _load_mel(dataset_dir / record["style_embed_path"]).float().view(-1)
-        real_vocal_mel = _load_mel(dataset_dir / record["vocal_mel_path"])
-        real_full_mix_mel = reconstruct_full_mix(real_vocal_mel, backing_mel, config)
+        style_path = record.get("style_embed_path")
+        style_anchor = _load_mel(dataset_dir / style_path).float().view(-1) if style_path else None
+        if latent_mode:
+            # vocal_mel_path already holds the full-mix latent (vocal+backing
+            # summed before encoding) -- no separate backing tensor to fetch,
+            # and reconstruct_full_mix does not apply to an already-mixed latent.
+            backing_mel = None
+            real_full_mix_mel = _load_mel(dataset_dir / record["vocal_mel_path"])
+        else:
+            backing_mel = _load_mel(dataset_dir / record["backing_mel_path"])
+            real_vocal_mel = _load_mel(dataset_dir / record["vocal_mel_path"])
+            real_full_mix_mel = reconstruct_full_mix(real_vocal_mel, backing_mel, config)
 
         gen_path = out_dir / f"{record_id}_generated.wav"
         generate_audio(

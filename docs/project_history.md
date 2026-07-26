@@ -1997,6 +1997,33 @@ các giá trị đã thử** ($10^{-4}\to0{,}05\to0{,}15\to0{,}3$), không phả
 đổi. Bài học: tăng `kl_weight` không đơn điệu cải thiện chất lượng — cần dò từng bước và đo lại
 bằng audio thật ở mỗi bước, không giả định "tăng thêm luôn tốt hơn".
 
+**Chưng cất MicroDiT trên latent-space, chạy tới hết lịch trình (2026-07-26)**: sau khi sửa OOM
+(`batch_size` 8→2) và một cờ `--raw-audio-part` bị thiếu (job trước đó fail âm thầm vì dataset
+nguồn không gắn được), `train-distill` chạy lại từ đầu trên checkpoint encoder `kl_weight=0,15`,
+248 bản ghi, cấu hình MicroDiT thật ($D=256$, 4 layer, không phải backbone thử nghiệm đã bị loại
+bỏ dùng ở lần đo sơ bộ trong §4 phía trên). Job chạy hết đúng 15 epoch/1860 step như dự kiến,
+không bị cắt giữa chừng vì hết quota. `loss_gt` giảm liên tục và mượt qua toàn bộ 15 epoch:
+1,248 (epoch 1) → 0,965 → 0,803 → 0,695 → 0,606 → 0,587 → 0,515 → 0,539 → 0,466 → 0,490 → 0,488 →
+0,484 → 0,495 → 0,468 → **0,460** (epoch 15, final). Đây là tín hiệu hội tụ rõ ràng ở mức hàm mất
+mát — khác hẳn kiểu dao động 3,5–229 mỗi step từng thấy ở thí nghiệm distillation cục bộ 2-bài
+30-epoch trước đó (do 1 step/epoch + lấy mẫu ngẫu nhiên), vì lần này crop/batch được lấy đều đặn
+qua nhiều step mỗi epoch trên tập 248 bài.
+
+**Đánh giá chất lượng sinh khách quan trên checkpoint cuối — bị treo, chưa hoàn thành**: launch
+kernel `run_kaggle_evaluate.py --with-wer` để đo `pitch_std`/`voiced_ratio`/`spectral_flatness`/WER
+trên 8 mẫu sinh từ checkpoint vừa hội tụ. Gặp và sửa 2 lỗi liên tiếp: (1) `evaluate_generation_quality.py`
+giả định schema dataset mel-space cũ (`backing_mel_path` riêng biệt) trong khi dataset latent-space
+do `precompute_latent_dataset.py` sinh ra chỉ có một latent hỗn hợp cả bài dưới `vocal_mel_path`,
+không có `backing_mel_path` — sửa bằng cách rẽ nhánh theo `config.latent_mode`; (2) kernel eval
+thiếu bước tải repo DiffRhythm2 nên `import bigvgan` fail khi cần giải mã latent — thêm bước clone
+giống `run_kaggle_distill.py`. Sau hai lần sửa, kernel chạy qua được cả hai lỗi, tải xong checkpoint
+và BigVGAN decoder, nhưng bị treo (không tiến triển thêm dòng log nào) ở bước sinh mẫu đầu
+tiên/tải model PhoWhisper trên CPU trong hơn 20 phút liên tục — nhiều khả năng do tốc độ CPU-only
+cho BigVGAN decode + ASR model download chậm hơn dự kiến, không phải lỗi logic. Do giới hạn thời
+gian nộp báo cáo, quyết định dừng chờ kernel này và báo cáo bằng số liệu hội tụ loss (0,460) làm
+kết quả chính cho lần chạy chưng cất cuối cùng, ghi rõ việc xác nhận bằng chỉ số chất lượng sinh
+khách quan là hành động ưu tiên #1 còn lại (xem §5.2).
+
 ---
 
 ## 5. Kết luận và hướng phát triển
@@ -2056,6 +2083,14 @@ bằng audio thật ở mỗi bước, không giả định "tăng thêm luôn t
   pitch/giai điệu thật nào ở quy mô dữ liệu/step hiện tại. Bài học: mel-std/flatness là proxy
   tốt cho "có phải nhiễu trắng không" nhưng không đo được "có nghe ra hát không" —
   `voiced_ratio` gần đúng hơn nhưng vẫn chỉ là proxy, chưa thay được việc nghe thật.
+- **Cập nhật 2026-07-26**: chưng cất MicroDiT thật trên latent-space đã chạy hết đúng 15
+  epoch/1860 step như dự kiến (không bị cắt giữa chừng), `loss_gt` giảm mượt và liên tục từ
+  1,248 xuống 0,460 — tín hiệu hội tụ thật ở mức loss, không phải một điểm cuối may rủi.
+  Đánh giá chất lượng sinh khách quan trên đúng checkpoint này (WER, `pitch_std`,
+  `voiced_ratio`) vẫn **chưa hoàn thành**: kernel eval bị treo ở bước sinh mẫu đầu/tải model
+  ASR sau khi đã sửa xong 2 lỗi chặn trước đó (schema dataset latent-space, thiếu dependency
+  `bigvgan`) — xem chi tiết cuối §4. Đây là khoảng trống dữ liệu duy nhất còn lại giữa "loss
+  đã hội tụ" và "đã xác nhận chất lượng sinh".
 
 ### 5.2 Hướng phát triển
 

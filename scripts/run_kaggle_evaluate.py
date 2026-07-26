@@ -24,6 +24,8 @@ def _kernel_script_content(max_records: str = "6") -> str:
 import shutil
 import subprocess
 import sys
+import tarfile
+import urllib.request
 from pathlib import Path
 
 try:
@@ -55,6 +57,12 @@ try:
     source_root = Path("/kaggle/working/GenMusic")
     shutil.copytree(source_dataset_dir, source_root, dirs_exist_ok=True)
 
+    print("--- STEP 2.2: Downloading DiffRhythm2 official repository (needed for `bigvgan`, only if evaluating a latent-space checkpoint) ---")
+    diffrhythm2_tar = "/kaggle/working/diffrhythm2.tar.gz"
+    urllib.request.urlretrieve("https://github.com/ASLP-lab/DiffRhythm2/archive/refs/heads/main.tar.gz", diffrhythm2_tar)
+    with tarfile.open(diffrhythm2_tar) as tar:
+        tar.extractall(str(source_root))
+
     print("--- STEP 2.5: Installing system packages (espeak-ng) ---")
     subprocess.run(["apt-get", "update", "-y"], check=False)
     subprocess.run(["apt-get", "install", "-y", "--fix-missing", "espeak-ng"], check=True)
@@ -62,8 +70,11 @@ try:
     print("--- STEP 3: Installing dependencies ---")
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "librosa", "soundfile", "transformers", "vocos", "muq"], check=True)
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "text2phonemesequence"], check=True)
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", str(source_root / "DiffRhythm2-main/requirements.txt")], check=True)
 
-    os.environ["PYTHONPATH"] = str(source_root) + os.pathsep + os.environ.get("PYTHONPATH", "")
+    os.environ["PYTHONPATH"] = (
+        str(source_root) + os.pathsep + str(source_root / "DiffRhythm2-main") + os.pathsep + os.environ.get("PYTHONPATH", "")
+    )
     # This kernel session's accelerator reported compute capability (6, 0) (Pascal/P100),
     # for which the preinstalled torch 2.10 (cu128) build has no compiled kernels --
     # torch.cuda.is_available() still returns True (driver-level check only), but any

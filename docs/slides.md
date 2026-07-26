@@ -140,6 +140,8 @@ DiffRhythm2 **không** chạy trên mel — teacher thật dùng **Music VAE lat
 → (C) đạt ~89% biên độ pitch của vocal thật, **dù train ít hơn hẳn** (A) → latent-space là bài toán hồi quy dễ hơn cho CFM.
 → Xác nhận bằng nghe thật: (C) là mẫu **đầu tiên nghe ra nhạc thật**, không còn nhiễu hoàn toàn.
 
+**Cập nhật**: chưng cất MicroDiT thật (không phải backbone thử nghiệm ở dòng (C)) đã chạy hết 15/15 epoch, `loss_gt` giảm mượt 1,248→**0,460** — hội tụ rõ ở mức loss. Đo lại `pitch_std`/`voiced_ratio`/WER trên checkpoint này chưa kịp hoàn thành (kernel eval bị treo khi tải model ASR/BigVGAN trên CPU) — ưu tiên #1 của phiên tiếp theo.
+
 ---
 
 ## Encoder latent: kiến trúc và bottleneck xác suất
@@ -215,13 +217,13 @@ Huấn luyện trên toàn bộ 1839 bài (6 phần corpus gốc, không qua Voc
 - Đã xây dựng **pipeline nghiên cứu khả dụng, minh bạch giới hạn** — chưa phải hệ thống sinh bài hát hoàn chỉnh.
 - Nhánh mel-space: hợp đồng Vocos đúng là cải tiến tác động rõ nhất tới độ trung thực audio.
 - Nhánh latent-space (không gian thật của teacher): kết quả sơ bộ **vượt hẳn** mel-space dù train ít hơn — hướng ưu tiên hiện tại.
-- Vừa loại bỏ được một nguồn xấp xỉ (Vocos detour) và mở rộng dữ liệu encoder 7,4× — đang huấn luyện lại trên quy mô đầy đủ.
+- Chưng cất MicroDiT trên latent-space đã huấn luyện xong tới hết lịch trình (15 epoch), `loss_gt` hội tụ mượt 1,248→0,460; đánh giá chất lượng sinh khách quan trên checkpoint này chưa kịp hoàn thành trước khi nộp báo cáo.
 
 ---
 
 ## Hướng phát triển
 
-1. **Đang thực hiện**: encoder trên 1843 bài → sanity-check → CFM training tới hội tụ thật (không bị cắt do hết quota) → điền lại bảng so sánh mel/latent.
+1. **Ưu tiên #1**: hoàn thành đánh giá chất lượng sinh khách quan (pitch_std, voiced_ratio, WER) trên checkpoint MicroDiT vừa chưng cất tới hội tụ (loss_gt 1,248→0,460) — huấn luyện đã xong, chỉ còn thiếu bước xác nhận chất lượng.
 2. Nâng cao số lượng & chất lượng dữ liệu nhạc Việt Nam.
 3. Đánh giá chủ quan MOS/CMOS với người nghe thật + độ rõ lời tiếng Việt.
 4. Mở rộng model: thanh điệu, alignment, pitch/F0/melody explicit conditioning.
