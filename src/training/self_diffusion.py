@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..models.text_to_music_diffusion import MusicDiffusionConfig, normalize_mel, structured_random_mel
+from ..models.text_to_music_diffusion import MusicDiffusionConfig, _config_from_dict, normalize_mel, structured_random_mel
 
 STYLE_EMBED_DIM = 512  # matches MuQ-MuLan / DiffRhythm2 teacher's cond_dim
 
@@ -729,7 +729,7 @@ def train_model(
     # All combined datasets are assumed to share the same mel/config format (they
     # should, since they're preprocessed by the same pipeline) -- only the first
     # dataset's config.json is actually read.
-    config = MusicDiffusionConfig(**json.loads((root / "config.json").read_text(encoding="utf-8")))
+    config = _config_from_dict(json.loads((root / "config.json").read_text(encoding="utf-8")))
     if frames_per_chunk is not None:
         frames = max(16, int(frames_per_chunk))
         config = replace(
