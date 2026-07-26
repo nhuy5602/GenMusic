@@ -782,14 +782,83 @@ cho các giá trị $\beta$ nhỏ hơn. Bottleneck xác suất vì vậy là c�
 hằng số; checkpoint $\beta=0{,}15$ là cấu hình tốt nhất tìm được và được dùng làm đầu vào
 cho bước chưng cất cuối cùng (Chương~\ref{chapter:conclusion}).
 
+\section{Thí nghiệm 4: đa dạng đầu ra theo ca từ và phong cách}
+\label{sec:exp_diversity}
+
+Bên cạnh hội tụ của hàm mất mát (\S\ref{sec:e1_vocoder}--\ref{sec:exp5_vae}), một câu hỏi
+tách biệt là liệu student có thực sự \emph{sử dụng} điều kiện ca từ/phong cách hay không:
+quan sát trực tiếp cho thấy các mẫu sinh ra từ ca từ và neo phong cách khác nhau nghe gần
+như giống nhau. Thí nghiệm này đo hiện tượng đó một cách định lượng và đối chiếu hai
+thiết kế điều kiện ở cùng ngân sách huấn luyện. Phương pháp đo: lấy 3 neo phong cách thật
+từ tập latent-space (ballad, upbeat, chill), giữ cố định nhiễu ban đầu và lịch trình
+timestep, sinh latent bằng CFM (guidance scale 1,0) cho từng neo, rồi tính cosine
+similarity và $L_2$ (tuyệt đối và tương đối) giữa từng cặp trong 3 latent thu được. Khoảng
+cách $L_2$ giữa hai vector nhiễu Gaussian độc lập ($\approx63{,}0$) được dùng làm mốc tham
+chiếu cho "hai đầu ra thực sự khác nhau".
+
+Hai thiết kế được so sánh ở cùng ngân sách huấn luyện tối thiểu (chưng cất từ đầu, 1 epoch,
+124 step, $D=256$, 4 layer, trên 248 bản ghi) để cách biệt ảnh hưởng của kiến trúc khỏi ảnh
+hưởng của số step: (A) điều kiện cộng trực tiếp style/timestep embedding vào latent đầu vào
+(thiết kế trước khi áp dụng AdaLN-Zero), sau khi đã sửa lỗi hợp đồng chưng cất ở
+\eqref{eq:reconstruct_full_mix}; (B) AdaLN-Zero ở cả ba sublayer cùng mã hoá vị trí và
+query-scale cho cross-attention, đúng như mô tả ở \S\ref{sec:microdit_architecture}.
+
+\begin{table}[H]
+\centering
+\caption{Độ tương tự giữa 3 latent sinh ra từ ca từ/phong cách khác nhau, cùng ngân sách huấn luyện}
+\label{tab:diversity_check}
+\small
+\begin{tabularx}{\textwidth}{p{3.4cm}>{\centering\arraybackslash}p{2.6cm}>{\centering\arraybackslash}p{2.4cm}X}
+\toprule
+\textbf{Cặp so sánh} & \textbf{(A) Cộng trực tiếp} & \textbf{(B) AdaLN-Zero} & \textbf{Ghi chú} \\
+\midrule
+ballad vs.\ upbeat & cos $=0{,}999816$ & cos $=0{,}999992$ & \\
+ballad vs.\ chill & cos $=0{,}999648$ & cos $=0{,}999996$ & \\
+upbeat vs.\ chill & cos $=0{,}999718$ & cos $=0{,}999997$ & \\
+nhiễu vs.\ nhiễu (mốc) & \multicolumn{2}{c}{$L_2\approx63{,}0$} & hai vector thực sự khác nhau \\
+loss$_{gt}$ cuối (124 step) & $1{,}349$ & $1{,}232$ & \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Cả hai thiết kế cho $L_2$ giữa các latent nhỏ hơn mốc nhiễu-nhiễu khoảng 50--500 lần
+(cosine similarity $>0{,}9996$ ở cả (A) và (B)) -- ca từ và phong cách khác nhau tạo ra đầu
+ra gần như trùng nhau ở cả hai thiết kế, tại ngân sách huấn luyện này. Hai điểm đáng chú ý:
+thứ nhất, việc sửa lỗi hợp đồng chưng cất ở \eqref{eq:reconstruct_full_mix} (thay tensor
+backing bằng hỗn hợp cả bài làm mục tiêu regress) không tự nó giải quyết được đa dạng đầu
+ra -- (A) đã bao gồm bản sửa lỗi này. Thứ hai, (B) có cosine similarity \emph{cao hơn} (A)
+--tức đa dạng đầu ra \emph{kém hơn}-- dù loss$_{gt}$ của (B) thấp hơn. Cách giải thích phù
+hợp nhất với thiết kế AdaLN-Zero: lớp tuyến tính dự đoán hệ số dịch/co giãn/cổng được khởi
+tạo bằng không một cách có chủ đích (để mỗi khối Transformer bắt đầu như một hàm identity,
+ổn định huấn luyện ở giai đoạn đầu), nghĩa là đường dẫn điều kiện $c\to$ sublayer đóng góp
+đúng bằng không cho tới khi các cổng được học mở ra. Ở 124 step, rào cản này lớn hơn thiết
+kế cộng trực tiếp cũ -- vốn yếu nhưng khác không ngay từ bước đầu. Việc AdaLN-Zero có mở
+cổng và vượt qua (A) khi huấn luyện đủ lâu hay không chưa được kiểm chứng trong đề tài này.
+
+Để định vị nguyên nhân sâu hơn vị trí kiến trúc, luồng tensor của (A) được truy vết theo
+từng tầng (text embedding, style vector, vector điều kiện $c$, đầu ra từng khối) trên cùng
+một latent nhiễu, thay đổi lần lượt ca từ hoặc phong cách trong khi giữ cố định phần còn
+lại. Hai quan sát nhất quán qua các checkpoint đã huấn luyện: (i) entropy của trọng số
+cross-attention (lời $\to$ latent) xấp xỉ giá trị lý thuyết tối đa của phân phối đều trên
+số token lời, tức cross-attention hoạt động gần như average-pooling thay vì chọn lọc token
+liên quan, và không giảm dù tăng số step huấn luyện; (ii) biên độ mỗi phần tử của style
+embedding nhỏ hơn khoảng 25 lần so với biên độ của latent đầu vào đã chiếu, và tỉ lệ này
+không cải thiện khi huấn luyện lâu hơn. Đối chiếu với mã nguồn chính thức của DiffRhythm2
+(không chỉ mô tả trong bài báo) cho thấy bản thân teacher cũng cộng trực tiếp style/timestep
+embedding vào latent và chỉ dùng AdaLN ở tầng chuẩn hoá cuối cùng, không dùng AdaLN theo
+từng khối -- (B) vì vậy là một lựa chọn thiết kế có chủ đích cho quy mô model/dữ liệu nhỏ
+hơn nhiều của đề tài này, chứ không phải sửa lại cho đúng theo teacher. Với ngân sách thời
+gian còn lại của đề tài, nguyên nhân gốc (cross-attention gần-đều và style embedding lệch
+biên độ) được ghi nhận là hiện tượng đã định vị được nhưng chưa khắc phục.
+
 \chapter{KẾT LUẬN VÀ HƯỚNG PHÁT TRIỂN}
 \label{chapter:conclusion}
 
 \section{Kết luận}
 
-Đề tài đã nghiên cứu và xây dựng thành công pipeline sinh ca khúc tiếng Việt hoàn chỉnh từ lời hát và mô tả phong cách, bao phủ trọn vẹn quy trình từ xử lý dữ liệu, trích xuất đặc trưng đến chưng cất tri thức và suy luận. Từ các kết quả thực nghiệm, đề tài đúc kết được ba đóng góp và phát hiện cốt lõi:
+Đề tài đã nghiên cứu và xây dựng thành công pipeline sinh ca khúc tiếng Việt hoàn chỉnh từ lời hát và mô tả phong cách, bao phủ trọn vẹn quy trình từ xử lý dữ liệu, trích xuất đặc trưng đến chưng cất tri thức và suy luận. Từ các kết quả thực nghiệm, đề tài đúc kết được bốn đóng góp và phát hiện cốt lõi:
 
-Thứ nhất, sự tương thích về cấu hình giữa không gian biểu diễn âm thanh và bộ giải mã (vocoder) là điều kiện tiên quyết bắt buộc để đảm bảo độ trung thực khi tái tạo âm thanh. Thứ hai, việc biểu diễn âm thanh trong không gian tiềm ẩn (latent space) của mô hình teacher mang lại tín hiệu sinh nhạc vượt trội so với không gian phổ (mel-space), với điều kiện bộ mã hóa phải được kiểm soát bằng cơ chế xác suất (VAE) để tránh hiện tượng suy biến (collapse). Thứ ba, phương pháp chưng cất tri thức từ Teacher DiffRhythm2 sang Student MicroDiT dựa trên cơ chế Conditional Flow Matching đã hoạt động đúng thiết kế, với hàm mất mát hội tụ ổn định qua quá trình huấn luyện.
+Thứ nhất, sự tương thích về cấu hình giữa không gian biểu diễn âm thanh và bộ giải mã (vocoder) là điều kiện tiên quyết bắt buộc để đảm bảo độ trung thực khi tái tạo âm thanh. Thứ hai, việc biểu diễn âm thanh trong không gian tiềm ẩn (latent space) của mô hình teacher mang lại tín hiệu sinh nhạc vượt trội so với không gian phổ (mel-space), với điều kiện bộ mã hóa phải được kiểm soát bằng cơ chế xác suất (VAE) để tránh hiện tượng suy biến (collapse). Thứ ba, phương pháp chưng cất tri thức từ Teacher DiffRhythm2 sang Student MicroDiT dựa trên cơ chế Conditional Flow Matching đã hoạt động đúng thiết kế, với hàm mất mát hội tụ ổn định qua quá trình huấn luyện. Thứ tư, đo lường định lượng (\S\ref{sec:exp_diversity}) cho thấy ở ngân sách huấn luyện hiện tại, latent sinh ra từ ca từ và phong cách khác nhau vẫn gần như trùng nhau; nguyên nhân đã được định vị tới tầng cross-attention và biên độ style embedding, nhưng chưa được khắc phục trong phạm vi đề tài.
 
 \paragraph{Thách thức và Khó khăn trong quá trình thực hiện:}
 Trong quá trình hoàn thiện đề tài, nhóm nghiên cứu đã đối mặt với một số rào cản kỹ thuật và hạn chế tài nguyên thực tế:
@@ -798,6 +867,7 @@ Trong quá trình hoàn thiện đề tài, nhóm nghiên cứu đã đối mặ
     \item \textbf{Thách thức về Dữ liệu Tiếng Việt sạch:} Tập dữ liệu nhạc tiếng Việt đạt chuẩn thu âm sạch, không rò rỉ giọng hát vào nhạc đệm và được căn lề ca từ chuẩn xác ở cấp độ âm vị vẫn còn rất khiêm tốn so với các tập dữ liệu đa ngôn ngữ lớn trên thế giới.
     \item \textbf{Rào cản Ngữ âm và Thanh điệu:} Tiếng Việt là ngôn ngữ đơn lập với $6$ thanh điệu phức tạp. Việc ép mô hình vừa học trường vận tốc âm thanh vừa giữ đúng nhạc tính và phát âm tròn chữ đòi hỏi sự phối hợp khắt khe giữa các bộ mã hóa nhúng ngữ âm và không gian nén.
     \item \textbf{Đánh giá Thực nghiệm cuối kỳ:} Do giới hạn về thời gian nộp báo cáo, công tác tổ chức đánh giá định lượng khách quan (WER, độ lệch chuẩn cao độ) và định chất chủ quan (MOS) trên checkpoint cuối cùng chưa thể hoàn thiện trọn vẹn.
+    \item \textbf{Đa dạng đầu ra theo điều kiện:} Thí nghiệm định lượng (\S\ref{sec:exp_diversity}) cho thấy latent sinh ra từ ca từ/phong cách khác nhau gần như trùng nhau ở ngân sách huấn luyện hiện tại (cosine similarity $>0{,}9996$). Nguyên nhân đã định vị được -- cross-attention lời hoạt động gần như average-pooling, style embedding lệch biên độ so với latent chính -- nhưng chưa có đủ thời gian huấn luyện để kiểm chứng liệu các sửa đổi kiến trúc (AdaLN-Zero, positional encoding, query-scale) có khắc phục được ở ngân sách huấn luyện lớn hơn hay không.
 \end{itemize}
 
 Tựu trung lại, đề tài đã hoàn thành một pipeline nghiên cứu minh bạch, khả dụng với bằng chứng hội tụ rõ ràng ở mức huấn luyện. Các nút thắt hiện tại chủ yếu đến từ rào cản về quy mô dữ liệu và thời gian tính toán hơn là giới hạn của kiến trúc, tạo tiền đề vững chắc cho các nghiên cứu tiếp theo.
@@ -812,6 +882,7 @@ Dựa trên các kết quả đạt được, đề tài đề xuất các hư�
     \item \textbf{Cải tiến Mô hình:} Tích hợp thêm các thành phần điều khiển chuyên sâu như đường cao độ ($F_0$), thanh điệu và căn lề mức âm vị (phoneme-level alignment).
     \item \textbf{Tối ưu Pipeline:} Khắc phục rò rỉ âm thanh khi tách nguồn và cải tiến thuật toán VAE để tránh hiện tượng điều tiết quá mức (over-regularization).
     \item \textbf{Chuẩn hóa Thực nghiệm:} Phân chia dữ liệu train/val theo bài hát/ca sĩ để tránh rò rỉ dữ liệu và đảm bảo các quy định về bản quyền âm thanh.
+    \item \textbf{Khắc phục đa dạng đầu ra:} Huấn luyện đủ lâu để kiểm chứng liệu cổng AdaLN-Zero (\S\ref{sec:exp_diversity}) có mở ra và vượt qua thiết kế điều kiện cộng trực tiếp cũ hay không; song song, thử các cơ chế căn chỉnh cross-attention rõ ràng hơn giữa khung latent và token lời (ví dụ theo mốc thời gian hoặc phoneme alignment) để giảm entropy gần-đều hiện tại của attention.
 \end{enumerate}
 
 % =============================================================
