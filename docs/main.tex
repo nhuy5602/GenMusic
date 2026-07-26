@@ -503,6 +503,13 @@ nhưng không công bố encoder tương ứng, nên đề tài chỉ cần tự
 \subsection{Kiến trúc encoder và decoder}
 \label{sec:latent_encoder_arch}
 
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.75\textwidth]{assets/fig_vae_architecture.pdf}
+\caption{Kiến trúc VAE latent: encoder tích chập tự huấn luyện, decoder BigVGAN đóng băng}
+\label{fig:vae_architecture}
+\end{figure}
+
 Thay vì train lại một VAE đầy đủ đúng-như-paper (bao gồm cả bộ discriminator đối kháng và
 decoder GAN riêng, quá tốn/rủi ro cho ngân sách của đề tài), phương pháp giữ nguyên
 \textbf{decoder GAN BigVGAN} \cite{bigvgan} của teacher ở trạng thái \textbf{đông lạnh}
