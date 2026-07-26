@@ -609,7 +609,7 @@ Với bài dài hơn một crop, lời được chia theo segment và các đo�
 \chapter{THỰC NGHIỆM}
 \label{chapter:experiment}
 
-Nguồn dữ liệu thô là tập công khai "Vietnamese Music Dataset v3" (Kaggle, tác giả sonlest), chia thành 6 phần, gồm các bài nhạc Việt tải từ YouTube ở định dạng MP3, độ dài mỗi bài khoảng 4 phút. Sau khi qua toàn bộ pipeline tiền xử lý (\S\ref{sec:data_preparation}), tập dùng cho huấn luyện latent-space còn lại 248 bản ghi hợp lệ (chưng cất MicroDiT, Thí nghiệm 2) và 1839 bài (ablation bộ mã hoá latent, Thí nghiệm 3); một tập ứng viên lớn hơn có 201 bài, dung lượng khoảng 2,52~GB, được dùng để ước lượng chi phí tiền xử lý chứ chưa công bố kết quả huấn luyện hoàn chỉnh. Báo cáo chỉ sử dụng các giá trị có trong log, artifact hoặc checkpoint của dự án. Cần phân biệt reconstruction và generation: trong reconstruction, mel được trích từ chính waveform tham chiếu nên correlation và RMSE có cặp mẫu tương ứng; trong generation, waveform mới không có waveform đích duy nhất, do đó correlation với bài gốc không phải thước đo chất lượng sinh hợp lệ.
+Nguồn dữ liệu thô là tập công khai "Vietnamese Music Dataset v3" (Kaggle, tác giả sonlest) \cite{vnmusicdataset}, chia thành 6 phần, gồm các bài nhạc Việt tải từ YouTube ở định dạng MP3, độ dài mỗi bài khoảng 4 phút. Sau khi qua toàn bộ pipeline tiền xử lý (\S\ref{sec:data_preparation}), tập dùng cho huấn luyện latent-space còn lại 248 bản ghi hợp lệ (chưng cất MicroDiT, Thí nghiệm 2) và 1839 bài (ablation bộ mã hoá latent, Thí nghiệm 3); một tập ứng viên lớn hơn có 201 bài, dung lượng khoảng 2,52~GB, được dùng để ước lượng chi phí tiền xử lý chứ chưa công bố kết quả huấn luyện hoàn chỉnh. Báo cáo chỉ sử dụng các giá trị có trong log, artifact hoặc checkpoint của dự án. Cần phân biệt reconstruction và generation: trong reconstruction, mel được trích từ chính waveform tham chiếu nên correlation và RMSE có cặp mẫu tương ứng; trong generation, waveform mới không có waveform đích duy nhất, do đó correlation với bài gốc không phải thước đo chất lượng sinh hợp lệ.
 
 Thực nghiệm được thiết kế theo ba tầng, tương ứng ba thí nghiệm ở dưới. Tầng thứ nhất (RQ1: hợp đồng mel 100 bins với Vocos 24~kHz có tái tạo waveform ổn định hơn các đường giải mã không tương thích hay không) xác nhận tính đúng của biểu diễn âm thanh và vocoder. Tầng thứ hai (RQ2: cho student không gian latent thật của teacher thay vì mel có thay đổi được vấn đề "âm thanh sinh ra nghe như nhiễu" hay không, và nguyên nhân của sự khác biệt là gì) so sánh không gian biểu diễn của student (mel 100-chiều/93,75~Hz so với latent thật 64-chiều/5~Hz của teacher). Tầng thứ ba (RQ3: bottleneck xác suất VAE có khắc phục được hiện tượng collapse của latent encoder ở quy mô dữ liệu lớn hay không, và trọng số $\beta$ nào là tối ưu) kiểm tra bottleneck xác suất của bộ mã hoá latent. Cách tổ chức theo tầng giúp kết luận tương ứng với bằng chứng, thay vì dùng một file âm thanh đầu ra để suy diễn cho mọi thành phần.
 
@@ -1020,6 +1020,16 @@ Y. Jiang, H. Chen, Z. Ning, J. Yao, Z. Han, D. Wu, et al.,
 ``DiffRhythm 2: Efficient and High Fidelity Song Generation via Block Flow
 Matching,''
 arXiv preprint arXiv:2510.22950, 2025.
+
+\bibitem{vnmusicdataset}
+sonlest,
+\textit{Vietnamese Music Dataset Version 3} [Dataset], Kaggle, chia thành 6 phần:
+\url{https://www.kaggle.com/datasets/sonlest/vietnamese-music-dataset-version3-part1},
+\url{https://www.kaggle.com/datasets/sonlest/vietnamese-music-dataset-version3-part2},
+\url{https://www.kaggle.com/datasets/sonlest/vietnamese-music-dataset-version3-part3},
+\url{https://www.kaggle.com/datasets/sonlest/vietnamese-music-dataset-version3-part4},
+\url{https://www.kaggle.com/datasets/sonlest/vietnamese-music-dataset-version3-part5},
+\url{https://www.kaggle.com/datasets/sonlest/vietnamese-music-dataset-version3-part6}.
 
 
 \end{thebibliography}
