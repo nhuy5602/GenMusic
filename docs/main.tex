@@ -435,8 +435,6 @@ một lần duy nhất ở giai đoạn tiền tính (\texttt{precompute\_latent
 \end{equation}
 để biến nhiễu Gaussian thành latent của \textbf{hỗn hợp cả bài} phù hợp điều kiện lời và phong cách. Mỗi đoạn huấn luyện có $T=128$ khung latent (mặc định hiện tại là $384$) ở tần số 5~Hz.
 
-\textbf{Chú ý quan trọng về vai trò của backing}: $a^{\mathrm{acc}}$ (backing) chỉ được dùng để \emph{xây dựng mục tiêu huấn luyện} $x_1$ -- đã hoà vào latent cả-bài từ trước khi huấn luyện (công thức \eqref{eq:reconstruct_full_mix}) — nó \textbf{không} là một tensor điều kiện đưa vào mạng $v_\theta$. Do đó model phải học sinh ra cả bài (giọng hát và nhạc đệm) từ trạng thái không điều kiện theo backing, chỉ dựa vào ca từ và style embedding toàn cục. Để tránh model "lãng quên" tín hiệu giọng hát (yếu hơn, thưa hơn nhạc đệm) khi tối ưu trực tiếp trên hỗn hợp, một đầu ra phụ trợ dự đoán riêng velocity của vocal (\emph{vocal auxiliary head}) được huấn luyện đồng thời. Đầu phụ trợ này cần một mục tiêu vocal-only riêng biệt với $x_1$; dữ liệu tiền tính hiện chỉ giữ lại latent cả-bài (không có latent vocal-only riêng), nên đầu phụ trợ hiện chưa nhận được tín hiệu vocal-only thật sự khác với mục tiêu chính -- một giới hạn hiện tại của cài đặt, không phải của thiết kế kiến trúc.
-
 \textbf{Tổng quan hệ thống.} Hình~\ref{fig:pipeline} mô tả kiến trúc tổng thể của hệ thống, gồm
 ba lớp chức năng. Lớp dữ liệu tạo ra các điều kiện đồng bộ từ bài hát thô; lớp mô hình
 học trường vận tốc bằng CFM kết hợp chưng cất tri thức từ teacher; lớp suy luận tích phân
