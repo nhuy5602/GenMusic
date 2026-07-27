@@ -26,6 +26,17 @@ class PretrainedPhonemeEncoder(nn.Module):
             nn.SiLU(),
             nn.Linear(out_dim, out_dim)
         )
+        # G2P (Text2PhoneSequence) is a per-sentence Python/CPU call with no batching --
+        # measured at ~37s/step end-to-end in a train-self pilot (batch_size=2, 354 steps,
+        # 13261s total), an order of magnitude slower than expected once the ~1B-parameter
+        # teacher forward pass was removed from the distillation path, meaning G2P (not the
+        # teacher) was the actual dominant per-step cost all along. G2P is a deterministic
+        # function of the input string, and the same ~236 training lyrics recur every epoch
+        # (plus a second time per step on the contrastive "mismatched lyrics" branch, see
+        # cfm_loss's text_contrastive_prob) -- caching the phoneme string per exact input
+        # text turns nearly all of those repeat calls into a dict lookup instead of a fresh
+        # G2P inference.
+        self._phoneme_cache: dict[str, str] = {}
 
     def train(self, mode: bool = True):
         # The projection remains trainable, but the frozen backbone must stay in
@@ -49,13 +60,17 @@ class PretrainedPhonemeEncoder(nn.Module):
             # Every phoneme sequence fed to XPhoneBERT has been affected.
             self.text2phone_model = Text2PhonemeSequence(language='vie-c', is_cuda=is_cuda)
 
-        # Convert texts to phoneme sequences
+        # Convert texts to phoneme sequences (cached -- see self._phoneme_cache's docstring)
         phoneme_texts = []
         for text in texts:
+            if text in self._phoneme_cache:
+                phoneme_texts.append(self._phoneme_cache[text])
+                continue
             try:
                 phonemes = self.text2phone_model.infer_sentence(text)
             except Exception:
                 phonemes = text
+            self._phoneme_cache[text] = phonemes
             phoneme_texts.append(phonemes)
 
         # Tokenize inputs
