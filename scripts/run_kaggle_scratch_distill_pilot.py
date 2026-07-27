@@ -113,6 +113,18 @@ try:
         "--lambda-vocal", "1.0",
         "--log-every-steps", "20",
         "--device", "cuda",
+        # minimum-epochs = epochs: every prior run stopped at exactly the OLD hardcoded
+        # minimum_epochs=8 because text_conditioning_sensitivity never cleared the
+        # required floor, so epochs_without_improvement started counting from epoch 1 --
+        # forcing the full requested run instead of letting that early-stopping gate cut
+        # it short before the model has had a real chance to learn conditioning.
+        "--minimum-epochs", "{epochs}",
+        # Kaggle GPU sessions have a wall-clock cap; if this run is long enough to hit it,
+        # the kernel gets SIGKILLed with no chance to run any of train_model()'s own
+        # end-of-run checkpoint saves. --save-every-epoch persists raw weights/optimizer/
+        # scheduler/EMA after every completed epoch instead, so at worst one partial epoch
+        # of progress is lost, and a follow-up run can --resume from here.
+        "--save-every-epoch",
     ], env=os.environ, check=True)
 
     print("SCRATCH PILOT COMPLETED SUCCESSFULLY!")
