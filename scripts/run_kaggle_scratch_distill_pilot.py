@@ -55,7 +55,7 @@ from src.integrations.kaggle_auto import (
 GIT_REMOTE_URL = "https://github.com/nhuy5602/GenMusic.git"
 
 
-def _kernel_script_content(epochs: int, batch_size: int, commit_sha: str) -> str:
+def _kernel_script_content(epochs: int, batch_size: int, commit_sha: str, text_sensitivity_weight: float = 2.0) -> str:
     return f'''import json
 import os
 import subprocess
@@ -125,6 +125,7 @@ try:
         # scheduler/EMA after every completed epoch instead, so at worst one partial epoch
         # of progress is lost, and a follow-up run can --resume from here.
         "--save-every-epoch",
+        "--text-sensitivity-weight", "{text_sensitivity_weight}",
     ], env=os.environ, check=True)
 
     print("SCRATCH PILOT COMPLETED SUCCESSFULLY!")
@@ -136,7 +137,7 @@ except Exception as e:
 '''
 
 
-def run_kaggle_scratch_distill_pilot(dataset_kernel_ref: str, epochs: int = 1, batch_size: int = 2) -> str:
+def run_kaggle_scratch_distill_pilot(dataset_kernel_ref: str, epochs: int = 1, batch_size: int = 2, text_sensitivity_weight: float = 2.0) -> str:
     project_root = Path(__file__).resolve().parents[1]
 
     tokens = kaggle_auth_environment(load_kaggle_api_tokens())
@@ -167,7 +168,7 @@ def run_kaggle_scratch_distill_pilot(dataset_kernel_ref: str, epochs: int = 1, b
     kernel_slug = f"genmusic-scratchpilot-{int(time.time())}"
     kernel_ref = f"{username}/{kernel_slug}"
 
-    (kernel_dir / "run_scratch_pilot.py").write_text(_kernel_script_content(epochs, batch_size, commit_sha), encoding="utf-8")
+    (kernel_dir / "run_scratch_pilot.py").write_text(_kernel_script_content(epochs, batch_size, commit_sha, text_sensitivity_weight), encoding="utf-8")
 
     (kernel_dir / "kernel-metadata.json").write_text(json.dumps({
         "id": kernel_ref,
@@ -211,8 +212,9 @@ def main():
     parser.add_argument("--dataset-kernel-ref", type=str, required=True)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--text-sensitivity-weight", type=float, default=2.0)
     args = parser.parse_args()
-    run_kaggle_scratch_distill_pilot(args.dataset_kernel_ref, args.epochs, args.batch_size)
+    run_kaggle_scratch_distill_pilot(args.dataset_kernel_ref, args.epochs, args.batch_size, args.text_sensitivity_weight)
 
 
 if __name__ == "__main__":
