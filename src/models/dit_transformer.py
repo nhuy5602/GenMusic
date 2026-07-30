@@ -46,45 +46,54 @@ class PretrainedPhonemeEncoder(nn.Module):
         self.roberta.eval()
         return self
 
-    def forward(self, texts: list[str], device) -> tuple[torch.Tensor, torch.Tensor]:
-        # Lazily initialize G2P model with appropriate CUDA setting
-        if not hasattr(self, "text2phone_model"):
-            from text2phonemesequence import Text2PhonemeSequence
-            is_cuda = "cuda" in str(device)
-            # 'vie' is not a real CharsiuG2P language tag (confirmed: the
-            # package's own default is 'vie-c', and its internal dict only
-            # lists vie-c/vie-n/vie-s -- three Vietnamese dialect variants,
-            # no bare 'vie'). With 'vie', the wget for vie.tsv 404s, phone_dict
-            # stays empty, and every word falls through to the raw '<vie>: '
-            # prompt -- a tag the G2P model never saw during its own training.
-            # Every phoneme sequence fed to XPhoneBERT has been affected.
-            self.text2phone_model = Text2PhonemeSequence(language='vie-c', is_cuda=is_cuda)
+    def forward(
+        self,
+        inputs_or_texts: list[str] | torch.Tensor | dict[str, torch.Tensor],
+        device: torch.device | str,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass supporting both raw texts and pre-tokenized phoneme_ids."""
+        if isinstance(inputs_or_texts, dict) and "phoneme_ids" in inputs_or_texts:
+            inputs = {
+                "input_ids": inputs_or_texts["phoneme_ids"].to(device),
+                "attention_mask": inputs_or_texts["attention_mask"].to(device),
+            }
+        elif isinstance(inputs_or_texts, torch.Tensor):
+            # Assumed to be pre-tokenized (batch_size, seq_len) input_ids
+            input_ids = inputs_or_texts.to(device)
+            attention_mask = (input_ids != self.tokenizer.pad_token_id).long().to(device)
+            inputs = {"input_ids": input_ids, "attention_mask": attention_mask}
+        else:
+            texts = inputs_or_texts
+            # Lazily initialize G2P model if raw text strings are provided
+            if not hasattr(self, "text2phone_model"):
+                from text2phonemesequence import Text2PhonemeSequence
+                is_cuda = "cuda" in str(device)
+                self.text2phone_model = Text2PhonemeSequence(language="vie-c", is_cuda=is_cuda)
 
-        # Convert texts to phoneme sequences (cached -- see self._phoneme_cache's docstring)
-        phoneme_texts = []
-        for text in texts:
-            if text in self._phoneme_cache:
-                phoneme_texts.append(self._phoneme_cache[text])
-                continue
-            try:
-                phonemes = self.text2phone_model.infer_sentence(text)
-            except Exception:
-                phonemes = text
-            self._phoneme_cache[text] = phonemes
-            phoneme_texts.append(phonemes)
+            phoneme_texts = []
+            for text in texts:
+                if text in self._phoneme_cache:
+                    phoneme_texts.append(self._phoneme_cache[text])
+                    continue
+                try:
+                    phonemes = self.text2phone_model.infer_sentence(text)
+                except Exception:
+                    phonemes = text
+                self._phoneme_cache[text] = phonemes
+                phoneme_texts.append(phonemes)
 
-        # Tokenize inputs
-        inputs = self.tokenizer(phoneme_texts, return_tensors="pt", padding=True, truncation=True, max_length=128).to(device)
-        
+            inputs = self.tokenizer(
+                phoneme_texts, return_tensors="pt", padding=True, truncation=True, max_length=128
+            ).to(device)
+
         # Extract embeddings from XPhoneBERT (no gradients computed)
         with torch.no_grad():
             outputs = self.roberta(**inputs)
-            # Use sequence output (batch_size, seq_len, hidden_size)
             seq_embeddings = outputs.last_hidden_state
-            
+
         # Project to target dimension
         projected = self.projection(seq_embeddings)
-        attention_mask = inputs["attention_mask"].bool() # (batch_size, seq_len)
+        attention_mask = inputs["attention_mask"].bool()  # (batch_size, seq_len)
         return projected, attention_mask
 
 
