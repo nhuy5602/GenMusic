@@ -14,14 +14,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.kaggle_phase_submit import (
+from scripts.kaggle.phase_submit import (
     create_small_dataset,
     new_run_dir,
     require_complete_kernels,
     submit_context,
     submit_phase_kernel,
 )
-from scripts.master_waveform_pipeline import (
+from scripts.generation.master_waveform_pipeline import (
     BASE_SOURCE_DATASET_REF as DEFAULT_SOURCE_REF,
 )
 
@@ -29,8 +29,8 @@ PATCH_BUNDLE_NAME = (
     "colab_genmusic_native_waveform_v80_20260730.zip"
 )
 PATCH_FILES = (
-    "scripts/generate_native_waveform.py",
-    "scripts/evaluate_generation_quality.py",
+    "scripts/generation/generate_native.py",
+    "scripts/evaluation/evaluate.py",
     "src/audio/__init__.py",
     "src/audio/native_waveform.py",
     "src/audio/vocal_mix.py",
@@ -40,7 +40,7 @@ PATCH_FILES = (
 )
 OUTPUT_NAME = "master_raw_connected_pacing_v80_20260730"
 STATE_NAME = "master_raw_connected_pacing_v80_state.json"
-COLAB_RUNNER = "scripts/generate_native_waveform.py"
+COLAB_RUNNER = "scripts/generation/generate_native.py"
 DEFAULT_RAW_KERNEL_REF = (
     "ngochuy5602/genmusic-raw-wide-v71-1785338959"
 )

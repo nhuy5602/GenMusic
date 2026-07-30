@@ -50,7 +50,7 @@ def test_native_kernel_receives_text_genre_and_validated_duration() -> None:
     assert "REQUEST_GENRE = 'Vietnamese pop'" in code
     assert "REQUEST_DURATION_SECONDS = 16.0" in code
     assert 'command.extend(["--text", REQUEST_TEXT])' in code
-    assert "scripts/generate_native_waveform.py" in code
+    assert "scripts/generation/generate_native.py" in code
 
 
 def test_staged_web_job_uses_native_private_kaggle_request(

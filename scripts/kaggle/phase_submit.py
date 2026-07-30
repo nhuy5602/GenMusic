@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from scripts.kaggle_cli import kaggle_cli, run_cli
+from scripts.kaggle.cli import kaggle_cli, run_cli
 from src.integrations.kaggle_auto import (
     kaggle_access_token,
     kaggle_auth_available,

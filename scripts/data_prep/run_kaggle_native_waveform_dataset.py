@@ -14,14 +14,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.kaggle_phase_submit import (
+from scripts.kaggle.phase_submit import (
     create_small_dataset,
     new_run_dir,
     submit_context,
     submit_phase_kernel,
 )
-from scripts.materialize_native_waveform_dataset import DEFAULT_SHARDS
-from scripts.master_waveform_pipeline import (
+from scripts.data_prep.materialize_native import DEFAULT_SHARDS
+from scripts.generation.master_waveform_pipeline import (
     BASE_SOURCE_DATASET_REF as DEFAULT_SOURCE_REF,
 )
 from src.data.preprocess_aligned_vietnamese import DEFAULT_REPO_ID
@@ -31,7 +31,7 @@ PATCH_BUNDLE_NAME = (
     "colab_genmusic_master_raw_multishard_v71_20260729.zip"
 )
 PATCH_FILES = (
-    "scripts/materialize_native_waveform_dataset.py",
+    "scripts/data_prep/materialize_native.py",
     "src/data/lyric_quality.py",
     "src/data/aligned_raw.py",
     "src/data/preprocess_aligned_vietnamese.py",

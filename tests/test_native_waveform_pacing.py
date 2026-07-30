@@ -66,7 +66,7 @@ def test_v80_tightens_same_line_joins_and_moves_time_to_line_rests() -> None:
 def test_v80_kaggle_bundle_is_goal_eligible_and_token_free() -> None:
     assert DEFAULT_RAW_KERNEL_REF.endswith("1785338959")
     assert (
-        "scripts/generate_native_waveform.py"
+        "scripts/generation/generate_native.py"
         in PATCH_FILES
     )
     code = _kernel_code(
@@ -76,12 +76,12 @@ def test_v80_kaggle_bundle_is_goal_eligible_and_token_free() -> None:
     )
     assert "STARTING_NATIVE_WAVEFORM_V80" in code
     assert (
-        "scripts/generate_native_waveform.py"
+        "scripts/generation/generate_native.py"
         in code
     )
     assert (
         code.count(
-            "'scripts/generate_native_waveform.py'"
+            "'scripts/generation/generate_native.py'"
         )
         == 2
     )
