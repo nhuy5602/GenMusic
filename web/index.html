@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>GenMusic VN | Self Diffusion</title>
+    <title>GenMusic VN | Native Waveform</title>
     <link rel="stylesheet" href="/web/app.css" />
   </head>
   <body>
@@ -13,22 +13,22 @@
           <div class="brand-row">
             <div>
               <h1>GenMusic VN</h1>
-              <p>Model conditional diffusion tự code cho text-to-music tiếng Việt</p>
+              <p>Native waveform V80 với vocal tiếng Việt và backing khác bài</p>
             </div>
             <div class="status-pill" id="status-pill">Sẵn sàng</div>
           </div>
 
-          <label for="text">Lyric hoặc ý tưởng âm nhạc</label>
+          <label for="text">Lyric tiếng Việt (8–32 từ)</label>
           <textarea id="text" name="text" rows="12">Một chiều mưa, tôi nhớ về những con phố cũ. Có lời hứa chưa kịp nói, có ánh đèn vẫn chờ trong tim.</textarea>
 
           <div class="control-grid">
             <label>
-              Thời lượng
-              <input id="duration" type="range" min="4" max="120" step="1" value="12" />
-              <span id="duration-value">12 giây</span>
+              Thời lượng đã kiểm định
+              <input id="duration" type="range" min="16" max="16" step="1" value="16" disabled />
+              <span id="duration-value">16 giây</span>
             </label>
             <label>
-              Phong cách
+              Gợi ý chọn backing
               <input id="genre" type="text" placeholder="Vietnamese pop ballad, piano, warm strings" />
             </label>
           </div>
