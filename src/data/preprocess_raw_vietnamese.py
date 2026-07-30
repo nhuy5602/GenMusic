@@ -181,6 +181,7 @@ def process_file(
     demucs_device: str = "auto",
     device: str = "cpu",
     whisper_backend: str = "openai",
+    compute_style: bool = True,
     raw_audio: bool = False,
 ) -> dict:
     """`raw_audio=True` skips `compute_mel_spectrogram` entirely and saves the
@@ -202,9 +203,15 @@ def process_file(
 
     # 0. Style embedding (MuQ-MuLan) of the full original song -- the same
     # audio-style space the DiffRhythm2 teacher itself conditions on.
-    print("-> Computing MuQ-MuLan style embedding...", flush=True)
-    y_style, _ = librosa.load(audio_path, sr=SAMPLE_RATE, duration=10.0)
-    style_embedding = compute_style_embedding(y_style, device=device)
+    if compute_style:
+        print("-> Computing MuQ-MuLan style embedding...", flush=True)
+        y_style, _ = librosa.load(audio_path, sr=SAMPLE_RATE, duration=10.0)
+        style_embedding = compute_style_embedding(y_style, device=device)
+    else:
+        # Aligned-lyrics preprocessing is intentionally kept small and fast.  A
+        # zero anchor is valid because the native generation path trains with
+        # heavy style dropout and evaluates without a reference-style anchor.
+        style_embedding = torch.zeros(STYLE_EMBED_DIM)
     style_pt_path = mels_dir / f"{sample_id}_style.pt"
     torch.save(style_embedding, style_pt_path)
 
