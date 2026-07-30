@@ -1,10 +1,8 @@
 from src.audio.native_waveform import (
     build_long_inventory,
     fill_natural_path_gaps,
-    goal_gate,
     select_long_phrase_path,
 )
-from src.audio.waveform_units import Unit
 
 
 def _record(song: str, words: list[str]) -> dict:
@@ -71,34 +69,3 @@ def test_beam_prefers_complete_long_exact_phrase_path() -> None:
         pacing["span_before_gap_fill_seconds"]
     )
     assert pacing["per_unit_time_stretch_used"] is False
-
-
-def _sample(vocal: float, mix: float, voiced: float = 0.8) -> dict:
-    return {
-        "song_id": "prompt",
-        "backing_song_id": "backing",
-        "generated_vocal_asr": {"word_accuracy": vocal},
-        "generated_full_mix_asr": {
-            "word_accuracy": mix,
-            "hypothesis": f"unique hypothesis {vocal}",
-        },
-        "generated_vocal_acoustics": {"voiced_ratio": voiced},
-        "target_vocal_acoustics": {"voiced_ratio": 0.9},
-        "generated_full_mix_acoustics": {
-            "duration_seconds": 16.0,
-            "clip_ratio": 0.0,
-        },
-        "retrieval": {
-            "exact_word_fraction": 1.0,
-            "mean_similarity": 1.0,
-        },
-    }
-
-
-def test_goal_gate_requires_real_full_mix_thresholds() -> None:
-    samples = [_sample(0.50, 0.45), _sample(0.40, 0.35), _sample(0.35, 0.30)]
-    gate = goal_gate(samples)
-    assert gate["pilot_pass"] is True
-    assert gate["objective_pass"] is True
-    failed = [_sample(0.40, 0.20), _sample(0.35, 0.20), _sample(0.30, 0.20)]
-    assert goal_gate(failed)["objective_pass"] is False

@@ -25,7 +25,6 @@ from scripts.master_waveform_pipeline import (
     BASE_SOURCE_DATASET_REF as DEFAULT_SOURCE_REF,
 )
 
-
 PATCH_BUNDLE_NAME = (
     "colab_genmusic_native_waveform_v80_20260730.zip"
 )
@@ -94,7 +93,14 @@ def _build_patch_bundle(project_root: Path, destination: Path) -> str:
     return _file_sha256(destination)
 
 
-def _kernel_code(*, patch_sha256: str, patch_tree_sha256: str) -> str:
+def _kernel_code(
+    *,
+    patch_sha256: str,
+    patch_tree_sha256: str,
+    text: str = "",
+    genre: str = "",
+    duration_seconds: float = 16.0,
+) -> str:
     return f'''from pathlib import Path, PurePosixPath
 import hashlib
 import json
@@ -109,6 +115,9 @@ PATCH_SHA256 = {patch_sha256!r}
 PATCH_TREE_SHA256 = {patch_tree_sha256!r}
 PATCH_FILES = {list(PATCH_FILES)!r}
 MANIFEST_FORMAT = {MANIFEST_FORMAT!r}
+REQUEST_TEXT = {text!r}
+REQUEST_GENRE = {genre!r}
+REQUEST_DURATION_SECONDS = {float(duration_seconds)!r}
 working = Path("/kaggle/working")
 output_root = working / {OUTPUT_NAME!r}
 output_root.mkdir(parents=True, exist_ok=True)
@@ -227,11 +236,15 @@ command = [
     {COLAB_RUNNER!r},
     "--dataset", str(dataset),
     "--output-root", str(output_root),
-    "--duration", "16.0",
+    "--duration", str(REQUEST_DURATION_SECONDS),
     "--backing-ratio", "0.45",
     "--presence-attenuation-db", "10.0",
     "--expected-records", "2048",
 ]
+if REQUEST_TEXT:
+    command.extend(["--text", REQUEST_TEXT])
+if REQUEST_GENRE:
+    command.extend(["--genre", REQUEST_GENRE])
 print("STARTING_NATIVE_WAVEFORM_V80:", " ".join(command), flush=True)
 result = subprocess.run(command, cwd=repo, env=environment, check=False)
 state_path = output_root / {STATE_NAME!r}
@@ -254,6 +267,9 @@ shutil.rmtree(working / "hf_cache", ignore_errors=True)
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--text", required=True)
+    parser.add_argument("--genre", default="")
+    parser.add_argument("--duration", type=float, default=16.0)
     parser.add_argument("--accelerator", default="NvidiaTeslaT4")
     parser.add_argument("--timeout-seconds", type=int, default=7_200)
     parser.add_argument("--source-ref", default=DEFAULT_SOURCE_REF)
@@ -294,6 +310,9 @@ def main() -> None:
         code=_kernel_code(
             patch_sha256=patch_sha256,
             patch_tree_sha256=tree_sha256,
+            text=args.text,
+            genre=args.genre,
+            duration_seconds=args.duration,
         ),
         dataset_sources=[args.source_ref, patch_ref],
         kernel_sources=[args.raw_kernel_ref],
@@ -310,7 +329,9 @@ def main() -> None:
             "patch_sha256": patch_sha256,
             "patch_tree_sha256": tree_sha256,
             "records_expected": 2_048,
-            "duration_seconds": 16.0,
+            "lyrics": args.text,
+            "genre": args.genre,
+            "duration_seconds": float(args.duration),
             "same_line_pause_cap_seconds": 0.025,
             "line_break_pause_cap_seconds": 2.0,
             "respect_segment_boundaries": True,

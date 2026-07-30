@@ -1,37 +1,25 @@
-"""Native long-phrase singing synthesis on an aligned raw-song corpus.
+"""Target-free native Vietnamese waveform retrieval and synthesis.
 
-The raw-data oracle (V74) showed a sharp context threshold: isolated words
-were unintelligible while eight-word excerpts reached mean ASR word accuracy
-0.5625.  V64/V65 used only 80 songs and mostly one-to-three-word units, so
-their many joins destroyed that context.  V78 scales the donor bank to the
-validated 2048-song raw corpus and searches a complete native-duration path
-with exact phrases up to eight words.
-
-No target vocal or target timing enters synthesis.  Donor phrases preserve
-their original pitch and duration; the renderer only trims to nearby quiet
-zero crossings and adds short fades.  The supplied backing is deliberately
-from another song and receives deterministic sidechain presence attenuation.
-PhoWhisper is used only after all audio is rendered for final evaluation.
+Donor phrases preserve their pitch and duration. The renderer performs only
+quiet-boundary trimming, short fades, line-aware pauses, and vocal-forward
+mixing with a backing track from another song.
 """
 
 from __future__ import annotations
 
-import argparse
+import hashlib
 import json
 import math
+import shutil
+import subprocess
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from statistics import median
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import torch
 
-from src.data.aligned_raw import (
-    mix_raw_stems,
-    select_word_window,
-)
 from src.audio.vocal_mix import (
     mix_clarity_candidate,
 )
@@ -44,15 +32,12 @@ from src.audio.waveform_units import (
     _similarity,
     duration_statistics,
     normalize_word,
-    words_in_window,
 )
 
-
-STATE_NAME = "master_raw_long_phrase_v78_state.json"
 MAX_PHRASE_WORDS = 8
 
 
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
+def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(
@@ -60,6 +45,7 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
         encoding="utf-8",
     )
     temporary.replace(path)
+
 
 
 def build_long_inventory(
@@ -70,7 +56,7 @@ def build_long_inventory(
 ) -> tuple[list[Unit], dict[tuple[str, ...], list[Unit]]]:
     """Index exact contiguous raw-vocal units up to eight words."""
     if maximum_words < 2:
-        raise ValueError("V78 maximum phrase size must be at least two")
+        raise ValueError("Maximum phrase size must be at least two")
     units: list[Unit] = []
     index: dict[tuple[str, ...], list[Unit]] = defaultdict(list)
     for record in records:
@@ -252,7 +238,7 @@ def select_long_phrase_path(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Beam-search a complete native-duration path with long exact phrases."""
     if len(target_words) < 8:
-        raise ValueError("V78 requires at least eight lyric words")
+        raise ValueError("Native waveform synthesis requires eight words")
     preferred = lexical_set_cover(target_words, units)
     preferred_set = set(preferred)
     word_units = [unit for unit in units if len(unit.words) == 1]
@@ -361,7 +347,7 @@ def select_long_phrase_path(
             )[:beam_size]
     complete = beams.get(word_count) or []
     if not complete:
-        raise RuntimeError("V78 could not find a complete native-duration path")
+        raise RuntimeError("Could not find a complete native-duration path")
     selected = max(
         complete,
         key=lambda item: (
@@ -493,7 +479,7 @@ def fill_natural_path_gaps(
 ) -> dict[str, Any]:
     """Use pauses, never phone compression, to occupy the requested duration."""
     if not choices:
-        raise ValueError("V78 cannot pace an empty path")
+        raise ValueError("Cannot pace an empty waveform path")
     target_span = float(duration_seconds) - 0.45
     current_span = 0.20 + sum(
         float(choice["gap_before"]) + float(choice["unit"].duration)
@@ -580,85 +566,6 @@ def fill_natural_path_gaps(
     }
 
 
-def goal_gate(samples: list[dict[str, Any]]) -> dict[str, Any]:
-    vocal_wa = float(np.mean([
-        sample["generated_vocal_asr"]["word_accuracy"]
-        for sample in samples
-    ]))
-    mix_wa = float(np.mean([
-        sample["generated_full_mix_asr"]["word_accuracy"]
-        for sample in samples
-    ]))
-    voiced_relative = float(np.mean([
-        sample["generated_vocal_acoustics"]["voiced_ratio"]
-        / max(1e-6, sample["target_vocal_acoustics"]["voiced_ratio"])
-        for sample in samples
-    ]))
-    hypotheses = {
-        sample["generated_full_mix_asr"]["hypothesis"].strip().casefold()
-        for sample in samples
-        if sample["generated_full_mix_asr"]["hypothesis"].strip()
-    }
-    objective_pass = bool(
-        len(samples) == 3
-        and vocal_wa >= 0.35
-        and mix_wa >= 0.35
-        and sum(
-            sample["generated_full_mix_asr"]["word_accuracy"] >= 0.25
-            for sample in samples
-        ) >= 2
-        and voiced_relative >= 0.70
-        and len(hypotheses) >= 2
-        and all(
-            sample["generated_full_mix_acoustics"]["duration_seconds"] >= 15.5
-            and sample["generated_full_mix_acoustics"]["clip_ratio"] <= 0.01
-            and sample["retrieval"]["exact_word_fraction"] >= 0.95
-            and sample["retrieval"]["mean_similarity"] >= 0.95
-            for sample in samples
-        )
-    )
-    # V65 on 80 songs had vocal .21288/mix .12682.  The scaled corpus must
-    # improve both by a substantive absolute amount even if the goal misses.
-    pilot_pass = bool(
-        vocal_wa >= 0.30
-        and mix_wa >= 0.25
-        and vocal_wa - 0.21287696365095746 >= 0.08
-        and mix_wa - 0.12682031877078317 >= 0.10
-        and voiced_relative >= 0.70
-    )
-    return {
-        "pilot_pass": pilot_pass,
-        "objective_pass": objective_pass,
-        "human_listening_required": True,
-        "mean_generated_vocal_word_accuracy": vocal_wa,
-        "mean_generated_full_mix_word_accuracy": mix_wa,
-        "vocal_word_accuracy_gain_over_v65": (
-            vocal_wa - 0.21287696365095746
-        ),
-        "full_mix_word_accuracy_gain_over_v65": (
-            mix_wa - 0.12682031877078317
-        ),
-        "generated_full_mix_samples_at_least_0p25": sum(
-            sample["generated_full_mix_asr"]["word_accuracy"] >= 0.25
-            for sample in samples
-        ),
-        "mean_generated_vocal_voiced_relative_to_target": voiced_relative,
-        "distinct_generated_full_mix_hypotheses": len(hypotheses),
-        "duration_pass": all(
-            sample["generated_full_mix_acoustics"]["duration_seconds"] >= 15.5
-            for sample in samples
-        ),
-        "clipping_pass": all(
-            sample["generated_full_mix_acoustics"]["clip_ratio"] <= 0.01
-            for sample in samples
-        ),
-        "cross_song_backing_pass": all(
-            sample["song_id"] != sample["backing_song_id"]
-            for sample in samples
-        ),
-    }
-
-
 def _fit_audio(value: torch.Tensor, samples: int) -> torch.Tensor:
     value = value.detach().float().flatten()
     if value.numel() < samples:
@@ -669,273 +576,200 @@ def _fit_audio(value: torch.Tensor, samples: int) -> torch.Tensor:
     return value[:samples]
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", type=Path, required=True)
-    parser.add_argument("--output-root", type=Path, required=True)
-    parser.add_argument("--duration", type=float, default=16.0)
-    parser.add_argument("--backing-ratio", type=float, default=0.45)
-    parser.add_argument("--presence-attenuation-db", type=float, default=10.0)
-    parser.add_argument("--expected-records", type=int, default=2_048)
-    args = parser.parse_args()
+def target_words_from_text(text: str) -> list[dict[str, Any]]:
+    """Convert user lyrics into line-aware words without target timestamps."""
+    words: list[dict[str, Any]] = []
+    for segment_index, line in enumerate(text.splitlines() or [text]):
+        for token in line.split():
+            normalized = normalize_word(token)
+            if normalized:
+                words.append({
+                    "word": token.strip(),
+                    "normalized": normalized,
+                    "segment_index": segment_index,
+                })
+    if len(words) < 8:
+        raise ValueError(
+            "Native waveform generation requires at least eight lyric words"
+        )
+    return words
 
+
+def _select_cross_song_backing(
+    records: list[dict[str, Any]],
+    dataset: Path,
+    *,
+    excluded_song_ids: set[str],
+    duration_seconds: float,
+    selection_key: str,
+) -> tuple[dict[str, Any], torch.Tensor, float]:
+    """Choose a deterministic, non-silent backing outside the donor set."""
+    length = round(float(duration_seconds) * SAMPLE_RATE)
+    ranked = sorted(
+        records,
+        key=lambda record: hashlib.sha256(
+            (
+                selection_key
+                + "\0"
+                + str(record.get("song_id") or record["id"])
+            ).encode("utf-8")
+        ).digest(),
+    )
+    for record in ranked:
+        song_id = str(record.get("song_id") or record["id"])
+        if song_id in excluded_song_ids:
+            continue
+        path = dataset / str(record["backing_wav_path"])
+        if not path.is_file():
+            continue
+        waveform = torch.load(
+            path,
+            map_location="cpu",
+            weights_only=True,
+        ).float().flatten()
+        if not bool(torch.isfinite(waveform).all()) or waveform.numel() < 1:
+            continue
+        maximum_start = max(0, waveform.numel() - length)
+        digest = hashlib.sha256(
+            (selection_key + "\0" + song_id).encode("utf-8")
+        ).digest()
+        start = (
+            int.from_bytes(digest[:8], "big") % (maximum_start + 1)
+            if maximum_start
+            else 0
+        )
+        backing = _fit_audio(waveform[start : start + length], length)
+        if float(backing.square().mean().sqrt()) >= 1e-4:
+            return record, backing, start / SAMPLE_RATE
+    raise RuntimeError("Could not find a non-silent cross-song backing")
+
+
+def generate_text_candidate(
+    records: list[dict[str, Any]],
+    dataset: Path,
+    output_root: Path,
+    *,
+    text: str,
+    duration_seconds: float,
+    backing_ratio: float,
+    presence_attenuation_db: float,
+    genre: str = "",
+    path_selector: Callable[..., tuple[list[dict[str, Any]], dict[str, Any]]] = (
+        select_long_phrase_path
+    ),
+    gap_filler: Callable[..., dict[str, Any]] = fill_natural_path_gaps,
+) -> dict[str, Any]:
+    """Render one target-free full mix for user-provided Vietnamese lyrics."""
     import soundfile as sf
 
-    from scripts.evaluate_generation_quality import (
-        lyric_wer,
-        transcription_metrics,
-        wav_metrics,
-    )
-
-    dataset = args.dataset.resolve()
-    output_root = args.output_root.resolve()
-    output_root.mkdir(parents=True, exist_ok=True)
-    state_path = output_root / STATE_NAME
-    records = [
-        json.loads(line)
-        for line in (dataset / "records.jsonl")
-        .read_text(encoding="utf-8")
-        .splitlines()
-        if line.strip()
-    ]
-    if len(records) != args.expected_records:
-        raise RuntimeError(
-            f"V78 expected {args.expected_records} records, got {len(records)}"
-        )
-    candidates = []
-    for record in records:
-        try:
-            window = select_word_window(
-                record,
-                duration_seconds=float(args.duration),
-            )
-        except ValueError:
-            continue
-        if window["duration_seconds"] >= 15.5 and window["word_count"] >= 18:
-            candidates.append((record, window))
-    candidates.sort(
-        key=lambda item: (
-            str(item[0].get("song_id") or item[0]["id"]),
-            str(item[0]["id"]),
-        )
-    )
-    if len(candidates) < 96:
-        raise RuntimeError(
-            f"V78 held-out candidate shortfall: {len(candidates)}"
-        )
-    heldout = [
-        candidates[0],
-        candidates[len(candidates) // 2],
-        candidates[-1],
-    ]
-    heldout_song_ids = {
-        str(record.get("song_id") or record["id"])
-        for record, _ in heldout
-    }
+    target_words = target_words_from_text(text)
     units, exact_index = build_long_inventory(
         records,
-        heldout_song_ids=heldout_song_ids,
+        heldout_song_ids=set(),
     )
     statistics = duration_statistics(units)
-    state: dict[str, Any] = {
-        "status": "rendering",
+    choices, retrieval = path_selector(
+        target_words,
+        units,
+        exact_index,
+        statistics,
+        duration_seconds=float(duration_seconds),
+        respect_segment_boundaries=True,
+    )
+    retrieval["pacing"] = gap_filler(
+        choices,
+        duration_seconds=float(duration_seconds),
+    )
+    generated_vocal, rendered_groups = render_long_phrase_path(
+        dataset,
+        choices,
+        duration_seconds=float(duration_seconds),
+    )
+    retrieval["groups"] = rendered_groups
+    donor_song_ids = {
+        str(choice["unit"].song_id)
+        for choice in choices
+    }
+    backing_record, backing, backing_start = _select_cross_song_backing(
+        records,
+        dataset,
+        excluded_song_ids=donor_song_ids,
+        duration_seconds=float(duration_seconds),
+        selection_key=f"{genre}\0{text}",
+    )
+
+    vocal_path = output_root / "final_vocal.wav"
+    backing_path = output_root / "final_backing.wav"
+    mix_path = output_root / "final.wav"
+    sf.write(
+        vocal_path,
+        generated_vocal.numpy(),
+        SAMPLE_RATE,
+        subtype="PCM_16",
+    )
+    sf.write(
+        backing_path,
+        backing.numpy(),
+        SAMPLE_RATE,
+        subtype="PCM_16",
+    )
+    mix_metadata = mix_clarity_candidate(
+        vocal_path,
+        backing_path,
+        mix_path,
+        backing_ratio=float(backing_ratio),
+        presence_attenuation_db=float(presence_attenuation_db),
+        dynamic=True,
+    )
+    mp3_path = output_root / "final.mp3"
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg:
+        conversion = subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-i",
+                str(mix_path),
+                "-codec:a",
+                "libmp3lame",
+                "-q:a",
+                "2",
+                str(mp3_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if conversion.returncode != 0:
+            mp3_path.unlink(missing_ok=True)
+
+    return {
+        "status": "complete",
+        "mode": "text",
         "training": False,
         "goal_eligible_prediction": True,
-        "design": (
-            "2048-song training-only raw exact phrases up to eight words; "
-            "beam-searched native-duration path; no pitch/time stretch; "
-            "cross-song sidechain backing"
-        ),
+        "backend": "genmusic-native-waveform-v80",
+        "model": "native-waveform-v80",
+        "text": text,
+        "genre": genre,
+        "duration_seconds": float(duration_seconds),
         "records": len(records),
-        "heldout_candidates": len(candidates),
-        "heldout_song_ids": sorted(heldout_song_ids),
-        "donor_songs": len({
-            str(record.get("song_id") or record["id"])
-            for record in records
-        } - heldout_song_ids),
         "unit_count": len(units),
-        "exact_ngram_keys": len(exact_index),
-        "maximum_phrase_words": MAX_PHRASE_WORDS,
+        "retrieval": retrieval,
+        "donor_song_ids": sorted(donor_song_ids),
+        "backing_song_id": str(
+            backing_record.get("song_id") or backing_record["id"]
+        ),
+        "backing_start_seconds": backing_start,
+        "mix": mix_metadata,
+        "final_vocal_wav": str(vocal_path),
+        "final_backing_wav": str(backing_path),
+        "final_wav": str(mix_path),
+        "final_mp3": str(mp3_path) if mp3_path.is_file() else None,
         "target_audio_used_at_product_inference": False,
         "target_timing_used_at_product_inference": False,
-        "matching_backing_used": False,
+        "per_unit_time_stretch_used": False,
         "cross_song_backing_used": True,
         "pretrained_tts_used": False,
-        "pretrained_asr_used": True,
-        "asr_evaluation_only": True,
-        "pretrained_source_separator_used": True,
+        "pretrained_asr_used": False,
     }
-    _write_json(state_path, state)
-
-    sample_root = output_root / "heldout_16s"
-    sample_root.mkdir(parents=True, exist_ok=True)
-    samples = []
-    length = round(float(args.duration) * SAMPLE_RATE)
-    for sample_index, (record, window) in enumerate(heldout):
-        words = words_in_window(record, window)
-        choices, retrieval = select_long_phrase_path(
-            words,
-            units,
-            exact_index,
-            statistics,
-            duration_seconds=float(args.duration),
-        )
-        retrieval["pacing"] = fill_natural_path_gaps(
-            choices,
-            duration_seconds=float(args.duration),
-        )
-        generated_vocal, rendered_groups = render_long_phrase_path(
-            dataset,
-            choices,
-            duration_seconds=float(args.duration),
-        )
-        retrieval["groups"] = rendered_groups
-        reference_start = round(
-            float(window["start_seconds"]) * SAMPLE_RATE
-        )
-        target_vocal_full = torch.load(
-            dataset / str(record["vocal_wav_path"]),
-            map_location="cpu",
-            weights_only=True,
-        ).float()
-        target_backing_full = torch.load(
-            dataset / str(record["backing_wav_path"]),
-            map_location="cpu",
-            weights_only=True,
-        ).float()
-        target_vocal = _fit_audio(
-            target_vocal_full[reference_start : reference_start + length],
-            length,
-        )
-        target_backing = _fit_audio(
-            target_backing_full[reference_start : reference_start + length],
-            length,
-        )
-        backing_record, backing_window = heldout[
-            (sample_index + 1) % len(heldout)
-        ]
-        backing_start = round(
-            float(backing_window["start_seconds"]) * SAMPLE_RATE
-        )
-        cross_backing_full = torch.load(
-            dataset / str(backing_record["backing_wav_path"]),
-            map_location="cpu",
-            weights_only=True,
-        ).float()
-        cross_backing = _fit_audio(
-            cross_backing_full[backing_start : backing_start + length],
-            length,
-        )
-        stem = str(record["id"])
-        paths = {
-            "generated_vocal": sample_root / f"{stem}_generated_vocal.wav",
-            "cross_song_backing": sample_root / f"{stem}_cross_song_backing.wav",
-            "generated_full_mix": sample_root / f"{stem}_generated_full_mix.wav",
-            "target_vocal": sample_root / f"{stem}_target_vocal.wav",
-            "target_full_mix": sample_root / f"{stem}_target_full_mix.wav",
-        }
-        sf.write(
-            paths["generated_vocal"],
-            generated_vocal.numpy(),
-            SAMPLE_RATE,
-            subtype="PCM_16",
-        )
-        sf.write(
-            paths["cross_song_backing"],
-            cross_backing.numpy(),
-            SAMPLE_RATE,
-            subtype="PCM_16",
-        )
-        mix_metadata = mix_clarity_candidate(
-            paths["generated_vocal"],
-            paths["cross_song_backing"],
-            paths["generated_full_mix"],
-            backing_ratio=float(args.backing_ratio),
-            presence_attenuation_db=float(
-                args.presence_attenuation_db
-            ),
-            dynamic=True,
-        )
-        target_mix = mix_raw_stems(
-            target_vocal,
-            target_backing,
-            backing_to_vocal_rms=0.45,
-        )
-        sf.write(
-            paths["target_vocal"],
-            target_vocal.numpy(),
-            SAMPLE_RATE,
-            subtype="PCM_16",
-        )
-        sf.write(
-            paths["target_full_mix"],
-            target_mix.numpy(),
-            SAMPLE_RATE,
-            subtype="PCM_16",
-        )
-        prompt = " ".join(str(item["word"]) for item in words)
-
-        def asr(path: Path) -> dict[str, Any]:
-            hypothesis = lyric_wer(path, prompt)["predicted_text"]
-            return transcription_metrics(prompt, hypothesis)
-
-        sample = {
-            "id": stem,
-            "song_id": str(record.get("song_id") or stem),
-            "backing_song_id": str(
-                backing_record.get("song_id") or backing_record["id"]
-            ),
-            "reference_text": prompt,
-            "reference_window": window,
-            "retrieval": retrieval,
-            "mix": mix_metadata,
-            "generated_vocal_asr": asr(paths["generated_vocal"]),
-            "generated_full_mix_asr": asr(
-                paths["generated_full_mix"]
-            ),
-            "target_vocal_asr": asr(paths["target_vocal"]),
-            "target_full_mix_asr": asr(paths["target_full_mix"]),
-            "generated_vocal_acoustics": wav_metrics(
-                paths["generated_vocal"]
-            ),
-            "generated_full_mix_acoustics": wav_metrics(
-                paths["generated_full_mix"]
-            ),
-            "target_vocal_acoustics": wav_metrics(paths["target_vocal"]),
-            "target_full_mix_acoustics": wav_metrics(
-                paths["target_full_mix"]
-            ),
-            **{f"{name}_wav": str(path) for name, path in paths.items()},
-        }
-        samples.append(sample)
-        state["samples"] = samples
-        _write_json(state_path, state)
-        print(
-            "V78_SAMPLE "
-            f"id={stem} "
-            f"groups={retrieval['selected_groups']} "
-            f"max_phrase={retrieval['maximum_selected_phrase_words']} "
-            f"exact_phrase={retrieval['exact_phrase_word_fraction']:.6f} "
-            f"vocal_wa={sample['generated_vocal_asr']['word_accuracy']:.6f} "
-            f"mix_wa={sample['generated_full_mix_asr']['word_accuracy']:.6f}",
-            flush=True,
-        )
-
-    gate = goal_gate(samples)
-    state.update({
-        "status": (
-            "objective_candidate_passed"
-            if gate["objective_pass"]
-            else "pilot_passed"
-            if gate["pilot_pass"]
-            else "pilot_failed"
-        ),
-        "samples": samples,
-        "gate": gate,
-    })
-    _write_json(state_path, state)
-    print(json.dumps(state, ensure_ascii=False, indent=2), flush=True)
-
-
-if __name__ == "__main__":
-    main()
