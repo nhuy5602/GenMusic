@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.download_kaggle_kernel_subset import _safe_destination
+from scripts.kaggle.download_subset import _safe_destination
 
 
 def test_safe_destination_keeps_nested_output_under_root(tmp_path: Path) -> None:

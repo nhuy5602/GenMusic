@@ -1,12 +1,12 @@
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
-from scripts.kaggle_cli import kaggle_cli, wait_for_dataset
+from scripts.kaggle.cli import kaggle_cli, wait_for_dataset
 
 
 def test_kaggle_cli_uses_project_standard_command() -> None:
     with patch(
-        "scripts.kaggle_cli.kaggle_cli_command",
+        "scripts.kaggle.cli.kaggle_cli_command",
         return_value=["python", "-m", "kaggle"],
     ):
         assert kaggle_cli() == ["python", "-m", "kaggle"]
@@ -20,8 +20,8 @@ def test_wait_for_dataset_settles_after_ready() -> None:
         stderr="",
     )
     with (
-        patch("scripts.kaggle_cli.run_cli", return_value=result) as run,
-        patch("scripts.kaggle_cli.time.sleep") as sleep,
+        patch("scripts.kaggle.cli.run_cli", return_value=result) as run,
+        patch("scripts.kaggle.cli.time.sleep") as sleep,
     ):
         wait_for_dataset(
             ["kaggle"],

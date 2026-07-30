@@ -10,7 +10,7 @@ from urllib.request import Request, urlopen
 import pytest
 
 import server
-from scripts.run_kaggle_native_waveform import _kernel_code
+from scripts.generation.run_kaggle_native_waveform import _kernel_code
 from src.audio.native_waveform import target_words_from_text
 from src.integrations.native_waveform_auto import (
     NATIVE_WAVEFORM_BACKEND,

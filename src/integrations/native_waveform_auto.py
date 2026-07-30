@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from scripts.run_kaggle_native_waveform import (
+from scripts.generation.run_kaggle_native_waveform import (
     DEFAULT_RAW_KERNEL_REF,
     DEFAULT_SOURCE_REF,
     PATCH_BUNDLE_NAME,

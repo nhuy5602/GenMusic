@@ -1,9 +1,9 @@
-from scripts.generate_native_waveform import (
+from scripts.generation.generate_native import (
     LINE_BREAK_PAUSE_CAP,
     SAME_LINE_PAUSE_CAP,
     fill_connected_line_gaps,
 )
-from scripts.run_kaggle_native_waveform import (
+from scripts.generation.run_kaggle_native_waveform import (
     DEFAULT_RAW_KERNEL_REF,
     PATCH_FILES,
     _kernel_code,

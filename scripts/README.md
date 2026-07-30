@@ -1,99 +1,63 @@
-# Scripts index
+# Scripts Directory Structure
 
-Every script here is a local orchestrator: it zips this repo as a Kaggle
-dataset, pushes a kernel that installs dependencies and runs the real work,
-then downloads the results. None of them contain model logic themselves —
-that all lives in `src/` and is reached via `cli.py`. See
-`docs/usage.md` for the full walkthrough; this file is just "which script do
-I run for X."
+The `scripts/` directory is organized into modular subdirectories by purpose to keep the codebase clean, maintainable, and clear.
 
-## Mel-space pipeline (the default feature space)
+```
+scripts/
+├── kaggle/          # Kaggle CLI, orchestration, status check, and subset downloading
+├── data_prep/       # Dataset preprocessing, phonemization, and native materialization
+├── training/        # Model training launchers, distillation, and experiment runners
+├── generation/      # Waveform & music generation pipeline and demo scripts
+└── evaluation/      # Audio quality evaluation, ASR metrics, and diversity diagnostics
+```
 
-- **`run_kaggle_preprocess_all.py`** — batch preprocess raw audio (Demucs +
-  Whisper + MuQ-MuLan) into a training dataset.
-- **`run_kaggle_training.py`** — train the student with `train-self` (no
-  teacher).
-- **`run_kaggle_distill.py`** — train the student with `train-distill` (real
-  DiffRhythm2 teacher).
-- **`run_kaggle_evaluate.py`** — run `evaluate_generation_quality.py`
-  (spectral flatness / voiced ratio / pitch-std) against a checkpoint on
-  Kaggle.
-- **`run_kaggle_full_experiment.py`** (→ remotely runs `run_full_experiment.py`)
-  — preprocess → vocoder check → baseline train → distill → generate →
-  sanity stats, all in one kernel. The recommended way to run a full
-  mel-space experiment; see `docs/usage.md`.
-- **`run_kaggle_experiment_matrix.py`** (→ remotely runs
-  `run_experiment_matrix.py`) — baseline vs. several `alpha_feature` values
-  vs. a smaller architecture, against one shared preprocessed dataset.
-- **`run_kaggle_multi_part_training.py`** — preprocess and train across
-  multiple dataset parts (for scaling past a single-part corpus), a
-  deliberately separate workflow from the single-dataset scripts above.
-- **`run_kaggle_preprocess_raw_audio.py`** — same preprocessing, but
-  `--raw-audio` (skips mel, keeps `waveforms/*.pt` raw 24kHz tensors instead)
-  — see `docs/data_preparation.md`'s "`--raw-audio`" section. Consumable by
-  `train-latent-encoder`/`precompute-latent-dataset` (both detect
-  `raw_audio_mode: true` and sum the vocal/backing waveform tensors directly,
-  skipping Vocos); still NOT consumable by `train-self` (that path still
-  expects a mel dataset).
-- **`run_kaggle_multi_part_preprocess_raw_audio.py`** — the `--raw-audio`
-  analogue of `run_kaggle_multi_part_training.py`: submits
-  `run_kaggle_preprocess_raw_audio.py`'s kernel across every part in
-  `RAW_DATASETS` (`src/integrations/kaggle_dataset_refs.py`), respecting
-  Kaggle's 2-concurrent-batch-GPU-session limit, with `--wait-and-loop` to
-  auto-chain through the rest and a `submitted_state.json` dedup tracker so
-  reruns skip already-submitted parts.
+---
 
-## Native latent pipeline (same `MicroDiT` backbone, `latent_mode` dataset)
+## 1. `scripts/kaggle/` (Kaggle Integration & Infrastructure)
 
-Gives the student DiffRhythm2's own compressed 64-dim/5Hz Music VAE latent
-space instead of raw mel — see `docs/architecture.md`'s "Native latent
-backbone and encoder" section for why, and `docs/project_history.md` §4.24
-for what went wrong the first time (a collapsed encoder) and how it was
-fixed. Run in this order:
+- **`cli.py`** — Wrapper for project-standard Kaggle CLI execution.
+- **`phase_submit.py`** — Universal launcher and coordinator for Kaggle phases and multi-part batches.
+- **`download_subset.py`** — Downloads subset outputs safely from Kaggle kernels.
+- **`check_progress.py`** — Live progress monitoring for running Kaggle kernels.
 
-1. **`run_kaggle_latent_encoder.py`** — pretrain `LatentAudioEncoder` against
-   the real, frozen BigVGAN decoder (reconstruction loss only). Sanity-check
-   the result before proceeding (see `docs/architecture.md`) — a flat/
-   oscillating loss curve or near-zero `pitch_std_semitones` on decoded
-   ground-truth latents means retrain with more epochs, not move on. Accepts
-   several `--processed-kernel-ref`s at once (combined into one training set,
-   `N` usable records from each via `--max-records-per-dataset`) — or the
-   shortcut `--raw-audio-part 1 2 3 4 5 6` to look them up in
-   `PROCESSED_RAW_AUDIO_KERNELS` (`src/integrations/kaggle_dataset_refs.py`)
-   instead of pasting kernel refs by hand.
-2. **`run_kaggle_latent_pipeline.py`** — precompute the latent dataset with
-   that encoder, train the CFM student, generate one sample. Also has the
-   `--raw-audio-part` shortcut, but only a single one (`precompute-latent-dataset`
-   doesn't yet combine multiple source datasets the way `train-latent-encoder` does).
-3. **`run_kaggle_latent_resume.py`** — if step 2 gets cut off partway (Kaggle
-   sessions have a wall-clock limit), resume CFM training from the
-   downloaded checkpoint instead of restarting from scratch. Launch with a
-   small, bounded epoch count per round trip — see the script's own
-   docstring for why.
-4. **`run_kaggle_latent_generate_only.py`** — cheapest way to spot-check any
-   existing checkpoint: generates one sample, no training, no dataset
-   (~10 minutes). Use this between training rounds instead of a full
-   pipeline/resume run just to listen to where a checkpoint currently is.
-- **`run_kaggle_check_latent_encoder_quality.py`** — Kaggle launcher for
-  `check_latent_encoder_quality.py` (see Utilities below): uploads an
-  encoder checkpoint and runs the ground-truth encode/decode sanity check on
-  Kaggle (needs the real `bigvgan` decoder). Run this after step 1 and before
-  trusting the encoder for step 2.
+---
 
-## Utilities
+## 2. `scripts/data_prep/` (Data Preprocessing & Phonemization)
 
-- **`evaluate_generation_quality.py`** — the actual metric implementation
-  (spectral flatness, voiced ratio, pitch-std semitones) used by
-  `run_kaggle_evaluate.py` and referenced throughout `docs/project_history.md`.
-  Can also be run standalone against any local checkpoint/wav.
-- **`check_latent_encoder_quality.py`** — sanity-check a `LatentAudioEncoder`
-  checkpoint (from `run_kaggle_latent_encoder.py`) BEFORE trusting any
-  downstream CFM training on its latents: encodes real ground-truth audio
-  (no CFM involved), decodes through the real frozen decoder, and reports
-  `pitch_std_semitones` via `evaluate_generation_quality.py`'s `wav_metrics`
-  — catches the collapsed-encoder failure mode from `docs/project_history.md`
-  §4.24 without a one-off script each time. Needs the real decoder (`bigvgan`
-  on PYTHONPATH), so only runs on Kaggle.
-- **`check_kernel_progress.py`** — tails a *running* Kaggle kernel's log via
-  the SSE log-stream endpoint (`kaggle kernels output` only returns files
-  once a kernel finishes, so this is the only way to see live progress).
+- **`preprocess.py`** — Preprocesses raw audio (Demucs + Whisper) into raw/mel datasets.
+- **`multi_part_preprocess.py`** — Multi-part raw audio preprocessing launcher across all parts.
+- **`preprocess_all.py`** — Full preprocessing runner for multi-shard corpora.
+- **`phonemize.py`** — Stage 2 G2P phonemizer (single part).
+- **`multi_part_phonemize.py`** — Multi-part G2P phonemizer coordinator.
+- **`materialize_native.py`** — Materializes aligned native waveform datasets.
+- **`run_kaggle_native_waveform_dataset.py`** — Kaggle dataset materialization launcher.
+
+---
+
+## 3. `scripts/training/` (Model Training & Distillation)
+
+- **`train.py`** — Main Kaggle training launcher for CFM models.
+- **`multi_part_train.py`** — Preprocesses and trains across multiple dataset parts.
+- **`train_distill.py`** — Student distillation training with teacher guidance.
+- **`distill.py`** / **`latent_encoder.py`** / **`latent_pipeline.py`** / **`latent_resume.py`** — Latent encoder pretraining and pipeline runners.
+- **`experiment_matrix.py`** / **`run_experiment_matrix.py`** / **`full_experiment.py`** — Experiment matrix & full pipeline execution.
+
+---
+
+## 4. `scripts/generation/` (Inference & Audio Generation)
+
+- **`generate_native.py`** — Standalone native waveform audio generation CLI.
+- **`run_kaggle_native_waveform.py`** — Web-facing Kaggle native waveform generation launcher.
+- **`master_waveform_pipeline.py`** — Master waveform pipeline orchestrator.
+- **`guidance_demo.py`** — Classifier-free guidance and style embedding demonstration.
+- **`latent_generate_only.py`** — Fast spot-check generation from latent checkpoints.
+
+---
+
+## 5. `scripts/evaluation/` (Quality & Diversity Evaluation)
+
+- **`evaluate.py`** — Quality evaluation implementation (WER, ASR, spectral metrics, voiced ratio).
+- **`evaluate_kaggle.py`** — Kaggle runner for quality evaluation.
+- **`check_latent_encoder.py`** / **`check_latent_encoder_kaggle.py`** — Sanity-checks `LatentAudioEncoder` checkpoints.
+- **`check_teacher_diversity.py`** / **`check_latent_diversity.py`** / **`check_style_diversity.py`** — Diagnostic scripts for model diversity.
+

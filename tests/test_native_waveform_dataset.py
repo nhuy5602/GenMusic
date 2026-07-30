@@ -6,8 +6,8 @@ from pathlib import Path
 from src.data.raw_multishard import (
     raw_materialization_gate,
 )
-from scripts.materialize_native_waveform_dataset import DEFAULT_SHARDS
-from scripts.run_kaggle_native_waveform_dataset import (
+from scripts.data_prep.materialize_native import DEFAULT_SHARDS
+from scripts.data_prep.run_kaggle_native_waveform_dataset import (
     PATCH_FILES,
     _build_patch_bundle,
     _kernel_code,

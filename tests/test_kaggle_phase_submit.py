@@ -2,13 +2,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from scripts.kaggle_phase_submit import ensure_source_dataset, new_run_dir
+from scripts.kaggle.phase_submit import ensure_source_dataset, new_run_dir
 
 
 def test_new_run_dir_does_not_reuse_same_second_directory(tmp_path: Path) -> None:
     context = SimpleNamespace(project_root=tmp_path)
 
-    with patch("scripts.kaggle_phase_submit.time.time", return_value=1234.5):
+    with patch("scripts.kaggle.phase_submit.time.time", return_value=1234.5):
         first_timestamp, first_dir = new_run_dir(context, "quality")
         second_timestamp, second_dir = new_run_dir(context, "quality")
 
@@ -28,7 +28,7 @@ def test_existing_source_can_skip_legacy_visibility_poll(tmp_path: Path) -> None
     )
 
     with patch(
-        "scripts.kaggle_phase_submit._wait_for_dataset_visible"
+        "scripts.kaggle.phase_submit._wait_for_dataset_visible"
     ) as wait_for_visible:
         result = ensure_source_dataset(
             context,
