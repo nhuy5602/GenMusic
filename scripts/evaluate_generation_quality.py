@@ -45,8 +45,11 @@ flatness numbers have a concrete "this is what noise looks like" reference.
   repeating "chu nghia xa hoi" dozens of times, WER > 20) rather than a
   merely-imperfect transcript of the real words.
 """
+import argparse
 import json
+import re
 import sys
+import unicodedata
 from pathlib import Path
 
 import numpy as np
@@ -60,8 +63,112 @@ import librosa
 from src.models.text_to_music_diffusion import load_checkpoint, generate_audio, render_mel_to_wav, reconstruct_full_mix
 from src.training.self_diffusion import _load_mel
 
-FIXED_TEXT = "Dem nay mua roi tren loi mon xua, long anh nho em nhieu nguoi oi co biet chang"
+FIXED_TEXT = (
+    "Đêm nay mưa rơi trên lối mòn xưa, "
+    "lòng anh nhớ em nhiều, người ơi có biết chăng"
+)
 FIXED_STYLE = "Vietnamese pop, warm piano, clear melody"
+
+
+def _normalized_units(text: str, *, words: bool) -> list[str]:
+    folded = unicodedata.normalize("NFD", str(text).casefold().replace("đ", "d"))
+    folded = "".join(
+        character for character in folded if unicodedata.category(character) != "Mn"
+    )
+    folded = re.sub(r"[^a-z0-9]+", " ", folded).strip()
+    return folded.split() if words else list(folded.replace(" ", ""))
+
+
+def _edit_distance(reference: list[str], hypothesis: list[str]) -> int:
+    previous = list(range(len(hypothesis) + 1))
+    for row, reference_item in enumerate(reference, start=1):
+        current = [row]
+        for column, hypothesis_item in enumerate(hypothesis, start=1):
+            current.append(
+                min(
+                    current[-1] + 1,
+                    previous[column] + 1,
+                    previous[column - 1] + (reference_item != hypothesis_item),
+                )
+            )
+        previous = current
+    return previous[-1]
+
+
+def transcription_metrics(reference: str, hypothesis: str) -> dict:
+    """Return accent-insensitive WER/CER for Vietnamese evaluation reports."""
+    reference_words = _normalized_units(reference, words=True)
+    hypothesis_words = _normalized_units(hypothesis, words=True)
+    reference_chars = _normalized_units(reference, words=False)
+    hypothesis_chars = _normalized_units(hypothesis, words=False)
+    wer = _edit_distance(reference_words, hypothesis_words) / max(1, len(reference_words))
+    cer = _edit_distance(reference_chars, hypothesis_chars) / max(1, len(reference_chars))
+    return {
+        "reference": reference,
+        "hypothesis": hypothesis,
+        "wer": float(wer),
+        "cer": float(cer),
+        "word_accuracy": float(max(0.0, 1.0 - wer)),
+        "reference_word_count": len(reference_words),
+        "hypothesis_word_count": len(hypothesis_words),
+    }
+
+
+def evenly_spaced_records(records: list[dict], count: int) -> list[dict]:
+    """Select deterministic samples across the complete combined corpus."""
+    limit = max(0, int(count))
+    if limit == 0 or not records:
+        return []
+    if len(records) <= limit:
+        return list(records)
+    if limit == 1:
+        return [records[0]]
+    indices = [
+        round(index * (len(records) - 1) / (limit - 1))
+        for index in range(limit)
+    ]
+    return [records[index] for index in indices]
+
+
+def generation_candidate_rank(
+    candidate: dict,
+    real_metrics: dict | None = None,
+) -> tuple[float, ...]:
+    """Rank candidates by trusted lyric overlap, then acoustic realism."""
+    asr = candidate.get("asr") or {}
+    metrics = candidate.get("metrics") or {}
+    reference = real_metrics or {}
+
+    def positive(value, fallback: float) -> float:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return fallback
+        return numeric if np.isfinite(numeric) and numeric > 0.0 else fallback
+
+    pitch = positive(metrics.get("pitch_std_semitones"), 1e-4)
+    reference_pitch = positive(reference.get("pitch_std_semitones"), 2.5)
+    flatness = positive(metrics.get("spectral_flatness"), 1e-6)
+    reference_flatness = positive(reference.get("spectral_flatness"), 0.02)
+    voiced = float(metrics.get("voiced_ratio") or 0.0)
+    reference_voiced = float(reference.get("voiced_ratio") or 0.75)
+    acoustic_distance = (
+        abs(float(np.log(pitch / reference_pitch)))
+        + 0.5 * abs(float(np.log(flatness / reference_flatness)))
+        + abs(voiced - reference_voiced)
+        + 10.0 * float(metrics.get("clip_ratio") or 0.0)
+    )
+    word_accuracy = float(asr.get("word_accuracy", 0.0))
+    cer = float(asr.get("cer", 1.0))
+    reference_word_count = max(1, int(asr.get("reference_word_count") or 20))
+    minimum_trusted_accuracy = max(0.10, 2.0 / reference_word_count)
+    asr_is_trusted = word_accuracy >= minimum_trusted_accuracy
+    return (
+        word_accuracy if asr_is_trusted else 0.0,
+        -cer if asr_is_trusted else -acoustic_distance,
+        -acoustic_distance if asr_is_trusted else -cer,
+        float(metrics.get("mean_voiced_prob", 0.0)),
+    )
 
 
 def wav_metrics(path: Path) -> dict:
@@ -114,16 +221,38 @@ def lyric_wer(path: Path, target_text: str) -> dict:
 
 
 def main() -> None:
-    checkpoint_path = sys.argv[1]
-    dataset_dir = Path(sys.argv[2])
-    out_dir = Path(sys.argv[3])
-    max_records = int(sys.argv[4]) if len(sys.argv) > 4 else 8
-    with_wer = "--with-wer" in sys.argv
+    parser = argparse.ArgumentParser()
+    parser.add_argument("checkpoint")
+    parser.add_argument("dataset", type=Path)
+    parser.add_argument("output", type=Path)
+    parser.add_argument("max_records", type=int, nargs="?", default=8)
+    parser.add_argument("--with-wer", action="store_true")
+    parser.add_argument("--text", default=FIXED_TEXT)
+    parser.add_argument("--style", default=FIXED_STYLE)
+    parser.add_argument("--duration", type=float, default=8.0)
+    parser.add_argument("--steps", type=int, default=32)
+    parser.add_argument(
+        "--text-refine-strength",
+        type=float,
+        default=1.0,
+        help=(
+            "Inference-only blend between raw XPhoneBERT tokens (0) and the "
+            "historical trainable text_refine output (1)."
+        ),
+    )
+    args = parser.parse_args()
+
+    checkpoint_path = args.checkpoint
+    dataset_dir = args.dataset
+    out_dir = args.output
+    max_records = args.max_records
+    with_wer = args.with_wer
     out_dir.mkdir(parents=True, exist_ok=True)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Loading checkpoint {checkpoint_path} on {device}...")
     model, config, payload = load_checkpoint(checkpoint_path, device=device)
+    model.set_text_refine_strength(args.text_refine_strength)
 
     records = [json.loads(line) for line in (dataset_dir / "records.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
     # Latent-space datasets (precompute_latent_dataset.py) store one already-mixed
@@ -132,9 +261,15 @@ def main() -> None:
     # and backing separate and need reconstruct_full_mix below.
     latent_mode = bool(getattr(config, "latent_mode", False))
     if latent_mode:
-        records = [r for r in records if (dataset_dir / r["vocal_mel_path"]).exists()][:max_records]
+        records = evenly_spaced_records(
+            [r for r in records if (dataset_dir / r["vocal_mel_path"]).exists()],
+            max_records,
+        )
     else:
-        records = [r for r in records if (dataset_dir / r["backing_mel_path"]).exists()][:max_records]
+        records = evenly_spaced_records(
+            [r for r in records if (dataset_dir / r["backing_mel_path"]).exists()],
+            max_records,
+        )
     print(f"Evaluating {len(records)} sample record(s).")
 
     # Fixed sanity anchor: what does the metric read on literal white noise?
@@ -163,8 +298,9 @@ def main() -> None:
 
         gen_path = out_dir / f"{record_id}_generated.wav"
         generate_audio(
-            model, FIXED_TEXT, FIXED_STYLE, gen_path,
-            duration_seconds=8.0, config=config, device=device, steps=6, seed=5602,
+            model, args.text, args.style, gen_path,
+            duration_seconds=args.duration, config=config, device=device,
+            steps=args.steps, seed=5602,
             backing_mel=backing_mel, style_anchor=style_anchor,
         )
         real_path = out_dir / f"{record_id}_real.wav"
@@ -176,7 +312,13 @@ def main() -> None:
             "real_full_mix_same_vocoder": wav_metrics(real_path),
         }
         if with_wer:
-            entry["lyric_wer"] = lyric_wer(gen_path, FIXED_TEXT)
+            entry["lyric_wer"] = lyric_wer(gen_path, args.text)
+            entry["lyric_wer"].update(
+                transcription_metrics(
+                    args.text,
+                    entry["lyric_wer"]["predicted_text"],
+                )
+            )
         results["samples"].append(entry)
         print(record_id, "gen:", entry["generated"], "real:", entry["real_full_mix_same_vocoder"])
 
