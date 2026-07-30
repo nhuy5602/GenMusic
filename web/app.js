@@ -14,7 +14,7 @@ const canvas = document.querySelector("#wave-canvas");
 const ctx = canvas.getContext("2d");
 let isGenerating = false;
 let activePollId = 0;
-const MODEL = "genmusic-vn-self-diffusion-v1";
+const MODEL = "native-waveform-v80";
 
 duration.addEventListener("input", () => {
   durationValue.textContent = duration.value + " giây";
@@ -23,11 +23,19 @@ duration.addEventListener("input", () => {
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (isGenerating) return;
+  const lyricText = document.querySelector("#text").value.trim();
+  const wordCount = lyricText.split(/\s+/u).filter(Boolean).length;
+  if (wordCount < 8 || wordCount > 32) {
+    statusPill.textContent = "Lyrics chưa hợp lệ";
+    jobBox.textContent =
+      "Native waveform V80 cần từ 8 đến 32 từ cho một bản 16 giây.";
+    return;
+  }
   setGenerating(true, "Đang gửi...");
   statusPill.textContent = "Đang gửi";
   downloads.innerHTML = "";
   warningSlot.hidden = true;
-  audioSlot.textContent = "Đang chuẩn bị model tự code trên Kaggle...";
+  audioSlot.textContent = "Đang chuẩn bị native waveform V80 trên Kaggle...";
   lyricsOutput.textContent = "Đang chuẩn bị LRC...";
   jobBox.textContent = "";
   kaggleLinks.innerHTML = "";
@@ -36,7 +44,7 @@ form.addEventListener("submit", async (event) => {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
-        text: document.querySelector("#text").value,
+        text: lyricText,
         duration_seconds: Number(duration.value),
         genre: document.querySelector("#genre").value,
         model: MODEL,
@@ -68,7 +76,7 @@ function renderJob(job) {
     "Backend: " + (job.backend || MODEL),
     "Model: " + (job.model || MODEL),
     "Thời lượng: " + (job.duration_seconds || "-") + " giây",
-    "Dataset training: " + (job.training_dataset_ref || job.dataset_ref || "-"),
+    "Nguồn waveform: " + (job.raw_kernel_ref || job.dataset_ref || "-"),
     "Kernel: " + (job.kernel_ref || "-"),
     "",
     ...(job.messages || []),
@@ -117,7 +125,7 @@ function renderDownloads(job) {
 
 async function pollKaggle(runId) {
   const pollId = ++activePollId;
-  setGenerating(true, "Đang train và tạo...");
+  setGenerating(true, "Đang dựng vocal và phối backing...");
   for (let index = 0; index < 120; index += 1) {
     await new Promise((resolve) => setTimeout(resolve, 15000));
     if (pollId !== activePollId) return;

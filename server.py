@@ -10,9 +10,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from src.integrations.kaggle_auto import DEFAULT_MODEL, KaggleJobConfig, refresh_kaggle_job, submit_text_to_music_job
 from src.evaluation.project_metrics import build_project_report
-
+from src.integrations.kaggle_auto import refresh_kaggle_job
+from src.integrations.native_waveform_auto import (
+    NATIVE_WAVEFORM_BACKEND,
+    NATIVE_WAVEFORM_MODEL,
+    NativeWaveformJobConfig,
+    submit_native_waveform_job,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 WEB_ROOT = PROJECT_ROOT / "web"
@@ -21,7 +26,7 @@ SUBMISSION_LOCK = threading.Lock()
 
 
 class GenMusicHandler(BaseHTTPRequestHandler):
-    server_version = "GenMusicVN/0.2"
+    server_version = "GenMusicVN/0.3"
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -44,7 +49,12 @@ class GenMusicHandler(BaseHTTPRequestHandler):
             self._send_file(requested)
             return
         if path == "/api/health":
-            self._send_json({"status": "ok", "backend": "genmusic-vn-self-diffusion", "model": DEFAULT_MODEL, "generator": "conditional-diffusion"})
+            self._send_json({
+                "status": "ok",
+                "backend": NATIVE_WAVEFORM_BACKEND,
+                "model": NATIVE_WAVEFORM_MODEL,
+                "generator": "native-waveform-retrieval",
+            })
             return
         if path == "/api/kaggle/status":
             query = parse_qs(parsed.query)
@@ -85,16 +95,14 @@ class GenMusicHandler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("content-length", "0"))
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
-            job = submit_text_to_music_job(
+            job = submit_native_waveform_job(
                 text=payload.get("text", ""),
                 output_root=OUTPUT_ROOT,
                 duration_seconds=int(payload.get("duration_seconds", 30)),
                 genre=payload.get("genre") or None,
-                config=KaggleJobConfig(
-                    model=payload.get("model") or DEFAULT_MODEL,
+                config=NativeWaveformJobConfig(
                     submit=True,
                     wait=False,
-                    training_dataset_ref=payload.get("dataset_ref") or None,
                 ),
             )
             self._send_json(job)
