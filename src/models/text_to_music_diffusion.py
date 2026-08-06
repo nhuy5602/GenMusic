@@ -1,4 +1,4 @@
-"""MicroDiT/CFM text-to-music model: config, mel/waveform I/O, checkpointing.
+﻿"""MicroDiT/CFM text-to-music model: config, mel/waveform I/O, checkpointing.
 
 The denoising network itself lives in `dit_transformer.py` (MicroDiT) and
 `cfm_flow.py` (Conditional Flow Matching loss/sampling); this module holds the
@@ -57,6 +57,15 @@ class MusicDiffusionConfig:
     # docs/data_preparation.md. Lets LatentAudioEncoder train directly on the
     # pristine recording instead of a Vocos-decoded reconstruction of a mel.
     raw_audio_mode: bool = False
+    # Latent checkpoints are codec-specific. V1 Oobleck latents must never be
+    # sent to the incompatible DiffRhythm2 BigVGAN decoder.
+    latent_codec: str = "diffrhythm_v2_bigvgan"
+    # Report-facing preprocessing contract. Keep this metadata in the shared
+    # config instead of silently dropping it when a clean checkout loads a
+    # generated dataset config through ``_config_from_dict``.
+    style_embedding_model: str = "OpenMuQ/MuQ-MuLan-large"
+    style_embedding_dim: int = 512
+    style_embedding_required: bool = True
 
 
 def _config_from_dict(data: dict) -> "MusicDiffusionConfig":
@@ -106,7 +115,7 @@ def reconstruct_full_mix(vocal_mel_normalized, backing_mel_normalized, config: "
     This is the student's actual generation target: the project's scope is a
     complete song (vocals over accompaniment), matching what DiffRhythm2 (the
     teacher) itself generates -- not an isolated a cappella vocal track (see
-    docs/project_history.md for the discussion that motivated this). Both
+    prior measurements for the discussion that motivated this). Both
     train-self and train-distill use this as their CFM target `x1`; an
     auxiliary vocal-only prediction head (MicroDiT.vocal_proj_out, "Mixed Pro"
     style, see SongGen arXiv:2502.13128) supervises the model to still track
@@ -190,7 +199,7 @@ def render_mel_to_wav(mel, destination: str | Path, config: MusicDiffusionConfig
     multi-iteration Griffin-Lim mel inversion (``vocoder_type="griffinlim"``),
     never to the old fabricated-phase iSTFT hack (removed: it produced audio with
     ~0.15 correlation to the true spectrogram, i.e. near-noise -- see
-    docs/project_history.md §4.1).
+    prior measurements).
     """
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -198,6 +207,25 @@ def render_mel_to_wav(mel, destination: str | Path, config: MusicDiffusionConfig
     values = mel.detach().float().cpu() if hasattr(mel, "detach") else torch.as_tensor(np.asarray(mel, dtype=np.float32))
 
     if config.latent_mode:
+        if config.latent_codec == "diffrhythm_v1_oobleck":
+            from .v1_oobleck_codec import (
+                V1_SAMPLE_RATE,
+                decode_v1_oobleck_latent,
+            )
+
+            decoder_device = (
+                "cuda" if torch.cuda.is_available() else "cpu"
+            )
+            audio_tensor = decode_v1_oobleck_latent(
+                values.unsqueeze(0),
+                device=decoder_device,
+            )
+            audio = audio_tensor.squeeze(0).cpu().numpy()
+            return _write_wav(audio, destination, V1_SAMPLE_RATE)
+        if config.latent_codec != "diffrhythm_v2_bigvgan":
+            raise ValueError(
+                f"Unsupported latent codec: {config.latent_codec!r}"
+            )
         # `values` here is a real DiffRhythm2-latent (channels, T) -- decode
         # via the real, frozen BigVGAN decoder instead of Vocos (Vocos expects
         # log-mel, not learned latent channels; see LatentAudioEncoder's
@@ -257,10 +285,27 @@ def render_mel_to_wav(mel, destination: str | Path, config: MusicDiffusionConfig
 
 
 def _write_wav(audio: np.ndarray, destination: Path, sample_rate: int) -> Path:
-    audio = audio / max(1e-6, float(np.max(np.abs(audio)))) * 0.8
-    pcm = (audio.clip(-1.0, 1.0) * 32767.0).astype(np.int16)
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.ndim == 1:
+        channels_last = audio[:, None]
+    elif audio.ndim == 2 and audio.shape[0] <= 8:
+        channels_last = audio.T
+    elif audio.ndim == 2:
+        channels_last = audio
+    else:
+        raise ValueError(
+            f"Expected mono/stereo waveform, got shape {audio.shape}"
+        )
+    channels_last = (
+        channels_last
+        / max(1e-6, float(np.max(np.abs(channels_last))))
+        * 0.8
+    )
+    pcm = (
+        channels_last.clip(-1.0, 1.0) * 32767.0
+    ).astype(np.int16)
     with wave.open(str(destination), "wb") as stream:
-        stream.setnchannels(1)
+        stream.setnchannels(int(pcm.shape[1]))
         stream.setsampwidth(2)
         stream.setframerate(sample_rate)
         stream.writeframes(pcm.tobytes())
@@ -277,7 +322,7 @@ def save_checkpoint(
     ema_state: dict[str, Any] | None = None,
     epoch: int = 0,
     loss: float | None = None,
-    arch: dict[str, int] | None = None,
+    arch: dict[str, Any] | None = None,
     training_state: dict[str, Any] | None = None,
 ) -> Path:
     torch, _ = _torch()
@@ -321,6 +366,7 @@ def load_checkpoint(
     device="cpu",
     roberta_model: str | None = None,
     use_ema: bool = True,
+    open_vocabulary_conditioning: bool | None = None,
 ) -> tuple[Any, MusicDiffusionConfig, dict[str, Any]]:
     torch, _ = _torch()
 
@@ -340,6 +386,11 @@ def load_checkpoint(
     # "roberta_model" was tracked in arch.
     arch = payload.get("arch") or {}
     resolved_roberta_model = roberta_model or arch.get("roberta_model", "xlm-roberta-base")
+    resolved_open_vocabulary = (
+        bool(arch.get("open_vocabulary_conditioning", False))
+        if open_vocabulary_conditioning is None
+        else bool(open_vocabulary_conditioning)
+    )
     from .dit_transformer import MicroDiT
 
     model = MicroDiT(
@@ -347,6 +398,7 @@ def load_checkpoint(
         dim=arch.get("dim", 256), depth=arch.get("depth", 4),
         heads=arch.get("heads", 4), ff_mult=arch.get("ff_mult", 4),
         style_dim=arch.get("style_dim", 512),
+        open_vocabulary_conditioning=resolved_open_vocabulary,
     ).to(device)
 
     # strict=False: checkpoints deliberately omit the frozen RoBERTa encoder
@@ -375,6 +427,7 @@ def generate_audio(
     backing_mel=None,
     style_anchor=None,
     style_prompt=None,
+    solver: str = "euler",
 ) -> dict[str, Any]:
     """Generate audio with the same backing/style inputs used during training.
 
@@ -423,11 +476,19 @@ def generate_audio(
             guidance_scale=guidance_scale,
             seed=seed + section_number,
             style_prompt=normalized_style,
+            solver=solver,
         )
         rendered.append(mel.squeeze(0))
         section_number += 1
     mel = torch.cat(rendered, dim=1)
     target_frames = max(1, int(float(duration_seconds) * config.sample_rate / config.hop_length))
+    if mel.shape[1] < target_frames:
+        # build_lyric_timing reserves short pauses between lines. Preserve
+        # those frames instead of silently shortening the rendered song.
+        mel = torch.nn.functional.pad(
+            mel,
+            (0, target_frames - mel.shape[1]),
+        )
     mel = mel[:, :target_frames]
     mel = denormalize_mel(mel, config)
     if mel_output:
@@ -443,6 +504,7 @@ def generate_audio(
         "duration_seconds": float(duration_seconds),
         "diffusion_steps": steps,
         "guidance_scale": float(guidance_scale),
+        "solver": str(solver),
         "seed": seed,
         "lyric_timing": lyric_timing,
         "backing_conditioned": False,

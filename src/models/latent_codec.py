@@ -1,4 +1,4 @@
-"""A new, trainable audio encoder paired with DiffRhythm2's real, frozen,
+﻿"""A new, trainable audio encoder paired with DiffRhythm2's real, frozen,
 pretrained decoder (`decoder.bin`/`decoder.json` on the ASLP-lab/DiffRhythm2
 HuggingFace repo -- a BigVGAN-family generator, see `bigvgan/model.py` in the
 official GitHub repo).
@@ -9,7 +9,7 @@ decoder, per the paper), while this project's student has always generated a
 raw, uncompressed 100-dim mel spectrogram at 93.75 Hz -- a ~19x higher token
 rate for the same audio duration than the architecture DiffRhythm2's own DiT
 was actually designed/trained around (see the conversation this session:
-docs/project_history.md §4.20-4.21 already found this exact mismatch, but only
+prior measurements already found this exact mismatch, but only
 fixed it on the teacher-*query* side during distillation, never gave the
 *student* its own compressed latent space -- deferred as "too expensive to
 train a full Music VAE from scratch").
@@ -107,7 +107,7 @@ class LatentAudioEncoder(nn.Module):
 
     A real variational bottleneck (mu/logvar + reparameterization + KL term,
     see `reparameterize`/train_latent_encoder's kl_loss): two consecutive
-    full-corpus retrains collapsed (docs/project_history.md §4.29) using the
+    full-corpus retrains collapsed (prior measurements) using the
     earlier deterministic-autoencoder version of this class, which had no KL
     regularization and no adversarial loss -- exactly the combination known to
     let plain L1/L2 reconstruction losses regress to a "safe", low-dynamic-
@@ -195,7 +195,7 @@ def load_frozen_decoder(device: str, repo_id: str = DECODER_REPO_ID) -> FrozenDe
     callers that need to train an encoder against it -- wrapping this call in
     torch.no_grad() would silently zero out the encoder's gradient entirely
     (this project already hit exactly this bug once, see the mel-dim adapter
-    gradient bug in docs/project_history.md; do not repeat it).
+    gradient bug in prior measurements; do not repeat it).
     """
     try:
         from bigvgan.model import Generator

@@ -1,13 +1,19 @@
-import math
+﻿import math
 
 import torch
 from torch import nn
-from torch.nn import functional as F
-from transformers import AutoTokenizer, AutoModel
-from transformers.models.llama.modeling_llama import LlamaAttention, LlamaMLP, LlamaRMSNorm, LlamaRotaryEmbedding
+from transformers import AutoModel, AutoTokenizer
 from transformers.models.llama import LlamaConfig
+from transformers.models.llama.modeling_llama import (
+    LlamaAttention,
+    LlamaMLP,
+    LlamaRMSNorm,
+    LlamaRotaryEmbedding,
+)
 
+from .open_vocabulary_lyrics import OpenVocabularyLyricEncoder
 from .text_to_music_diffusion import MusicDiffusionConfig
+
 
 class PretrainedPhonemeEncoder(nn.Module):
     """Frozen pretrained XPhoneBERT text encoder to extract rich semantic phoneme-level sequence embeddings."""
@@ -187,7 +193,7 @@ class SinusoidalPositionalEncoding(nn.Module):
     no fixed real-time duration the way a 5~Hz mel-frame index does), so this
     is NOT true cross-modal time alignment; a real fix needs the per-word
     Whisper timestamps already produced in preprocessing but not yet threaded
-    into the model (see docs/main.tex, Hướng phát triển).
+    into the model (see the research design, Hướng phát triển).
     """
     def __init__(self, dim: int, max_len: int = 4096):
         super().__init__()
@@ -317,7 +323,7 @@ class TextSelfAttentionLayer(nn.Module):
     model can refine lyric context for its own task, without re-learning
     phoneme understanding from scratch on a 250-song budget (the mistake the
     now-removed `NativeDiTStudent` backbone made with its from-scratch
-    `nn.Embedding`, see docs/project_history.md).
+    `nn.Embedding`, see prior measurements).
     """
     def __init__(self, config: LlamaConfig):
         super().__init__()
@@ -356,7 +362,7 @@ class AudioStyleEncoder(nn.Module):
     structure and had nothing to do with any learned notion of musical style.
     Using the real MuLan embedding both gives the student a far richer style
     signal and lets the *same* embedding be handed unmodified to the teacher
-    during distillation (see docs/project_history.md).
+    during distillation (see prior measurements).
     """
     def __init__(self, style_dim: int, dim: int):
         super().__init__()
@@ -396,12 +402,14 @@ class MicroDiT(nn.Module):
         ff_mult: int = 4,
         style_dim: int = 512,
         repa_dim: int = 1024,
+        open_vocabulary_conditioning: bool = False,
     ):
         super().__init__()
         self.config = config
         self.dim = dim
         self.cond_dim = dim
         self.style_dim = style_dim
+        self.open_vocabulary_conditioning = bool(open_vocabulary_conditioning)
 
         # Core embeddings and adapters
         self.text_encoder = PretrainedPhonemeEncoder(model_name=roberta_model, out_dim=dim)
@@ -414,9 +422,68 @@ class MicroDiT(nn.Module):
         )
 
         self.input_embed = InputEmbedding(config.latent_dim, dim)
+        if self.open_vocabulary_conditioning:
+            self.open_vocabulary_lyric = OpenVocabularyLyricEncoder(dim)
+            self.open_vocabulary_frame_norm = nn.LayerNorm(dim)
+            self.open_vocabulary_memory_gate = nn.Parameter(torch.tensor(1.0))
+            self.open_vocabulary_frame_gate = nn.Parameter(torch.tensor(1.0))
+            # The velocity objective can learn to react to a changed lyric
+            # without learning which acoustic realization belongs to each
+            # word. These projections support a training-only, open-vocabulary
+            # frame/word contrastive objective. Audio features use both
+            # locally-centred latent values and their temporal derivative so
+            # steady backing energy is de-emphasized relative to vocal onsets
+            # and formant movement inside exact timestamp spans.
+            semantic_dim = max(64, dim // 2)
+            self.lyric_semantic_audio_projection = nn.Sequential(
+                nn.LayerNorm(config.latent_dim * 2),
+                nn.Linear(config.latent_dim * 2, dim),
+                nn.SiLU(),
+                nn.Linear(dim, semantic_dim),
+            )
+            self.lyric_semantic_word_projection = nn.Sequential(
+                nn.LayerNorm(dim),
+                nn.Linear(dim, semantic_dim),
+            )
+            self.lyric_semantic_unit_projection = nn.Sequential(
+                nn.LayerNorm(dim),
+                nn.Linear(dim, semantic_dim),
+            )
+            # Sung words are frequently ambiguous in isolation (the V74
+            # context oracle only became reliable at 4--8 words).  These
+            # training-only heads therefore align an *ordered phrase* with
+            # its exact V1-vocal latent span.  They are deliberately outside
+            # the denoising forward path, so adding them is checkpoint
+            # compatible and cannot perturb generation until a gated
+            # continuation explicitly uses the improved lyric encoder.
+            self.lyric_phrase_audio_projection = nn.Sequential(
+                nn.LayerNorm(config.latent_dim * 2),
+                nn.Linear(config.latent_dim * 2, semantic_dim),
+                nn.SiLU(),
+                nn.Linear(semantic_dim, semantic_dim),
+            )
+            self.lyric_phrase_audio_context = nn.GRU(
+                semantic_dim,
+                semantic_dim // 2,
+                batch_first=True,
+                bidirectional=True,
+            )
+            self.lyric_phrase_text_projection = nn.Sequential(
+                nn.LayerNorm(dim),
+                nn.Linear(dim, semantic_dim),
+            )
+            # Shared order encoder prevents the audio and text branches from
+            # solving retrieval with unrelated sequence conventions.
+            self.lyric_phrase_sequence_context = nn.GRU(
+                semantic_dim,
+                semantic_dim // 2,
+                batch_first=True,
+                bidirectional=True,
+            )
+            self.lyric_phrase_output_norm = nn.LayerNorm(semantic_dim)
         # Projects an intermediate transformer hidden state up to a frozen
         # self-supervised audio encoder's feature dimension (REPA-style
-        # representation-alignment auxiliary loss, see docs/project_history.md --
+        # representation-alignment auxiliary loss, see prior measurements --
         # mirrors DiffRhythm2's own "Stochastic Block REPA"). Unconditionally
         # constructed (matches this file's existing convention for
         # AudioStyleEncoder/PretrainedPhonemeEncoder); negligible cost, and only
@@ -468,6 +535,7 @@ class MicroDiT(nn.Module):
         texts: list[str],
         timestep: torch.Tensor,
         style_prompt: torch.Tensor | None = None,
+        lyric_frame_ids: torch.Tensor | None = None,
         repa_layer_idx: int | None = None,
         return_vocal_aux: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, ...]:
@@ -485,6 +553,33 @@ class MicroDiT(nn.Module):
         text_attn_bias = torch.zeros(batch_size, 1, 1, text_len, device=device, dtype=text_embeds.dtype)
         text_attn_bias = text_attn_bias.masked_fill(~text_mask[:, None, None, :], torch.finfo(text_embeds.dtype).min)
         text_embeds = self.text_refine(text_embeds, attention_mask=text_attn_bias, position_embeddings=text_rotary_embed)
+
+        # XPhoneBERT supplies strong global phonetic context, while this
+        # trainable grapheme path makes unseen Vietnamese words compositional
+        # and places each word on its exact audio frames when timestamps are
+        # available. At inference, it falls back to a duration-proportional
+        # allocation that depends only on the requested text.
+        aligned_lyric = None
+        if self.open_vocabulary_conditioning:
+            (
+                word_memory,
+                word_mask,
+                aligned_lyric,
+                _,
+            ) = self.open_vocabulary_lyric(
+                texts,
+                frames=seq_len,
+                frame_word_ids=lyric_frame_ids,
+                device=device,
+            )
+            text_embeds = torch.cat(
+                [
+                    text_embeds,
+                    self.open_vocabulary_memory_gate * word_memory,
+                ],
+                dim=1,
+            )
+            text_mask = torch.cat([text_mask, word_mask], dim=1)
 
         mask = text_mask.unsqueeze(-1).to(text_embeds.dtype)
         pooled_text = (text_embeds * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
@@ -505,6 +600,10 @@ class MicroDiT(nn.Module):
         # happens via AdaLN-Zero modulation inside each block, see
         # CrossAttentionDecoderLayer -- not an additive injection here).
         x = self.input_embed(x)
+        if aligned_lyric is not None:
+            x = x + self.open_vocabulary_frame_gate * self.open_vocabulary_frame_norm(
+                aligned_lyric
+            )
 
         # 4. Rotary position IDs over the mel sequence only
         pos_ids = torch.arange(seq_len, device=device).unsqueeze(0).repeat(batch_size, 1)
@@ -520,7 +619,7 @@ class MicroDiT(nn.Module):
                 # Hidden state right after this block, before the final
                 # AdaLN/proj_out -- this is the "representation" a REPA-style
                 # loss aligns with a frozen SSL encoder's features (see
-                # docs/project_history.md), analogous to DiffRhythm2's own
+                # prior measurements), analogous to DiffRhythm2's own
                 # "Stochastic Block REPA" against its DiT's hidden states.
                 repa_hidden_raw = x
 

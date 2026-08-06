@@ -1,112 +1,148 @@
-# GenMusic VN: Vietnamese Song Generator
+﻿# GenMusic VN
 
-GenMusic VN generates Vietnamese vocal audio from a lyric prompt and a style
-description, via Conditional Flow Matching (CFM), distilled/inspired by
-DiffRhythm2. A single student backbone (`MicroDiT`) runs over either of two
-feature spaces (raw mel, or DiffRhythm2's own compressed 64-dim/5Hz latent
-space) — see [docs/architecture.md](docs/architecture.md) for the technical
-reference.
+GenMusic VN is a Vietnamese lyric-to-music research project with two explicit
+runtime paths:
 
-## Documentation
+- `native-waveform-v80`: the default 16-second demo path. It retrieves and
+  connects real Vietnamese vocal units, then mixes a cross-song backing track.
+- `cfm-research`: the self-authored Conditional Flow Matching/MicroDiT path
+  used for model research and ablations.
 
-- [docs/architecture.md](docs/architecture.md) — system design: the student
-  backbone, the CFM loss, distillation, the native latent encoder.
-- [docs/data_preparation.md](docs/data_preparation.md) — the preprocessing
-  pipeline (Demucs, Whisper, MuQ-MuLan) and dataset format.
-- [docs/usage.md](docs/usage.md) — practical run instructions, local and on
-  Kaggle.
-- [docs/project_history.md](docs/project_history.md) — chronological record
-  of experiments run, bugs found and fixed, and results (with real numbers).
-- [scripts/README.md](scripts/README.md) — index of the Kaggle automation
-  scripts.
+The two paths are intentionally labelled separately. A V80 output is not
+reported as a diffusion result.
 
-## Project layout
+## Fresh clone → fresh Kaggle account
 
-```text
-GenMusic/
-├── src/                # Core Python package (data processing, model, training)
-│   ├── data/           # Audio preprocessing, Whisper ASR, Demucs split, latent-dataset conversion
-│   ├── models/         # MicroDiT, CFM loss, LatentAudioEncoder
-│   ├── training/       # Training loops: self, distillation, latent-encoder
-│   ├── evaluation/     # Objective evaluation metrics for audio spectrograms
-│   └── integrations/   # Kaggle API cloud integrations and job submitters
-├── scripts/            # Kaggle automation scripts (see scripts/README.md)
-├── web/                # Interactive Web Client front-end UI (HTML, CSS, JS)
-├── docs/               # Documentation (see above)
-├── dataset/            # Local raw audio input folder (git-ignored)
-├── outputs/            # Model checkpoints and generated audio waveforms
-├── cli.py              # Main CLI entry point
-└── server.py           # API web backend server
-```
+The repository contains no developer Kaggle owner/slug, credential, local
+checkpoint, PDF, or defense artifact. A new clone builds its native corpus in
+the Kaggle account supplied by the user.
 
----
+### Prerequisites
 
-## Installation & Setup
+- Git
+- [uv](https://docs.astral.sh/uv/)
+- A Kaggle account with GPU access and an API token
+- Internet access from the Kaggle kernel (for the documented Hugging Face
+  dataset and Demucs model)
 
-### 1. Install Dependencies
-
-* **Using `uv` (Recommended - extremely fast and secure):**
-  ```powershell
-  uv sync
-  ```
-
-* **Using Standard `pip`:**
-  ```powershell
-  pip install -e .
-  ```
-
-### 2. Setup Environment Variables (.env)
-Create a `.env` file in the root directory based on the `.env.example` template:
-```env
-# Local Environment variables
-RAW_AUDIO_INPUT_DIR=dataset/vietnamese_songs
-PROCESSED_DATASET_DIR=dataset/diff_rhythm_dataset
-MODEL_CHECKPOINT_PATH=outputs/my_trained_model.pt
-
-# Kaggle API tokens (For scheduling training tasks to GPU Cloud)
-KAGGLE_USERNAME=your_kaggle_username
-KAGGLE_KEY=your_kaggle_api_key
-KAGGLE_RAW_DATASET_REF=sonlest/vietnamese-music-dataset-version3-part6
-# Set after a preprocess run (scripts/run_kaggle_preprocess_all.py) -- attaches the
-# preprocess kernel's own output to downstream kernels via kernel_sources, so no
-# Kaggle API key is ever embedded in the shared kernel code:
-KAGGLE_PROCESSED_KERNEL_REF=your_kaggle_username/genmusic-prep-1234567890
-# Legacy fallback: a pre-existing published Dataset, used only if the above is unset.
-KAGGLE_PROCESSED_DATASET_REF=your_kaggle_username/vietnamese-music-processed-dataset
-# Fixed training dataset ref used by the `generate` (Kaggle job staging) command:
-GENMUSIC_KAGGLE_DATASET_REF=your_kaggle_username/genmusic-vn-self-diffusion-training
-```
-See `.env.example` for the full list, including optional per-run overrides.
-
----
-
-## Quick start
-
-The minimum path from raw audio to a generated song, run locally:
+### 1. Install from the lock file
 
 ```powershell
-uv run python cli.py preprocess-raw --input dataset/vietnamese_songs --output dataset/diff_rhythm_dataset --whisper-model tiny
-uv run python cli.py train-self --dataset dataset/diff_rhythm_dataset --checkpoint outputs/my_dit_model.pt --epochs 30 --batch-size 4 --dim 256 --depth 4 --heads 4
-uv run python cli.py generate-local --text "Đêm nay Hà Nội ngập tràn tiếng mưa rơi." --duration 8.0 --checkpoint outputs/my_dit_model.pt --out outputs/my_song
-uv run python cli.py evaluate-self --generated outputs/my_song/final.wav --out outputs/evaluation_report
+git clone <repository-url> GenMusic
+cd GenMusic
+uv sync --locked
+Copy-Item .env.example .env
 ```
 
-That's `train-self` with the default `MicroDiT` backbone on raw mel — the
-fastest way to sanity-check the pipeline end-to-end. For everything else
-(distillation, the native latent backbone, running on Kaggle, the full
-automated experiment scripts), see **[docs/usage.md](docs/usage.md)**.
+Fill only your own credentials in `.env`:
 
-## Web demo
+```env
+KAGGLE_USERNAME=your_account
+KAGGLE_API_TOKEN=your_token
+```
+
+`KAGGLE_KEY` remains supported for legacy Kaggle credentials. `.env` is
+ignored and must never be committed.
+
+### 2. Bootstrap the V80 corpus in that account
+
+```powershell
+uv run python scripts/run_kaggle_native_waveform_dataset.py --wait
+```
+
+This command:
+
+1. packages the current clone as a token-free private source asset;
+2. submits a private GPU kernel under the current Kaggle username;
+3. materializes the exact-timestamp, song-disjoint 2,048-record vocal/backing
+   corpus from the configured public Hugging Face dataset;
+4. stores the resulting `owner/kernel` ref in
+   `.genmusic/kaggle.json` after submission.
+
+`.genmusic/`, datasets, outputs, caches, and local notes are ignored by Git.
+No ref from the original developer account is required. The bootstrap is
+expensive and runs once per account; later generations reuse that completed
+kernel output.
+
+If you do not want to wait in the terminal, omit `--wait`, monitor the printed
+Kaggle URL, and generate only after the corpus kernel is `COMPLETE`.
+
+### 3. Generate an MP3/WAV candidate
+
+Use 8–32 Vietnamese words. V80 stays at its validated 16-second duration.
+
+```powershell
+uv run python cli.py generate `
+  --text "Một chiều mưa tôi nhớ về những con phố cũ và lời hẹn trong tim" `
+  --wait
+```
+
+The generated state and downloaded audio are written below `outputs/`.
+Kaggle scheduling and upstream hosting can introduce small runtime differences,
+but the shard list, corpus-selection rules, duration policy, and V80 synthesis
+policy are carried by the repository rather than a personal account.
+
+### 4. Run the web app
 
 ```powershell
 uv run python server.py
 ```
-Open `http://127.0.0.1:8000` to enter Vietnamese prompts and listen to
-generated tracks.
 
-## Unit testing
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000). The web app uses the
+same ignored `.genmusic/kaggle.json` and the same V80 submitter as the CLI.
 
-Run automated tests to verify model math, audio anchor slicing, and system stability:
+## Research CFM path
+
+The smallest local research loop is:
+
 ```powershell
-uv run python -m unittest discover -s tests -v
+uv run python cli.py preprocess-raw `
+  --input dataset/vietnamese_songs `
+  --output dataset/diff_rhythm_dataset `
+  --whisper-model tiny
+
+uv run python cli.py train-self `
+  --dataset dataset/diff_rhythm_dataset `
+  --checkpoint outputs/cfm_student.pt `
+  --epochs 30 --batch-size 4 --dim 256 --depth 4 --heads 4
+
+uv run python cli.py generate-local `
+  --text "Đêm nay Hà Nội ngập tràn tiếng mưa rơi" `
+  --checkpoint outputs/cfm_student.pt `
+  --out outputs/cfm_demo
 ```
+
+For preprocessing contracts, latent-codec experiments, distillation, and
+Kaggle research launchers, read:
+
+- [Architecture](docs/architecture.md)
+- [Data preparation](docs/data_preparation.md)
+- [Usage](docs/usage.md)
+- [Scripts index](scripts/README.md)
+
+## Repository layout
+
+```text
+src/            model, training, audio, data and Kaggle integration code
+scripts/        reproducible local/Kaggle entry points
+tests/          unit and integration-contract tests
+web/            browser UI
+docs/           technical documentation
+cli.py          command-line interface
+server.py       lightweight HTTP server
+```
+
+Report/PDF/defense notes are not part of this tree. Local copies may be kept
+under ignored `local_notes/` without entering a commit or Kaggle source asset.
+
+## Verification before submission
+
+```powershell
+uv run python scripts/check_portability.py
+uv run --with pytest python -m pytest -q
+```
+
+The portability audit checks Git-visible files for local-machine paths,
+embedded Kaggle tokens, and report/defense-only artifacts. Tests also verify
+that a native corpus ref is loaded from environment/local config rather than a
+committed personal default.

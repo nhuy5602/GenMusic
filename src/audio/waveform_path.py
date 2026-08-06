@@ -7,17 +7,28 @@ import torch
 from src.audio.waveform_units import SAMPLE_RATE, Unit
 
 
-def extract_source_unit(
+def resolve_source_unit_bounds(
     waveform: torch.Tensor,
     unit: Unit,
     *,
     zero_crossing_search_ms: float = 12.0,
-    fade_ms: float = 8.0,
-) -> torch.Tensor:
-    """Extract a donor unit without pitch shifting or time stretching."""
+) -> tuple[int, int]:
+    """Resolve V80's quiet-trim bounds without changing the source waveform.
+
+    The returned indices are deliberately pre-fade and pre-normalisation.  An
+    audit can therefore establish that an edge was intrinsically quiet instead
+    of mistaking the renderer's cosmetic fade for acoustic silence.
+    """
+
     source = waveform.detach().float().flatten()
     start = max(0, round(unit.start * SAMPLE_RATE))
     end = min(source.numel(), round(unit.end * SAMPLE_RATE))
+    if start >= source.numel() or end - start < 64:
+        raise RuntimeError(
+            "Waveform unit timestamp is outside the available audio: "
+            f"start={unit.start:.6f}, end={unit.end:.6f}, "
+            f"samples={source.numel()}"
+        )
     search = max(
         1,
         round(zero_crossing_search_ms * SAMPLE_RATE / 1000.0),
@@ -36,9 +47,26 @@ def extract_source_unit(
         min(end - 1, start + 64),
         source.numel(),
     )
-    rendered = source[start:end].clone()
-    if rendered.numel() < 64:
+    if end - start < 64:
         raise RuntimeError(f"Waveform unit is too short: {unit}")
+    return start, end
+
+
+def extract_source_unit(
+    waveform: torch.Tensor,
+    unit: Unit,
+    *,
+    zero_crossing_search_ms: float = 12.0,
+    fade_ms: float = 8.0,
+) -> torch.Tensor:
+    """Extract a donor unit without pitch shifting or time stretching."""
+    source = waveform.detach().float().flatten()
+    start, end = resolve_source_unit_bounds(
+        source,
+        unit,
+        zero_crossing_search_ms=zero_crossing_search_ms,
+    )
+    rendered = source[start:end].clone()
     rendered -= rendered.mean()
     fade = min(
         round(fade_ms * SAMPLE_RATE / 1000.0),

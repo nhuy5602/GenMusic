@@ -1,11 +1,11 @@
-"""Bounded pilot: train FROM SCRATCH (fresh randomly-initialized MicroDiT) for
+﻿"""Bounded pilot: train FROM SCRATCH (fresh randomly-initialized MicroDiT) for
 a handful of epochs (default 1), reusing an already-precomputed latent dataset
 (no re-encoding).
 
 Meant to isolate one question the resume-pilot cannot answer cleanly: the
 resume-pilot resumes a checkpoint that was fully trained (15 epochs) against a
 target later found to be corrupted by a reconstruct_full_mix bug (see
-docs/main.tex, Kết luận) -- its weights may already be too entrenched toward
+the research design, Kết luận) -- its weights may already be too entrenched toward
 the wrong output distribution for a couple of extra (correct-target) epochs to
 visibly move the needle on output collapse. Training fresh from scratch with
 the FIXED code removes that confound: if collapse is still just as severe from
@@ -17,7 +17,7 @@ Source code is fetched by `git clone` + `git checkout <pinned SHA>` straight
 from GitHub inside the kernel, instead of zipping the local tree and uploading
 it as a fresh Kaggle Dataset every run (the old approach: slow to upload, and
 left a redundant full source copy baked into every downloaded kernel output --
-see docs/project_history.md). This means the kernel only ever sees committed,
+see prior measurements). This means the kernel only ever sees committed,
 *pushed* code; run_kaggle_scratch_distill_pilot() pushes the current HEAD
 before launching and refuses to run with uncommitted local changes.
 

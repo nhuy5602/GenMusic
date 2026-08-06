@@ -16,9 +16,28 @@ from src.integrations.native_waveform_auto import (
     NATIVE_WAVEFORM_BACKEND,
     NativeWaveformJobConfig,
     stage_native_waveform_job,
+    submit_native_waveform_job,
 )
 
 LYRICS = "một chiều mưa tôi nhớ về con phố cũ"
+
+
+def test_fresh_clone_reports_bootstrap_instead_of_personal_ref(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(
+        "GENMUSIC_CONFIG_PATH",
+        str(tmp_path / "missing-kaggle.json"),
+    )
+    monkeypatch.delenv("GENMUSIC_NATIVE_RAW_KERNEL_REF", raising=False)
+    state = submit_native_waveform_job(
+        text=LYRICS,
+        output_root=tmp_path,
+        config=NativeWaveformJobConfig(submit=False),
+    )
+    assert state["status"] == "needs_setup"
+    assert "run_kaggle_native_waveform_dataset.py" in state["messages"][0]
 
 
 def test_user_lyrics_become_line_aware_target_words() -> None:
@@ -61,7 +80,10 @@ def test_staged_web_job_uses_native_private_kaggle_request(
         output_root=tmp_path,
         duration_seconds=30,
         genre="Vietnamese pop",
-        config=NativeWaveformJobConfig(submit=False),
+        config=NativeWaveformJobConfig(
+            submit=False,
+            raw_kernel_ref="test-owner/genmusic-raw-corpus",
+        ),
     )
     assert state["status"] == "staged"
     assert state["backend"] == NATIVE_WAVEFORM_BACKEND
@@ -73,7 +95,9 @@ def test_staged_web_job_uses_native_private_kaggle_request(
             encoding="utf-8"
         )
     )
+    assert (Path(state["dataset_dir"]) / "genmusic_source.zip").is_file()
     assert metadata["is_private"] == "true"
+    assert metadata["dataset_sources"] == [state["request_dataset_ref"]]
     assert metadata["kernel_sources"] == [state["raw_kernel_ref"]]
     kernel_code = (
         Path(state["kernel_dir"]) / metadata["code_file"]

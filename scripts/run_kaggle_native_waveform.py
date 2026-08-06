@@ -21,13 +21,16 @@ from scripts.kaggle_phase_submit import (
     submit_context,
     submit_phase_kernel,
 )
-from scripts.master_waveform_pipeline import (
-    BASE_SOURCE_DATASET_REF as DEFAULT_SOURCE_REF,
+from src.integrations.kaggle_auto import write_source_zip
+from src.integrations.native_waveform_config import (
+    load_native_raw_kernel_ref,
+    setup_message,
 )
 
 PATCH_BUNDLE_NAME = (
     "colab_genmusic_native_waveform_v80_20260730.zip"
 )
+SOURCE_ZIP_NAME = "genmusic_source.zip"
 PATCH_FILES = (
     "scripts/generate_native_waveform.py",
     "scripts/evaluate_generation_quality.py",
@@ -41,9 +44,6 @@ PATCH_FILES = (
 OUTPUT_NAME = "master_raw_connected_pacing_v80_20260730"
 STATE_NAME = "master_raw_connected_pacing_v80_state.json"
 COLAB_RUNNER = "scripts/generate_native_waveform.py"
-DEFAULT_RAW_KERNEL_REF = (
-    "ngochuy5602/genmusic-raw-wide-v71-1785338959"
-)
 MANIFEST_FORMAT = "genmusic-native-waveform-v80"
 
 
@@ -111,6 +111,7 @@ import sys
 import zipfile
 
 PATCH_NAME = {PATCH_BUNDLE_NAME!r}
+SOURCE_ZIP_NAME = {SOURCE_ZIP_NAME!r}
 PATCH_SHA256 = {patch_sha256!r}
 PATCH_TREE_SHA256 = {patch_tree_sha256!r}
 PATCH_FILES = {list(PATCH_FILES)!r}
@@ -122,22 +123,31 @@ working = Path("/kaggle/working")
 output_root = working / {OUTPUT_NAME!r}
 output_root.mkdir(parents=True, exist_ok=True)
 
-source_runners = sorted(
-    Path("/kaggle/input/datasets").rglob(
-        "run_colab_master_segment_quality_recovery.py"
-    )
-)
-if len(source_runners) != 1:
-    raise RuntimeError(f"Expected one source tree, found {{source_runners}}")
-source_repo = source_runners[0].parent.parent
 repo = working / "GenMusic"
 if repo.exists():
     shutil.rmtree(repo)
-shutil.copytree(
-    source_repo,
-    repo,
-    ignore=shutil.ignore_patterns(".venv", "__pycache__", "*.pyc", "*.pyo"),
-)
+repo.mkdir(parents=True)
+source_zips = sorted(Path("/kaggle/input").rglob(SOURCE_ZIP_NAME))
+if len(source_zips) == 1:
+    with zipfile.ZipFile(source_zips[0]) as archive:
+        for member in archive.infolist():
+            normalized = member.filename.replace("\\\\", "/")
+            path = PurePosixPath(normalized)
+            if member.filename != normalized or path.is_absolute() or ".." in path.parts:
+                raise RuntimeError(f"Unsafe source path: {{member.filename!r}}")
+        archive.extractall(repo)
+elif not source_zips:
+    source_roots = [
+        candidate.parent
+        for candidate in Path("/kaggle/input").rglob("pyproject.toml")
+        if (candidate.parent / "cli.py").is_file()
+        and (candidate.parent / "src").is_dir()
+    ]
+    if len(source_roots) != 1:
+        raise RuntimeError(f"Expected one expanded source tree, found {{source_roots}}")
+    shutil.copytree(source_roots[0], repo, dirs_exist_ok=True)
+else:
+    raise RuntimeError(f"Ambiguous portable source zips: {{source_zips}}")
 
 patch_matches = sorted(Path("/kaggle/input").rglob(PATCH_NAME))
 if patch_matches:
@@ -272,11 +282,20 @@ def main() -> None:
     parser.add_argument("--duration", type=float, default=16.0)
     parser.add_argument("--accelerator", default="NvidiaTeslaT4")
     parser.add_argument("--timeout-seconds", type=int, default=7_200)
-    parser.add_argument("--source-ref", default=DEFAULT_SOURCE_REF)
-    parser.add_argument("--raw-kernel-ref", default=DEFAULT_RAW_KERNEL_REF)
+    parser.add_argument(
+        "--raw-kernel-ref",
+        default=None,
+        help=(
+            "Completed corpus kernel owner/slug. Defaults to the ignored "
+            "local Kaggle config written by the bootstrap dataset job."
+        ),
+    )
     args = parser.parse_args()
+    raw_kernel_ref = load_native_raw_kernel_ref(args.raw_kernel_ref)
+    if not raw_kernel_ref:
+        raise SystemExit(setup_message())
     context = submit_context()
-    require_complete_kernels(context, (args.raw_kernel_ref,))
+    require_complete_kernels(context, (raw_kernel_ref,))
     timestamp, run_dir = new_run_dir(
         context,
         "native-waveform-v80",
@@ -295,6 +314,10 @@ def main() -> None:
     upload_dir = run_dir / "patch_dataset"
     upload_dir.mkdir(parents=True)
     shutil.copy2(bundle, upload_dir / bundle.name)
+    write_source_zip(
+        context.project_root,
+        upload_dir / SOURCE_ZIP_NAME,
+    )
     create_small_dataset(
         context,
         upload_dir=upload_dir,
@@ -314,8 +337,8 @@ def main() -> None:
             genre=args.genre,
             duration_seconds=args.duration,
         ),
-        dataset_sources=[args.source_ref, patch_ref],
-        kernel_sources=[args.raw_kernel_ref],
+        dataset_sources=[patch_ref],
+        kernel_sources=[raw_kernel_ref],
         enable_gpu=True,
         enable_internet=True,
         accelerator=args.accelerator,
@@ -324,7 +347,7 @@ def main() -> None:
             "status": "preparing",
             "training": False,
             "goal_eligible_prediction": True,
-            "raw_kernel_ref": args.raw_kernel_ref,
+            "raw_kernel_ref": raw_kernel_ref,
             "patch_ref": patch_ref,
             "patch_sha256": patch_sha256,
             "patch_tree_sha256": tree_sha256,

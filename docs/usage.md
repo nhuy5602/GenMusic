@@ -1,4 +1,4 @@
-# Usage guide
+﻿# Usage guide
 
 Practical run instructions — preprocessing, training, generation, evaluation,
 and the Kaggle automation around all of it. Read `docs/architecture.md` first
@@ -16,8 +16,17 @@ launching anything long-running.
 ## 1. One-time setup
 
 Fill in `.env` (copy from `.env.example`) with `KAGGLE_USERNAME` and
-`KAGGLE_KEY` (Kaggle account → Settings → API → Create New Token).
-`KAGGLE_RAW_DATASET_REF` should point at the raw Vietnamese song corpus.
+`KAGGLE_API_TOKEN` (or the legacy `KAGGLE_KEY`). No owner/slug from a
+developer account is committed.
+
+For the default V80 demo, bootstrap the raw corpus once in the new account:
+
+```powershell
+uv run python scripts/run_kaggle_native_waveform_dataset.py --wait
+```
+
+The command writes the submitted corpus ref to ignored
+`.genmusic/kaggle.json`; CLI and web generation resolve it automatically.
 
 ## 2. Preprocess raw songs into a training dataset
 
@@ -30,6 +39,9 @@ the Audio Style Anchor (MuQ-MuLan), writes mel tensors in Vocos-native
 format. Produces `dataset/diff_rhythm_dataset/{config.json, records.jsonl,
 mels/}`. If some files fail, the command returns `completed_with_warnings`
 and a non-zero exit code — inspect the printed failure list before training.
+The report-aligned default also fails if the real MuQ-MuLan model cannot
+produce a finite 512-dimensional anchor. `--allow-zero-style` is only an
+explicit debug escape hatch and must not be used to reproduce the report.
 
 For a quick software-only check without downloading audio:
 ```powershell
@@ -68,7 +80,7 @@ Windows/CPU too). Without that clone, or without internet, `train-distill`
 **raises immediately** rather than silently completing as ground-truth-only
 training under the distillation name — use `train-self` for that.
 `--alpha-feature≈0.8` is a verified-good default (see
-`docs/project_history.md` §4.14), not `0.5`.
+prior measurements), not `0.5`.
 
 On Kaggle:
 ```powershell
@@ -87,14 +99,14 @@ have one yet.
 
 Three steps on top of an existing mel-space dataset (see
 `docs/architecture.md`'s "Native latent backbone and encoder" section for
-why, and `docs/project_history.md` §4.24 for the bugs found/fixed along the
+why, and prior measurements for the bugs found/fixed along the
 way). Same `MicroDiT` backbone as mel-space, no architecture flag needed:
 
 ```powershell
 # 1. Pretrain a small encoder against the real, frozen BigVGAN decoder
 #    (reconstruction loss + KL divergence -- a real VAE bottleneck, see
 #    docs/architecture.md's "sec:vae_bottleneck" section for why this matters)
-uv run python cli.py train-latent-encoder --dataset dataset/diff_rhythm_dataset --checkpoint outputs/latent_encoder.pt --epochs 40 --batch-size 4 --kl-weight 1e-4 --num-workers 4
+uv run python cli.py train-latent-encoder --dataset dataset/diff_rhythm_dataset --checkpoint outputs/latent_encoder.pt --epochs 40 --batch-size 4 --kl-weight 0.15 --num-workers 4
 
 # 2. Sanity-check the encoder BEFORE trusting it downstream (see note below)
 uv run python scripts/check_latent_encoder_quality.py --encoder-checkpoint outputs/latent_encoder.pt --dataset dataset/diff_rhythm_dataset
@@ -117,7 +129,7 @@ twice already at scale is a collapsed encoder (flat/oscillating loss curve,
 near-zero `pitch_std_semitones` when ground-truth latents are decoded
 directly, bypassing the CFM student). Root cause was a missing probabilistic
 bottleneck; fixed by adding `mu`/`logvar` + reparameterization + KL loss
-(the `--kl-weight` flag in step 1) — see `docs/project_history.md` §4.29-4.30
+(the `--kl-weight` flag in step 1) — see prior measurements
 for the before/after numbers. If audio decoded through the encoder sounds
 crackly despite a healthy `pitch_std_semitones`, that's a separate issue in
 BigVGAN's chunked `decode_audio` overlap parameter, not the encoder itself —
@@ -128,7 +140,7 @@ automatically skipped.
 
 On Kaggle, in order (see `scripts/README.md` for the full list):
 ```powershell
-uv run python scripts/run_kaggle_latent_encoder.py --epochs 40 --batch-size 4 --kl-weight 1e-4
+uv run python scripts/run_kaggle_latent_encoder.py --epochs 40 --batch-size 4 --kl-weight 0.15
 uv run python scripts/run_kaggle_check_latent_encoder_quality.py --encoder-checkpoint outputs/.../latent_encoder.pt
 uv run python scripts/run_kaggle_latent_pipeline.py --encoder-checkpoint outputs/.../latent_encoder.pt --cfm-epochs 300
 ```
@@ -192,7 +204,7 @@ generated audio.
 For a finer-grained ablation across `alpha_feature` values and architecture
 sizes against one shared preprocessed dataset (the core "does distillation
 help" question already has a real answer from a direct 250-song comparison
-— see `docs/project_history.md` §4.8/§4.9; this is for follow-up questions):
+— see prior measurements; this is for follow-up questions):
 ```powershell
 uv run python scripts/run_kaggle_experiment_matrix.py --max-files 40 --whisper-model tiny --epochs 60
 ```
@@ -240,7 +252,7 @@ correct, not a bug (see §3a above).
   before. A bounded run either completes (proving health) or fails fast;
   an unbounded one can silently consume most of a GPU-quota budget before
   anyone notices something is wrong — this happened for real, twice, in
-  this project's history (`docs/project_history.md` §4.5, §4.24).
+  this project's history (prior measurements).
 - **There is no `kaggle kernels stop` command** — recovering from a truly
   stuck kernel means `uv run python -m kaggle kernels delete <kernel_ref>`.
 - Kaggle sometimes assigns a P100 GPU (compute capability sm_60) incompatible
@@ -252,21 +264,21 @@ correct, not a bug (see §3a above).
 
 ## Staging a one-off Kaggle generation job (`cli.py generate`)
 
-A narrower, older flow than everything above: stages a single lyric request
-(with LRC timing, source code, and a link to a fixed training dataset) as a
-Kaggle job, rather than running a full experiment. Mostly superseded by
-`generate-local` (§4) for anyone with a downloaded checkpoint — use this only
-if you specifically want the generation itself to run on Kaggle rather than
-locally.
+The default product route is V80, matching the web app. It creates a private
+Kaggle request and uses the validated 16-second waveform pipeline:
+
 ```powershell
-uv run python cli.py make-and-upload-dataset --out datasets/random_self_diffusion_1gb --target-gb 1   # one-time: stage a synthetic dataset
-uv run python cli.py generate --text "Mot ngay moi bat dau." --duration 12 --wait
+uv run python cli.py generate --text "Một ngày mới bắt đầu trong nắng mai dịu dàng" --duration 16 --wait
 ```
-The dataset reference defaults to `<KAGGLE_USERNAME>/genmusic-vn-self-diffusion-training`
-(override via `GENMUSIC_KAGGLE_DATASET_REF` or `--dataset-ref`); the job stops
-with an explicit error if that dataset doesn't exist. Synthetic data verifies
-the pipeline only — real vocal/backing mel data is required to assess
-singing quality.
+
+To stage the CFM research flow instead, opt in explicitly:
+
+```powershell
+uv run python cli.py generate --backend cfm-research --text "..." --duration 12 --wait
+```
+
+`--model` and `--dataset-ref` apply only to `cfm-research`. This explicit
+switch prevents a V80 demo from being mislabeled as a MicroDiT result.
 
 ## Interactive web demo
 
@@ -274,10 +286,11 @@ singing quality.
 uv run python server.py
 ```
 Open `http://127.0.0.1:8000` to enter Vietnamese prompts and listen to
-generated tracks.
+V80-generated tracks. Check `http://127.0.0.1:8000/api/health` before a demo;
+it must report `native-waveform-v80`.
 
 ## Unit tests
 
 ```powershell
-uv run python -m unittest discover -s tests -v
+uv run --with pytest python -m pytest -q
 ```

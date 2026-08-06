@@ -127,6 +127,49 @@ def attenuate_backing_presence(
     return np.asarray(processed, dtype=np.float32)
 
 
+def span_duck_envelope(
+    length: int,
+    sample_rate: int,
+    spans_seconds: list[tuple[float, float]] | tuple[tuple[float, float], ...],
+    *,
+    attenuation_db: float,
+    ramp_ms: float = 80.0,
+) -> np.ndarray:
+    """Build a smooth full-band duck only around designated novel-word spans."""
+    envelope = np.ones(max(0, int(length)), dtype=np.float32)
+    if envelope.size == 0 or attenuation_db <= 0.0 or not spans_seconds:
+        return envelope
+    floor = float(np.power(10.0, -float(attenuation_db) / 20.0))
+    ramp = max(1, round(float(ramp_ms) * sample_rate / 1_000.0))
+    for start_seconds, end_seconds in spans_seconds:
+        start = max(0, min(envelope.size, round(float(start_seconds) * sample_rate)))
+        end = max(start, min(envelope.size, round(float(end_seconds) * sample_rate)))
+        if end <= start:
+            continue
+        local = np.ones_like(envelope)
+        local[start:end] = floor
+        left_start = max(0, start - ramp)
+        if start > left_start:
+            local[left_start:start] = np.linspace(
+                1.0,
+                floor,
+                start - left_start,
+                endpoint=False,
+                dtype=np.float32,
+            )
+        right_end = min(envelope.size, end + ramp)
+        if right_end > end:
+            local[end:right_end] = np.linspace(
+                floor,
+                1.0,
+                right_end - end,
+                endpoint=False,
+                dtype=np.float32,
+            )
+        envelope = np.minimum(envelope, local)
+    return envelope
+
+
 def mix_clarity_candidate(
     vocal_path: Path,
     backing_path: Path,
@@ -135,6 +178,10 @@ def mix_clarity_candidate(
     backing_ratio: float,
     presence_attenuation_db: float,
     dynamic: bool,
+    focus_spans_seconds: list[tuple[float, float]]
+    | tuple[tuple[float, float], ...] = (),
+    focus_duck_db: float = 0.0,
+    focus_ramp_ms: float = 80.0,
 ) -> dict[str, Any]:
     """Mix a vocal-forward full track and persist it as PCM WAV."""
     vocal, sample_rate = _load_mono(vocal_path)
@@ -153,6 +200,14 @@ def mix_clarity_candidate(
         attenuation_db=presence_attenuation_db,
         dynamic=dynamic,
     )
+    focus_envelope = span_duck_envelope(
+        processed.size,
+        sample_rate,
+        focus_spans_seconds,
+        attenuation_db=float(focus_duck_db),
+        ramp_ms=float(focus_ramp_ms),
+    )
+    processed = processed * focus_envelope
 
     epsilon = 1e-8
     vocal_rms = float(
@@ -194,6 +249,11 @@ def mix_clarity_candidate(
         "configured_backing_ratio": float(backing_ratio),
         "presence_attenuation_db": float(presence_attenuation_db),
         "dynamic_presence_ducking": bool(dynamic),
+        "focus_spans_seconds": [
+            [float(start), float(end)] for start, end in focus_spans_seconds
+        ],
+        "focus_duck_db": float(focus_duck_db),
+        "focus_ramp_ms": float(focus_ramp_ms),
         "limiter_scale": float(limiter_scale),
         "clip_ratio": float(np.mean(np.abs(mixed) >= 0.999)),
     }

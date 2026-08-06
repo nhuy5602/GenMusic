@@ -10,13 +10,41 @@ here are minutes apart). A bounded read timeout is what makes this usable as
 a periodic "is it actually still healthy" check instead of hanging the caller.
 """
 import json
+import os
 import sys
+from pathlib import Path
 
 from kaggle.api.kaggle_api_extended import KaggleApi
 from kagglesdk import KaggleEnv
+from kagglesdk.kernels.types.kernels_api_service import (
+    ApiGetKernelSessionStatusRequest,
+)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.integrations.kaggle_auto import load_kaggle_api_tokens
+
+
+def kernel_session_status(kernel_ref: str) -> str:
+    """Read the lightweight KGAT session status without opening the log SSE stream."""
+    os.environ.update(load_kaggle_api_tokens())
+    owner_slug, kernel_slug = kernel_ref.split("/", 1)
+    api = KaggleApi()
+    api.authenticate()
+    with api.build_kaggle_client() as kaggle:
+        request = ApiGetKernelSessionStatusRequest()
+        request.user_name = owner_slug
+        request.kernel_slug = kernel_slug
+        response = kaggle.kernels.kernels_api_client.get_kernel_session_status(request)
+    status = str(response.status or "UNKNOWN").upper()
+    return status.rsplit(".", 1)[-1]
 
 
 def tail_kernel_log(kernel_ref: str, read_timeout: float = 8.0) -> str:
+    # Keep credentials in memory and make the helper work with the project's
+    # .env without requiring callers to interpolate a secret in the shell.
+    os.environ.update(load_kaggle_api_tokens())
     owner_slug, kernel_slug = kernel_ref.split("/", 1)
     api = KaggleApi()
     api.authenticate()
@@ -29,10 +57,16 @@ def tail_kernel_log(kernel_ref: str, read_timeout: float = 8.0) -> str:
         headers["Accept"] = "text/event-stream, */*"
         headers.pop("Content-Type", None)
 
-        response = http._session.get(
-            url, stream=True, headers=headers, auth=http._session.auth,
-            timeout=(5.0, read_timeout),
-        )
+        try:
+            response = http._session.get(
+                url, stream=True, headers=headers, auth=http._session.auth,
+                timeout=(5.0, read_timeout),
+            )
+        except Exception as exc:
+            return (
+                "[stream connection stopped: "
+                f"{type(exc).__name__}: {exc}]"
+            )
         response.raise_for_status()
         content_type = (response.headers.get("Content-Type") or "").lower()
         chunks = []
@@ -62,7 +96,16 @@ def tail_kernel_log(kernel_ref: str, read_timeout: float = 8.0) -> str:
 
 
 if __name__ == "__main__":
+    # PowerShell commonly exposes a legacy cp1252 stdout even though Kaggle
+    # logs are UTF-8.  Keep monitoring bounded and readable without requiring
+    # every caller to set PYTHONIOENCODING explicitly.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     kernel_ref = sys.argv[1]
+    status = kernel_session_status(kernel_ref)
+    print(f"STATUS: {status}")
+    if "--status-only" in sys.argv[2:]:
+        raise SystemExit(0)
     read_timeout = float(sys.argv[2]) if len(sys.argv) > 2 else 8.0
     text = tail_kernel_log(kernel_ref, read_timeout=read_timeout)
     print(f"--- {len(text)} chars ---")

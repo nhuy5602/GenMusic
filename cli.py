@@ -10,19 +10,49 @@ from src.data.vietnamese_text import normalize_vietnamese_lyrics
 from src.evaluation.jam_metrics import objective_metrics, write_metric_report
 from src.evaluation.jam_plots import write_jam_plots
 from src.evaluation.project_metrics import build_project_report
-from src.integrations.kaggle_auto import DEFAULT_MODEL, KaggleJobConfig, refresh_kaggle_job, run_local_generation, submit_text_to_music_job, upload_dataset_to_kaggle
-from src.training.self_diffusion import create_random_dataset, train_model, validate_dataset
+from src.integrations.kaggle_auto import (
+    DEFAULT_MODEL,
+    KaggleJobConfig,
+    refresh_kaggle_job,
+    run_local_generation,
+    submit_text_to_music_job,
+    upload_dataset_to_kaggle,
+)
+from src.integrations.native_waveform_auto import (
+    NativeWaveformJobConfig,
+    submit_native_waveform_job,
+)
+from src.training.self_diffusion import (
+    create_random_dataset,
+    train_model,
+    validate_dataset,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="genmusic-vn", description="Model sinh nhạc từ text do GenMusic VN tự code.")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    generate = sub.add_parser("generate", help="Đóng gói hoặc submit request lên Kaggle.")
+    generate = sub.add_parser(
+        "generate",
+        help=(
+            "Sinh nhạc trên Kaggle. Mặc định dùng baseline V80 đã kiểm chứng; "
+            "dùng --backend cfm-research để chạy đường nghiên cứu trong báo cáo."
+        ),
+    )
     generate.add_argument("--text", required=True)
-    generate.add_argument("--duration", type=int, default=12)
+    generate.add_argument("--duration", type=int, default=16)
     generate.add_argument("--out", default="outputs")
     generate.add_argument("--genre", default=None)
+    generate.add_argument(
+        "--backend",
+        choices=["v80", "cfm-research"],
+        default="v80",
+        help=(
+            "v80 là đường serving mặc định; cfm-research là MicroDiT/CFM "
+            "phục vụ tái lập nghiên cứu, chưa phải baseline chất lượng."
+        ),
+    )
     generate.add_argument("--model", default=DEFAULT_MODEL)
     generate.add_argument("--username", default=None)
     generate.add_argument("--machine-shape", default="NvidiaTeslaT4")
@@ -86,6 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--epochs", type=int, default=1)
     train.add_argument("--batch-size", type=int, default=4)
     train.add_argument("--learning-rate", type=float, default=2e-4)
+    train.add_argument("--ema-decay", type=float, default=0.999)
     train.add_argument("--device", default=None)
     train.add_argument("--max-records", type=int, default=None)
     train.add_argument("--resume", action="store_true")
@@ -106,6 +137,32 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--text-sensitivity-weight", type=float, default=2.0, help="Loss weight on the text-conditioning-sensitivity regularizer (penalizes predictions that don't change enough when lyrics change). Raise this to push the model harder toward using lyric conditioning.")
     train.add_argument("--text-contrastive-weight", type=float, default=0.08, help="Loss weight on the matched-vs-mismatched-lyrics contrastive hinge term.")
     train.add_argument("--text-sensitivity-target", type=float, default=0.20, help="Target sensitivity value the loss's regularizer optimizes toward (minimum_text_sensitivity defaults to 0.9x this).")
+    train.add_argument("--open-vocabulary-conditioning", action="store_true", help="Add trainable Vietnamese grapheme-word embeddings and exact word-to-frame conditioning for unseen words.")
+    train.add_argument("--lexical-holdout-fraction", type=float, default=0.0, help="Validation fraction whose selected word types are removed completely from training; use with --open-vocabulary-conditioning.")
+    train.add_argument("--minimum-lexical-sensitivity", type=float, default=0.05, help="Minimum held-out-word response required before a checkpoint can become best.")
+    train.add_argument("--lyric-semantic-weight", type=float, default=0.25, help="Weight for open-vocabulary contrastive alignment between exact word spans and compositional lyric embeddings.")
+    train.add_argument("--lyric-denoised-semantic-weight", type=float, default=0.0, help="Weight for exact-word semantic alignment on the denoiser's predicted-clean latent.")
+    train.add_argument("--lyric-phrase-semantic-weight", type=float, default=0.0, help="Weight for ordered 4--8-word phrase alignment on clean exact spans.")
+    train.add_argument("--lyric-phrase-denoised-semantic-weight", type=float, default=0.0, help="Weight for ordered phrase alignment on the denoiser's predicted-clean latent.")
+    train.add_argument("--lyric-semantic-temperature", type=float, default=0.08, help="InfoNCE temperature for exact-span lyric semantic alignment.")
+    train.add_argument("--minimum-lyric-semantic-accuracy", type=float, default=0.05, help="Minimum lexical-heldout audio-to-word retrieval accuracy for a checkpoint to become best.")
+    train.add_argument("--minimum-lyric-denoised-semantic-accuracy", type=float, default=0.0, help="Minimum lexical-heldout word accuracy recovered from a low-t denoiser clean estimate.")
+    train.add_argument("--lyric-unit-semantic-weight", type=float, default=0.25, help="Weight for reusable Vietnamese grapheme/phonetic-unit alignment inside exact word spans.")
+    train.add_argument("--minimum-lyric-unit-accuracy", type=float, default=0.10, help="Minimum held-out-word audio-to-unit retrieval accuracy for a checkpoint to become best.")
+    train.add_argument("--lyric-unit-denoised-semantic-weight", type=float, default=0.0, help="Weight for exact-unit alignment on the denoiser's predicted-clean latent.")
+    train.add_argument("--minimum-lyric-denoised-unit-accuracy", type=float, default=0.0, help="Minimum held-out exact-unit accuracy recovered from a pure-noise denoiser clean estimate.")
+    train.add_argument("--self-rollout-consistency-weight", type=float, default=0.0, help="Weight for direct clean-latent reconstruction after one detached model-generated Euler step.")
+    train.add_argument("--self-rollout-consistency-probability", type=float, default=0.0, help="Probability of adding the bounded off-path self-rollout correction objective to a training batch.")
+    train.add_argument("--self-rollout-step-size", type=float, default=0.125, help="Euler step used to create detached off-path states for self-rollout consistency.")
+    train.add_argument("--self-rollout-solver-steps", type=int, default=0, help="When >=2, build the detached correction state from a random prefix of this many Euler solver steps starting at source noise.")
+    train.add_argument("--early-timestep-fraction", type=float, default=0.0, help="Fraction of CFM examples sampled from the early noise-transport interval.")
+    train.add_argument("--early-timestep-max", type=float, default=0.35, help="Upper bound for early-transport samples; remaining samples replay uniform timesteps.")
+    train.add_argument("--seed-full-frame-rewrite-probability", type=float, default=0.0, help="Probability that a target-free retrieval seed is trained as a full-frame rewrite instead of the persisted local refinement mask.")
+    train.add_argument("--seed-span-corruption-probability", type=float, default=0.0, help="Probability of replacing lyric spans with another batch item's target-free seed before CFM training.")
+    train.add_argument("--seed-span-corruption-fraction", type=float, default=0.25, help="Fraction of exact lyric word spans replaced when seed-span corruption is active.")
+    train.add_argument("--semantic-pretrain-only", action="store_true", help="Optimize only exact-span word/unit semantic objectives; preserve the acoustic-backbone EMA.")
+    train.add_argument("--reset-optimizer", action="store_true", help="Discard resumed optimizer/scheduler state when changing training objective or phase.")
+    train.add_argument("--reset-ema", action="store_true", help="Initialize EMA from resumed raw weights when changing the source/target distribution.")
 
     distill = sub.add_parser("train-distill", help="Huấn luyện chưng cất tri thức từ DiffRhythm gốc sang MicroDiT.")
     distill.add_argument("--dataset", required=True, nargs="+", help="Một hoặc nhiều thư mục dataset đã preprocess (kết hợp lại thành một tập huấn luyện).")
@@ -145,7 +202,7 @@ def build_parser() -> argparse.ArgumentParser:
     latent_encoder.add_argument("--warmup-steps", type=int, default=200, help="Linear LR warmup steps before cosine decay -- stabilizes early training against the frozen decoder.")
     latent_encoder.add_argument("--grad-clip-norm", type=float, default=1.0)
     latent_encoder.add_argument("--num-workers", type=int, default=4, help="DataLoader background workers to prefetch batches while the GPU computes -- raw-audio waveform records are ~2.56x the bytes of mel, so this matters more here than for train-self.")
-    latent_encoder.add_argument("--kl-weight", type=float, default=1e-4, help="Weight of the VAE KL-divergence regularizer -- see train_latent_encoder's docstring for why this was added (§4.29 collapse at full-corpus scale).")
+    latent_encoder.add_argument("--kl-weight", type=float, default=0.15, help="Maximum cyclical VAE KL weight. The report-aligned default is 0.15; pass 1e-4 only to reproduce the historical KL-vanishing ablation.")
     latent_encoder.add_argument("--resume-checkpoint", default=None, help="Load a prior run's encoder weights before training starts (fresh optimizer/schedule) -- e.g. to continue pushing sigma toward the prior with a higher --kl-weight once reconstruction has already converged.")
 
     precompute_latent = sub.add_parser("precompute-latent-dataset", help="Chuyển dataset mel đã có sang không gian latent thật của DiffRhythm2 (64 chiều, 5Hz), dùng LatentAudioEncoder đã pretrain.")
@@ -195,6 +252,7 @@ def build_parser() -> argparse.ArgumentParser:
     preprocess.add_argument("--demucs-device", default="auto", choices=("auto", "cuda", "cpu"))
     preprocess.add_argument("--whisper-device", default="auto", choices=("auto", "cpu", "cuda"))
     preprocess.add_argument("--raw-audio", action="store_true", help="Lưu vocal/backing dưới dạng waveform 24kHz thô (waveforms/*.pt) thay vì mel-spectrogram -- dùng để train LatentAudioEncoder trực tiếp trên audio gốc, không qua Vocos decode.")
+    preprocess.add_argument("--allow-zero-style", action="store_true", help="Chỉ dành cho debug: cho phép zero style nếu MuQ-MuLan không tải được. Mặc định report-aligned sẽ fail-fast.")
 
     return parser
 
@@ -212,13 +270,38 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     if args.command == "generate":
-        report = submit_text_to_music_job(
-            text=args.text,
-            output_root=args.out,
-            duration_seconds=args.duration,
-            genre=args.genre,
-            config=KaggleJobConfig(model=args.model, username=args.username, machine_shape=args.machine_shape, submit=not args.no_submit, wait=args.wait, poll_seconds=args.poll_seconds, timeout_seconds=args.timeout_seconds, training_dataset_ref=args.dataset_ref),
-        )
+        if args.backend == "v80":
+            report = submit_native_waveform_job(
+                text=args.text,
+                output_root=args.out,
+                duration_seconds=args.duration,
+                genre=args.genre,
+                config=NativeWaveformJobConfig(
+                    username=args.username,
+                    machine_shape=args.machine_shape,
+                    submit=not args.no_submit,
+                    wait=args.wait,
+                    poll_seconds=args.poll_seconds,
+                    timeout_seconds=args.timeout_seconds,
+                ),
+            )
+        else:
+            report = submit_text_to_music_job(
+                text=args.text,
+                output_root=args.out,
+                duration_seconds=args.duration,
+                genre=args.genre,
+                config=KaggleJobConfig(
+                    model=args.model,
+                    username=args.username,
+                    machine_shape=args.machine_shape,
+                    submit=not args.no_submit,
+                    wait=args.wait,
+                    poll_seconds=args.poll_seconds,
+                    timeout_seconds=args.timeout_seconds,
+                    training_dataset_ref=args.dataset_ref,
+                ),
+            )
     elif args.command == "refresh-kaggle":
         report = refresh_kaggle_job(args.state)
     elif args.command == "generate-local":
@@ -252,7 +335,7 @@ def main(argv: list[str] | None = None) -> int:
         upload_report = upload_dataset_to_kaggle(args.out, username=args.username, dataset_ref=args.dataset_ref, timeout_seconds=args.timeout_seconds)
         report = {"status": upload_report["status"], "dataset_report": dataset_report, "upload": upload_report}
     elif args.command == "train-self":
-        report = train_model(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, max_records=args.max_records, roberta_model=args.roberta_model, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, frames_per_chunk=args.frames_per_chunk, resume=args.resume, save_every_epoch=args.save_every_epoch, checkpoint_every_steps=args.checkpoint_every_steps, log_every_steps=args.log_every_steps, progress_path=args.progress_file, lambda_vocal=args.lambda_vocal, minimum_epochs=args.minimum_epochs, early_stopping_patience=args.early_stopping_patience, minimum_text_sensitivity=args.minimum_text_sensitivity, text_sensitivity_weight=args.text_sensitivity_weight, text_contrastive_weight=args.text_contrastive_weight, text_sensitivity_target=args.text_sensitivity_target)
+        report = train_model(args.dataset, args.checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, ema_decay=args.ema_decay, device=args.device, max_records=args.max_records, roberta_model=args.roberta_model, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, frames_per_chunk=args.frames_per_chunk, resume=args.resume, save_every_epoch=args.save_every_epoch, checkpoint_every_steps=args.checkpoint_every_steps, log_every_steps=args.log_every_steps, progress_path=args.progress_file, lambda_vocal=args.lambda_vocal, minimum_epochs=args.minimum_epochs, early_stopping_patience=args.early_stopping_patience, minimum_text_sensitivity=args.minimum_text_sensitivity, text_sensitivity_weight=args.text_sensitivity_weight, text_contrastive_weight=args.text_contrastive_weight, text_sensitivity_target=args.text_sensitivity_target, open_vocabulary_conditioning=args.open_vocabulary_conditioning, lexical_holdout_fraction=args.lexical_holdout_fraction, minimum_lexical_sensitivity=args.minimum_lexical_sensitivity, lyric_semantic_weight=args.lyric_semantic_weight, lyric_denoised_semantic_weight=args.lyric_denoised_semantic_weight, lyric_phrase_semantic_weight=args.lyric_phrase_semantic_weight, lyric_phrase_denoised_semantic_weight=args.lyric_phrase_denoised_semantic_weight, lyric_semantic_temperature=args.lyric_semantic_temperature, minimum_lyric_semantic_accuracy=args.minimum_lyric_semantic_accuracy, minimum_lyric_denoised_semantic_accuracy=args.minimum_lyric_denoised_semantic_accuracy, lyric_unit_semantic_weight=args.lyric_unit_semantic_weight, minimum_lyric_unit_accuracy=args.minimum_lyric_unit_accuracy, lyric_unit_denoised_semantic_weight=args.lyric_unit_denoised_semantic_weight, minimum_lyric_denoised_unit_accuracy=args.minimum_lyric_denoised_unit_accuracy, self_rollout_consistency_weight=args.self_rollout_consistency_weight, self_rollout_consistency_probability=args.self_rollout_consistency_probability, self_rollout_step_size=args.self_rollout_step_size, self_rollout_solver_steps=args.self_rollout_solver_steps, early_timestep_fraction=args.early_timestep_fraction, early_timestep_max=args.early_timestep_max, seed_full_frame_rewrite_probability=args.seed_full_frame_rewrite_probability, seed_span_corruption_probability=args.seed_span_corruption_probability, seed_span_corruption_fraction=args.seed_span_corruption_fraction, semantic_pretrain_only=args.semantic_pretrain_only, reset_optimizer=args.reset_optimizer, reset_ema=args.reset_ema)
     elif args.command == "train-distill":
         from src.training.distill_training import run_distillation_training
         report = run_distillation_training(args.dataset, args.student_checkpoint, args.teacher_checkpoint, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, device=args.device, alpha_feature=args.alpha_feature, beta_repa=args.beta_repa, repo_id=args.repo_id, dim=args.dim, depth=args.depth, heads=args.heads, ff_mult=args.ff_mult, roberta_model=args.roberta_model, max_records=args.max_records, lambda_vocal=args.lambda_vocal, log_every_steps=args.log_every_steps, resume_checkpoint=args.resume_checkpoint, num_workers=args.num_workers, use_amp=args.amp)
@@ -269,7 +352,7 @@ def main(argv: list[str] | None = None) -> int:
         report = {"status": "normalized", "path": str(output.resolve())}
     elif args.command == "lyrics-g2p":
         from text2phonemesequence import Text2PhonemeSequence
-        text2phone = Text2PhonemeSequence(language='vie', is_cuda=False)
+        text2phone = Text2PhonemeSequence(language='vie-c', is_cuda=False)
         text_content = Path(args.input).read_text(encoding="utf-8")
         phonemes = text2phone.infer_sentence(text_content)
         output = Path(args.out)
@@ -301,6 +384,7 @@ def main(argv: list[str] | None = None) -> int:
             demucs_device=args.demucs_device,
             whisper_device=args.whisper_device,
             raw_audio=args.raw_audio,
+            allow_zero_style=args.allow_zero_style,
         )
     else:  # pragma: no cover - argparse enforces command choices
         raise ValueError(args.command)

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import tempfile
@@ -248,7 +248,7 @@ class SelfDiffusionTests(unittest.TestCase):
         # Without the DiffRhythm2 repo vendored on PYTHONPATH (not the case in this
         # test environment), _load_teacher must return None + a status message --
         # never a silent fake stand-in (the previous "DummyTeacher" behavior this
-        # replaced). See docs/project_history.md.
+        # replaced). See prior measurements.
         teacher, model_config, status = _load_teacher("ASLP-lab/DiffRhythm2", None, "cpu")
         self.assertIsNone(teacher)
         self.assertIsNone(model_config)
@@ -288,7 +288,7 @@ class SelfDiffusionTests(unittest.TestCase):
         # Regression test for a real bug: to_teacher_mel/from_teacher_mel used to be
         # computed entirely inside train_epoch's torch.no_grad() block, so neither
         # ever received a gradient despite being registered as trainable adapter
-        # params (see docs/project_history.md). Now that train-distill only
+        # params (see prior measurements). Now that train-distill only
         # supports latent-mode (teacher and student share the same 64-dim/5Hz
         # representation directly, no adapter at all), this instead confirms the
         # teacher call itself stays gradient-free (frozen, no_grad-scoped) while

@@ -1,4 +1,4 @@
-# Vietnamese Audio Preprocessing
+﻿# Vietnamese Audio Preprocessing
 
 This package converts Vietnamese WAV/MP3 files into the structured dataset used
 by the conditional diffusion model.
@@ -70,7 +70,7 @@ training), `style`, `bpm`, `frames`, `has_vocal`, `vocal_source`,
 (`charactr/vocos-mel-24khz`: 100 mels, 24kHz, n_fft=1024, hop=256, magnitude mel
 with `power=1`, natural log with a `1e-7` floor, **no** upper clip) — see
 `compute_mel_spectrogram()` in `src/models/text_to_music_diffusion.py` and
-`docs/project_history.md` §4.1 for why this specific format matters: an
+prior measurements for why this specific format matters: an
 earlier 64-mel/16kHz/log-power convention here was the root cause of severely
 distorted generated audio, fixed this way and verified to restore >0.99
 log-mel correlation on real audio.
@@ -87,7 +87,7 @@ output — it re-decodes each record's mel through Vocos, re-encodes with a
 trained `LatentAudioEncoder`, and writes a new dataset directory with the same
 `records.jsonl`/`config.json` shape but `mels/*.pt` holding 64-dim/5Hz latents
 instead of mel tensors, plus `config.json`'s `latent_mode: true`. See
-`docs/usage.md` and `docs/project_history.md` §4.24 for the full
+`docs/usage.md` and prior measurements for the full
 procedure (training the encoder first, its known collapse failure mode, and
 the fix).
 

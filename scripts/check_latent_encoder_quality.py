@@ -1,11 +1,11 @@
-"""Sanity-check a `LatentAudioEncoder` checkpoint before trusting any
+﻿"""Sanity-check a `LatentAudioEncoder` checkpoint before trusting any
 downstream CFM training on its latents: encodes a few real records'
 GROUND-TRUTH audio (no CFM student involved), decodes the resulting latent
 back through the real frozen BigVGAN decoder, and reports
 `pitch_std_semitones` -- see docs/architecture.md's "Native latent backbone
 and encoder" section for the collapse failure mode this catches (near-zero
 pitch_std_semitones despite plausible spectral_flatness) and
-docs/project_history.md §4.24 for the original before/after numbers.
+prior measurements for the original before/after numbers.
 
 Works against either a mel dataset or a `--raw-audio` dataset (config.json's
 raw_audio_mode: true) -- accepts one or more dataset dirs, combined like

@@ -1,11 +1,18 @@
-# Scripts index
+﻿# Scripts index
 
-Every script here is a local orchestrator: it zips this repo as a Kaggle
-dataset, pushes a kernel that installs dependencies and runs the real work,
-then downloads the results. None of them contain model logic themselves —
-that all lives in `src/` and is reached via `cli.py`. See
-`docs/usage.md` for the full walkthrough; this file is just "which script do
-I run for X."
+Model and training logic lives in `src/`; scripts are thin entrypoints around
+that code. Most `run_kaggle_*.py` files package a bounded Kaggle job. See
+`docs/usage.md` for the full walkthrough.
+
+## Portable V80 demo
+
+- **`run_kaggle_native_waveform_dataset.py`** — one-time bootstrap for a new
+  Kaggle account. It packages the current clone, builds the 2,048-song raw
+  vocal/backing corpus, and saves the resulting ref in ignored local config.
+- **`run_kaggle_native_waveform.py`** — submits one V80 generation using that
+  completed corpus; `cli.py generate` and the web app call the same path.
+- **`check_portability.py`** — checks submission-visible files for local paths,
+  credentials, and report-only artifacts.
 
 ## Mel-space pipeline (the default feature space)
 
@@ -47,20 +54,20 @@ I run for X."
 
 Gives the student DiffRhythm2's own compressed 64-dim/5Hz Music VAE latent
 space instead of raw mel — see `docs/architecture.md`'s "Native latent
-backbone and encoder" section for why, and `docs/project_history.md` §4.24
+backbone and encoder" section for why, and prior measurements
 for what went wrong the first time (a collapsed encoder) and how it was
 fixed. Run in this order:
 
 1. **`run_kaggle_latent_encoder.py`** — pretrain `LatentAudioEncoder` against
-   the real, frozen BigVGAN decoder (reconstruction loss only). Sanity-check
+   the real, frozen BigVGAN decoder with reconstruction plus cyclical KL
+   (report-aligned default maximum beta `0.15`). Sanity-check
    the result before proceeding (see `docs/architecture.md`) — a flat/
    oscillating loss curve or near-zero `pitch_std_semitones` on decoded
    ground-truth latents means retrain with more epochs, not move on. Accepts
    several `--processed-kernel-ref`s at once (combined into one training set,
    `N` usable records from each via `--max-records-per-dataset`) — or the
-   shortcut `--raw-audio-part 1 2 3 4 5 6` to look them up in
-   `PROCESSED_RAW_AUDIO_KERNELS` (`src/integrations/kaggle_dataset_refs.py`)
-   instead of pasting kernel refs by hand.
+   shortcut `--raw-audio-part 1 2 3 4 5 6` when the corresponding ignored
+   `GENMUSIC_PROCESSED_RAW_KERNEL_PART_N` environment variables are set.
 2. **`run_kaggle_latent_pipeline.py`** — precompute the latent dataset with
    that encoder, train the CFM student, generate one sample. Also has the
    `--raw-audio-part` shortcut, but only a single one (`precompute-latent-dataset`
@@ -84,15 +91,14 @@ fixed. Run in this order:
 
 - **`evaluate_generation_quality.py`** — the actual metric implementation
   (spectral flatness, voiced ratio, pitch-std semitones) used by
-  `run_kaggle_evaluate.py` and referenced throughout `docs/project_history.md`.
+  `run_kaggle_evaluate.py` and referenced throughout prior measurements.
   Can also be run standalone against any local checkpoint/wav.
 - **`check_latent_encoder_quality.py`** — sanity-check a `LatentAudioEncoder`
   checkpoint (from `run_kaggle_latent_encoder.py`) BEFORE trusting any
   downstream CFM training on its latents: encodes real ground-truth audio
   (no CFM involved), decodes through the real frozen decoder, and reports
   `pitch_std_semitones` via `evaluate_generation_quality.py`'s `wav_metrics`
-  — catches the collapsed-encoder failure mode from `docs/project_history.md`
-  §4.24 without a one-off script each time. Needs the real decoder (`bigvgan`
+  — catches the collapsed-encoder failure mode from prior measurements without a one-off script each time. Needs the real decoder (`bigvgan`
   on PYTHONPATH), so only runs on Kaggle.
 - **`check_kernel_progress.py`** — tails a *running* Kaggle kernel's log via
   the SSE log-stream endpoint (`kaggle kernels output` only returns files

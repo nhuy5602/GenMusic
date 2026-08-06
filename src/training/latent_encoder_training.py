@@ -1,4 +1,4 @@
-"""Pretrains `LatentAudioEncoder` (src/models/latent_codec.py) against
+﻿"""Pretrains `LatentAudioEncoder` (src/models/latent_codec.py) against
 DiffRhythm2's real, frozen, pretrained BigVGAN decoder, using a plain
 reconstruction loss on this project's own 250-song corpus.
 
@@ -20,6 +20,7 @@ on the pristine original recording).
 from __future__ import annotations
 
 import json
+import math
 import time
 from pathlib import Path
 from typing import Any
@@ -95,6 +96,43 @@ class _RawAudioReconstructionDataset:
         return {"full_mix": vocal_crop + backing_crop}
 
 
+REPORT_KL_MAX_WEIGHT = 0.15
+
+
+def cyclical_kl_weight(
+    step: int,
+    total_steps: int,
+    *,
+    max_weight: float = REPORT_KL_MAX_WEIGHT,
+    cycles: int = 4,
+    anneal_ratio: float = 0.5,
+) -> float:
+    """Return the report's cyclical KL coefficient for one optimizer step.
+
+    Each cycle linearly opens the stochastic bottleneck from zero to
+    ``max_weight`` and then holds it there.  Keeping this calculation as a
+    public, pure function makes the reported schedule independently testable
+    without constructing BigVGAN or a training dataset.
+    """
+    if total_steps <= 0:
+        raise ValueError("total_steps must be positive")
+    if step < 0:
+        raise ValueError("step must be non-negative")
+    if max_weight < 0:
+        raise ValueError("max_weight must be non-negative")
+    if cycles <= 0:
+        raise ValueError("cycles must be positive")
+    if not 0.0 < anneal_ratio <= 1.0:
+        raise ValueError("anneal_ratio must be in (0, 1]")
+
+    cycle_length = max(1, int(total_steps) // int(cycles))
+    step_in_cycle = int(step) % cycle_length
+    ramp_length = max(1, round(cycle_length * float(anneal_ratio)))
+    if step_in_cycle >= ramp_length:
+        return float(max_weight)
+    return float(max_weight) * (step_in_cycle / ramp_length)
+
+
 def train_latent_encoder(
     dataset_dir: str | Path | list[str | Path],
     checkpoint_path: str | Path,
@@ -111,7 +149,7 @@ def train_latent_encoder(
     warmup_steps: int = 200,
     grad_clip_norm: float = 1.0,
     num_workers: int = 4,
-    kl_weight: float = 1e-4,
+    kl_weight: float = REPORT_KL_MAX_WEIGHT,
     resume_checkpoint: str | Path | None = None,
 ) -> dict[str, Any]:
     """dataset_dir accepts either one path or a list of paths -- multiple
@@ -147,7 +185,7 @@ def train_latent_encoder(
     pointed at a deeper cause than optimizer instability -- plain L1
     reconstruction loss with no probabilistic bottleneck and no adversarial
     term is known to regress toward a "safe" low-dynamic-range average once
-    the target distribution is diverse enough (docs/project_history.md §4.29
+    the target distribution is diverse enough (prior measurements
     draws the parallel to the same regression-to-the-mean failure already
     diagnosed for the CFM loss, §4.11-4.13).
 
@@ -159,7 +197,7 @@ def train_latent_encoder(
     failure mode this schedule targets) since the network can freely shrink
     sigma toward 0 to eliminate reparameterization noise's cost to
     reconstruction, and a constant weight this small barely resists that.
-    Ramping kl_weight 0->kl_weight repeatedly (see _kl_weight_at below)
+    Ramping kl_weight 0->kl_weight repeatedly (see cyclical_kl_weight)
     periodically re-opens the latent "path" instead of letting the encoder
     settle into ignoring it once and never recovering.
 
@@ -240,20 +278,10 @@ def train_latent_encoder(
             return learning_rate * (step + 1) / effective_warmup
         progress = (step - effective_warmup) / max(1, total_steps - effective_warmup)
         progress = min(1.0, max(0.0, progress))
-        import math
-
         return learning_rate * 0.5 * (1.0 + math.cos(math.pi * progress))
 
     kl_anneal_cycles = 4
     kl_anneal_ratio = 0.5  # fraction of each cycle spent ramping 0->kl_weight; the rest holds at kl_weight
-
-    def _kl_weight_at(step: int) -> float:
-        cycle_length = max(1, total_steps // kl_anneal_cycles)
-        step_in_cycle = step % cycle_length
-        ramp_length = max(1, round(cycle_length * kl_anneal_ratio))
-        if step_in_cycle >= ramp_length:
-            return kl_weight
-        return kl_weight * (step_in_cycle / ramp_length)
 
     started = time.perf_counter()
     losses: list[float] = []
@@ -301,7 +329,13 @@ def train_latent_encoder(
             reconstructed_48k = decoder_handle.decoder.decode_audio(latent, overlap=min(5, chunk_size - 1), chunk_size=chunk_size)
             recon_loss = multi_scale_mel_loss(reconstructed_48k, target_48k, sample_rate=decoder_handle.sampling_rate)
             kl_loss = kl_divergence_loss(mu, logvar)
-            current_kl_weight = _kl_weight_at(global_step)
+            current_kl_weight = cyclical_kl_weight(
+                global_step,
+                total_steps,
+                max_weight=kl_weight,
+                cycles=kl_anneal_cycles,
+                anneal_ratio=kl_anneal_ratio,
+            )
             loss = recon_loss + current_kl_weight * kl_loss
             loss.backward()
             torch.nn.utils.clip_grad_norm_(encoder.parameters(), max_norm=grad_clip_norm)

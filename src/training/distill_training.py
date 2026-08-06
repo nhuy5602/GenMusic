@@ -1,9 +1,9 @@
-"""Knowledge distillation from the real DiffRhythm2 teacher into the MicroDiT student.
+﻿"""Knowledge distillation from the real DiffRhythm2 teacher into the MicroDiT student.
 
 This implementation replicates the *exact* call contract of the official teacher
 (`diffrhythm2.backbones.dit.DiT.forward`, as used in `diffrhythm2/cfm.py`'s
 `sample_block_cache`), instead of guessing architecture dimensions or fabricating
-inputs. See docs/project_history.md for the reverse-engineering
+inputs. See prior measurements for the reverse-engineering
 notes this is based on. In short, the teacher's DiT processes lyric tokens and
 the noisy latent as ONE shared sequence (lyric tokens get `time=-1` as a
 sentinel, noisy frames get their real flow-matching `t`); style conditioning is
@@ -113,7 +113,7 @@ def _hf_hub_download_with_retry(*, attempts: int = 8, initial_backoff_seconds: f
     """`hf_hub_download` with no retry has a single-network-blip failure mode:
     one transient Hub hiccup burns an entire multi-hour Kaggle job before
     training even starts (observed three times in practice -- see
-    docs/project_history.md §4.10). All three were genuine HF Hub-side HTTP 504s
+    prior measurements). All three were genuine HF Hub-side HTTP 504s
     (confirmed by reproducing the same 504 from a completely different network,
     where it self-resolved after ~130s once huggingface_hub's own built-in
     retry rode it out) -- not a Kaggle-specific or code problem. A short 3x5s
@@ -200,7 +200,7 @@ def _load_lyric_tokenizer():
     `bigvgan`, whose CUDA extension (`bigvgan/alias_free_activation/cuda/activation1d.py`)
     calls `torch.utils.cpp_extension.load()` -- a JIT compile -- as a bare
     module-level statement executed at *import time*, not lazily. This hung for
-    10+ hours in testing on Kaggle (see docs/project_history.md) and
+    10+ hours in testing on Kaggle (see prior measurements) and
     has nothing to do with tokenization; only `g2p.g2p_generation.chn_eng_g2p`
     (a lightweight ONNX-based G2P, no CUDA) is actually needed here.
 
@@ -409,7 +409,7 @@ class KnowledgeDistillationTrainer:
         """Returns per-step {"loss": total, "loss_gt": ground-truth CFM component,
         "loss_velocity": teacher-matching component or None} -- kept separate (not
         just the blended total) so distilled vs. non-distilled runs can be compared
-        on the same ground-truth-loss axis. See docs/project_history.md.
+        on the same ground-truth-loss axis. See prior measurements.
 
         log_every_steps prints a running loss every N steps -- distillation used to
         only print once per epoch, indistinguishable from a hang on a large dataset
@@ -481,7 +481,7 @@ class KnowledgeDistillationTrainer:
             # guarantee CFM relies on the way switching to a bare L1 would. Validated
             # on train-self before porting here: this combination raised generated mel
             # std from 1.09 to 3.13 against a real-vocal target of 2.95 (see
-            # docs/project_history.md §4.10/§5).
+            # prior measurements).
             frame_energy = x1.mean(dim=-1)
             activity_threshold = torch.quantile(frame_energy.detach(), 0.55, dim=1, keepdim=True)
             activity = torch.sigmoid((frame_energy - activity_threshold) * 2.0)
@@ -499,7 +499,7 @@ class KnowledgeDistillationTrainer:
                 # teacher output, not a marginal-expectation target, so it has no such
                 # requirement. L1 here specifically because pure-MSE feature-matching
                 # distillation is documented to cause "distributional averaging" (a
-                # blurry, low-variance mean prediction) -- see docs/project_history.md
+                # blurry, low-variance mean prediction) -- see prior measurements
                 # §4.10 ablation and its cited sources (Dieleman 2024; DMD/ADM papers).
                 loss_velocity = F.l1_loss(v_student, v_teacher)
                 loss = (1.0 - self.alpha_feature) * loss_velocity + self.alpha_feature * loss_gt
@@ -573,7 +573,7 @@ def run_distillation_training(
     # Auto-calibrate mel_mean/mel_std the same way train-self does (self_diffusion.py's
     # train_model) -- without this, MusicDiffusionDataset applies identity normalization
     # (mel_mean=0, mel_std=1 defaults), leaving the student to fit raw, unnormalized
-    # log-mel targets. See docs/project_history.md §4.10/§5 for why this specifically
+    # log-mel targets. See prior measurements for why this specifically
     # matters here: it was one of the changes that fixed a measured low-variance
     # ("regression to the mean") output on the train-self side.
     usable_records = [

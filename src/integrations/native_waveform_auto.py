@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from scripts.run_kaggle_native_waveform import (
-    DEFAULT_RAW_KERNEL_REF,
-    DEFAULT_SOURCE_REF,
     PATCH_BUNDLE_NAME,
+    SOURCE_ZIP_NAME,
     _build_patch_bundle,
     _kernel_code,
     _patch_tree_sha256,
@@ -28,12 +27,16 @@ from src.integrations.kaggle_auto import (
     _run,
     _write_state,
     kaggle_cli_command,
-    kaggle_dataset_exists,
     kaggle_readiness,
     make_run_id,
     resolve_kaggle_username,
     slugify,
     submit_kaggle_job,
+    write_source_zip,
+)
+from src.integrations.native_waveform_config import (
+    load_native_raw_kernel_ref,
+    setup_message,
 )
 
 NATIVE_WAVEFORM_MODEL = "native-waveform-v80"
@@ -50,8 +53,7 @@ class NativeWaveformJobConfig:
     wait: bool = False
     poll_seconds: int = 30
     timeout_seconds: int = 7_200
-    source_ref: str = DEFAULT_SOURCE_REF
-    raw_kernel_ref: str = DEFAULT_RAW_KERNEL_REF
+    raw_kernel_ref: str | None = None
 
 
 def stage_native_waveform_job(
@@ -64,6 +66,9 @@ def stage_native_waveform_job(
 ) -> dict[str, Any]:
     """Stage a private Kaggle request using the validated V80 pipeline."""
     normalized = normalize_vietnamese_lyrics(text).strip()
+    raw_kernel_ref = load_native_raw_kernel_ref(config.raw_kernel_ref)
+    if not raw_kernel_ref:
+        raise RuntimeError(setup_message())
     target_words = target_words_from_text(normalized)
     if len(target_words) > MAX_NATIVE_WORDS:
         raise ValueError(
@@ -100,6 +105,7 @@ def stage_native_waveform_job(
     patch_path = dataset_dir / PATCH_BUNDLE_NAME
     patch_sha256 = _build_patch_bundle(PROJECT_ROOT, patch_path)
     patch_tree_sha256 = _patch_tree_sha256(PROJECT_ROOT)
+    write_source_zip(PROJECT_ROOT, dataset_dir / SOURCE_ZIP_NAME)
     request = {
         "run_id": run_id,
         "text": normalized,
@@ -109,8 +115,7 @@ def stage_native_waveform_job(
         "duration_seconds": requested_duration,
         "model": NATIVE_WAVEFORM_MODEL,
         "backend": NATIVE_WAVEFORM_BACKEND,
-        "source_ref": config.source_ref,
-        "raw_kernel_ref": config.raw_kernel_ref,
+        "raw_kernel_ref": raw_kernel_ref,
         "created_at": _now(),
     }
     (run_dir / "request.json").write_text(
@@ -162,11 +167,8 @@ def stage_native_waveform_job(
                 "enable_gpu": "true",
                 "enable_internet": "true",
                 "machine_shape": config.machine_shape,
-                "dataset_sources": [
-                    config.source_ref,
-                    request_dataset_ref,
-                ],
-                "kernel_sources": [config.raw_kernel_ref],
+                "dataset_sources": [request_dataset_ref],
+                "kernel_sources": [raw_kernel_ref],
                 "competition_sources": [],
                 "model_sources": [],
             },
@@ -192,9 +194,8 @@ def stage_native_waveform_job(
         "genre": request["genre"],
         "duration_seconds": requested_duration,
         "requested_duration_seconds": int(duration_seconds),
-        "dataset_ref": config.source_ref,
-        "training_dataset_ref": config.source_ref,
-        "raw_kernel_ref": config.raw_kernel_ref,
+        "dataset_ref": request_dataset_ref,
+        "raw_kernel_ref": raw_kernel_ref,
         "request_dataset_ref": request_dataset_ref,
         "kernel_ref": kernel_ref,
         "run_dir": str(run_dir),
@@ -203,7 +204,7 @@ def stage_native_waveform_job(
         "kernel_dir": str(kernel_dir),
         "download_dir": str(download_dir),
         "state_path": str(job_dir / "job_state.json"),
-        "dataset_url": _dataset_url(config.source_ref),
+        "dataset_url": _dataset_url(request_dataset_ref),
         "request_dataset_url": _dataset_url(request_dataset_ref),
         "kernel_url": (
             f"https://www.kaggle.com/code/{kernel_ref}"
@@ -235,6 +236,16 @@ def submit_native_waveform_job(
     config: NativeWaveformJobConfig | None = None,
 ) -> dict[str, Any]:
     config = config or NativeWaveformJobConfig()
+    raw_kernel_ref = load_native_raw_kernel_ref(config.raw_kernel_ref)
+    if not raw_kernel_ref:
+        return {
+            "status": "needs_setup",
+            "backend": NATIVE_WAVEFORM_BACKEND,
+            "model": NATIVE_WAVEFORM_MODEL,
+            "messages": [setup_message()],
+            "last_error": "",
+        }
+    config = replace(config, raw_kernel_ref=raw_kernel_ref)
     state = stage_native_waveform_job(
         text=text,
         output_root=output_root,
@@ -254,17 +265,11 @@ def submit_native_waveform_job(
         state["status"] = "needs_setup"
         _write_state(state)
         return state
-    if not kaggle_dataset_exists(config.source_ref):
-        return _fail(
-            state,
-            f"Native waveform source dataset is unavailable: "
-            f"{config.source_ref}",
-        )
     cli = kaggle_cli_command()
     if cli is None:
         return _fail(state, "Kaggle CLI is unavailable.")
     raw_status = _run(
-        cli + ["kernels", "status", config.raw_kernel_ref],
+        cli + ["kernels", "status", raw_kernel_ref],
         timeout=120,
     )
     raw_text = (
@@ -276,7 +281,7 @@ def submit_native_waveform_job(
         return _fail(
             state,
             f"Native waveform corpus kernel is not complete: "
-            f"{config.raw_kernel_ref}",
+            f"{raw_kernel_ref}",
         )
     return submit_kaggle_job(
         state,

@@ -1,4 +1,4 @@
-import argparse
+﻿import argparse
 import json
 import os
 import subprocess
@@ -36,7 +36,7 @@ except ImportError:
 # Mel parameters MUST match Vocos's native "charactr/vocos-mel-24khz" feature
 # extractor exactly (via compute_mel_spectrogram) so that training targets are
 # directly decodable by Vocos at inference with no resampling. See
-# docs/project_history.md §4.1 for why the previous 16kHz/64-mel/log-power
+# prior measurements for why the previous 16kHz/64-mel/log-power
 # convention produced badly distorted audio. Unlike an earlier iteration of
 # this file, this is no longer an opt-in mode -- there is no non-Vocos-native
 # mel format anymore, since it was the direct cause of that distortion.
@@ -46,6 +46,7 @@ N_MELS = _MEL_CONFIG.latent_dim
 N_FFT = _MEL_CONFIG.n_fft
 HOP_LENGTH = _MEL_CONFIG.hop_length
 STYLE_EMBED_DIM = 512  # MuQ-MuLan / DiffRhythm2 teacher cond_dim
+STYLE_EMBED_MODEL = "OpenMuQ/MuQ-MuLan-large"
 
 _mulan_model = None
 
@@ -61,26 +62,45 @@ def _load_mulan(device: str = "cpu"):
     if _mulan_model is None:
         try:
             from muq import MuQMuLan
-            _mulan_model = MuQMuLan.from_pretrained("OpenMuQ/MuQ-MuLan-large").to(device).eval()
+            _mulan_model = MuQMuLan.from_pretrained(STYLE_EMBED_MODEL).to(device).eval()
         except Exception as e:
-            print(f"[WARNING] MuQ-MuLan unavailable ({e}); style embeddings will be zero vectors.", flush=True)
+            print(f"[WARNING] MuQ-MuLan unavailable ({e}).", flush=True)
             _mulan_model = False
     return _mulan_model or None
 
 
-def compute_style_embedding(waveform_24k: np.ndarray, device: str = "cpu") -> torch.Tensor:
+def compute_style_embedding(
+    waveform_24k: np.ndarray,
+    device: str = "cpu",
+    *,
+    allow_zero_style: bool = False,
+) -> torch.Tensor:
     """Real MuQ-MuLan style/genre embedding of a song, computed once at
     preprocess time and reused as the "Audio Style Anchor" for both the student
-    and (during distillation) the teacher -- see docs/project_history.md.
+    and (during distillation) the teacher -- see prior measurements.
     """
     mulan = _load_mulan(device)
     if mulan is None:
-        return torch.zeros(STYLE_EMBED_DIM)
+        if allow_zero_style:
+            return torch.zeros(STYLE_EMBED_DIM)
+        raise RuntimeError(
+            "The report-aligned preprocessing path requires the real "
+            f"{STYLE_EMBED_MODEL} style encoder. Install/load MuQ-MuLan or "
+            "explicitly opt into a zero-style debug dataset."
+        )
     with torch.no_grad():
         clip = waveform_24k[: 24_000 * 10]  # MuLan is trained on ~10s clips
         wav = torch.tensor(clip, dtype=torch.float32, device=device).unsqueeze(0)
         embedding = mulan(wavs=wav)
-    return embedding.squeeze(0).float().cpu()
+    embedding = embedding.squeeze(0).float().cpu().flatten()
+    if embedding.numel() != STYLE_EMBED_DIM:
+        raise RuntimeError(
+            f"MuQ-MuLan returned {embedding.numel()} values; expected "
+            f"{STYLE_EMBED_DIM}."
+        )
+    if not bool(torch.isfinite(embedding).all()):
+        raise RuntimeError("MuQ-MuLan returned a non-finite style embedding.")
+    return embedding
 
 
 def run_demucs_separation(audio_path: Path, output_dir: Path, device: str = "auto") -> tuple[Path | None, Path | None]:
@@ -182,6 +202,7 @@ def process_file(
     device: str = "cpu",
     whisper_backend: str = "openai",
     compute_style: bool = True,
+    allow_zero_style: bool = False,
     raw_audio: bool = False,
 ) -> dict:
     """`raw_audio=True` skips `compute_mel_spectrogram` entirely and saves the
@@ -190,7 +211,7 @@ def process_file(
     (`src/models/latent_codec.py`) directly, without the current
     mel->Vocos-decode->waveform round trip `precompute-latent-dataset` has to
     do today because no raw audio survives the mel-only preprocessing output
-    (see docs/project_history.md for why that round trip exists and its
+    (see prior measurements for why that round trip exists and its
     downside: the encoder never sees the pristine original recording, only a
     Vocos reconstruction of it)."""
     sample_id = audio_path.stem
@@ -206,12 +227,20 @@ def process_file(
     if compute_style:
         print("-> Computing MuQ-MuLan style embedding...", flush=True)
         y_style, _ = librosa.load(audio_path, sr=SAMPLE_RATE, duration=10.0)
-        style_embedding = compute_style_embedding(y_style, device=device)
+        style_embedding = compute_style_embedding(
+            y_style,
+            device=device,
+            allow_zero_style=allow_zero_style,
+        )
+        style_embedding_source = (
+            "zero-debug" if not bool(style_embedding.abs().any()) else "muq-mulan"
+        )
     else:
         # Aligned-lyrics preprocessing is intentionally kept small and fast.  A
         # zero anchor is valid because the native generation path trains with
         # heavy style dropout and evaluates without a reference-style anchor.
         style_embedding = torch.zeros(STYLE_EMBED_DIM)
+        style_embedding_source = "disabled"
     style_pt_path = mels_dir / f"{sample_id}_style.pt"
     torch.save(style_embedding, style_pt_path)
 
@@ -364,6 +393,9 @@ def process_file(
         f"backing_{path_key_suffix}": f"{folder_name}/{sample_id}_backing.pt",
         f"vocal_{path_key_suffix}": f"{folder_name}/{sample_id}_vocal.pt",
         "style_embed_path": f"{folder_name}/{sample_id}_style.pt",
+        "style_embedding_source": style_embedding_source,
+        "style_embedding_dim": STYLE_EMBED_DIM,
+        "style_embedding_valid": style_embedding_source == "muq-mulan",
     }
 
 
@@ -379,6 +411,7 @@ def preprocess_raw_audio(
     demucs_device: str = "auto",
     whisper_device: str = "auto",
     raw_audio: bool = False,
+    allow_zero_style: bool = False,
 ) -> dict:
     raw_dir = Path(input_path)
     output_dir = Path(output_path)
@@ -447,6 +480,7 @@ def preprocess_raw_audio(
                     f, output_dir, whisper_model, keep_separated=(idx <= keep_separated_count),
                     use_demucs=use_demucs, transcribe=transcribe, demucs_device=demucs_device, device=style_device,
                     whisper_backend=whisper_backend, raw_audio=raw_audio,
+                    allow_zero_style=allow_zero_style,
                 )
                 records.append(record)
             except Exception as e:
@@ -478,6 +512,9 @@ def preprocess_raw_audio(
         "n_fft": N_FFT,
         "hop_length": HOP_LENGTH,
         "raw_audio_mode": raw_audio,
+        "style_embedding_model": STYLE_EMBED_MODEL,
+        "style_embedding_dim": STYLE_EMBED_DIM,
+        "style_embedding_required": not allow_zero_style,
     }
     (output_dir / "config.json").write_text(json.dumps(config_data, indent=2), encoding="utf-8")
 
@@ -511,13 +548,14 @@ def main():
     parser.add_argument("--demucs-device", default="auto", choices=("auto", "cuda", "cpu"))
     parser.add_argument("--whisper-device", default="auto", choices=("auto", "cpu", "cuda"))
     parser.add_argument("--raw-audio", action="store_true", help="Save vocal/backing as raw 24kHz waveform tensors instead of mel-spectrograms.")
+    parser.add_argument("--allow-zero-style", action="store_true", help="Debug only: allow a zero style vector if MuQ-MuLan cannot load. The report-aligned default fails fast instead.")
     args = parser.parse_args()
 
     preprocess_raw_audio(
         args.input, args.output, args.whisper_model,
         use_demucs=not args.skip_demucs, transcribe=not args.skip_asr,
         demucs_device=args.demucs_device, whisper_device=args.whisper_device,
-        raw_audio=args.raw_audio,
+        raw_audio=args.raw_audio, allow_zero_style=args.allow_zero_style,
     )
 
 

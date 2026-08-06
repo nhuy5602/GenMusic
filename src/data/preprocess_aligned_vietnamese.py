@@ -103,8 +103,18 @@ def _audio_bytes(row: dict[str, Any]) -> bytes:
     raise ValueError("Aligned row does not contain embedded audio bytes")
 
 
-def iter_parquet_rows(path: str | Path, *, batch_size: int = 32) -> Iterable[dict[str, Any]]:
-    """Stream rows so a 500 MB audio shard is never expanded fully in RAM."""
+def iter_parquet_rows(
+    path: str | Path,
+    *,
+    batch_size: int = 32,
+    include_audio: bool = True,
+) -> Iterable[dict[str, Any]]:
+    """Stream aligned rows, optionally excluding the embedded audio payload.
+
+    Metadata-only source gates need timestamps and provenance but must not
+    deserialize each encoded waveform.  Existing materializers retain the
+    default ``include_audio=True`` contract.
+    """
     try:
         import pyarrow.parquet as parquet
     except ImportError as exc:  # pragma: no cover - Kaggle ships pyarrow.
@@ -113,7 +123,6 @@ def iter_parquet_rows(path: str | Path, *, batch_size: int = 32) -> Iterable[dic
     columns = [
         "chunk_id",
         "song_id",
-        "audio",
         "title",
         "artist",
         "album",
@@ -122,6 +131,8 @@ def iter_parquet_rows(path: str | Path, *, batch_size: int = 32) -> Iterable[dic
         "chunk_lyrics",
         "chunk_word_timestamps",
     ]
+    if include_audio:
+        columns.insert(2, "audio")
     parquet_file = parquet.ParquetFile(str(path))
     for batch in parquet_file.iter_batches(batch_size=batch_size, columns=columns):
         yield from batch.to_pylist()

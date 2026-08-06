@@ -178,7 +178,7 @@ def main() -> None:
     parser.add_argument("--max-records", type=int, default=None, help="Limit the combined dataset to the first N usable records overall (for cheap smoke tests).")
     parser.add_argument("--max-records-per-dataset", type=int, default=None, help="Limit each attached processed dataset to its first N usable records before combining (e.g. 1 audio from each of several parts).")
     parser.add_argument("--warmup-steps", type=int, default=None, help="Override train-latent-encoder's default (200) -- e.g. raise proportionally for a larger dataset/step count.")
-    parser.add_argument("--kl-weight", type=float, default=None, help="Override train-latent-encoder's default (1e-4) -- the MAX weight reached by the cyclical annealing schedule, not a flat constant.")
+    parser.add_argument("--kl-weight", type=float, default=None, help="Override the report-aligned default (0.15). This is the MAX weight reached by the cyclical schedule, not a flat constant.")
     parser.add_argument("--resume-checkpoint", default=None, help="Path to a local latent_encoder.pt to continue training from (fresh optimizer/schedule) -- e.g. to push sigma further toward the prior with a higher --kl-weight once reconstruction has already converged.")
     parser.add_argument("--processed-kernel-ref", type=str, default=None, nargs="+", help="Override KAGGLE_PROCESSED_KERNEL_REF for this run. Accepts multiple refs to combine several processed datasets into one training run.")
     parser.add_argument(

@@ -4,8 +4,8 @@ from scripts.generate_native_waveform import (
     fill_connected_line_gaps,
 )
 from scripts.run_kaggle_native_waveform import (
-    DEFAULT_RAW_KERNEL_REF,
     PATCH_FILES,
+    SOURCE_ZIP_NAME,
     _kernel_code,
 )
 from src.audio.waveform_units import Unit
@@ -64,7 +64,6 @@ def test_v80_tightens_same_line_joins_and_moves_time_to_line_rests() -> None:
 
 
 def test_v80_kaggle_bundle_is_goal_eligible_and_token_free() -> None:
-    assert DEFAULT_RAW_KERNEL_REF.endswith("1785338959")
     assert (
         "scripts/generate_native_waveform.py"
         in PATCH_FILES
@@ -90,5 +89,6 @@ def test_v80_kaggle_bundle_is_goal_eligible_and_token_free() -> None:
         in code
     )
     assert "master_raw_multishard_v71_state.json" in code
+    assert SOURCE_ZIP_NAME in code
     assert "KAGGLE_API_TOKEN" not in code
     assert "KGAT_" not in code

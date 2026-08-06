@@ -1,12 +1,27 @@
-# Architecture
+﻿# Architecture
 
-GenMusic VN generates Vietnamese vocal audio from a lyric prompt and a style
-description, via Conditional Flow Matching (CFM), using a single student
-backbone (`MicroDiT`) that runs over either of two feature spaces (raw mel,
-or DiffRhythm2's own compressed 64-dim/5Hz latent space). This file is the
-technical reference; `docs/project_history.md` is the narrative of how it got
-here (bugs found, experiments run, dead ends) — including a since-retired
-second backbone, `NativeDiTStudent` (see "A retired second backbone" below).
+The research path studies Vietnamese lyric-conditioned generation via
+Conditional Flow Matching (CFM), using one `MicroDiT` student over raw mel or
+a compressed 64-channel/5 Hz latent space.
+
+The current web and default `cli.py generate` route use
+`native-waveform-v80` as a separate serving fallback because it produces more
+intelligible demo audio. V80 is not CFM, MicroDiT, or knowledge distillation.
+This runtime boundary is intentional. Personal experiment notes are kept
+outside the submission tree.
+
+## Runtime boundary
+
+| Surface | Default backend | Purpose |
+|---|---|---|
+| `server.py` / web | V80 native waveform | Stable 16-second MP3 demo |
+| `cli.py generate` | V80 native waveform | Kaggle serving request |
+| `cli.py generate --backend cfm-research` | CFM Kaggle staging | Research reproduction |
+| `cli.py generate-local` | MicroDiT/CFM checkpoint | Local research inference |
+
+The serving result must never be used as evidence that the report's diffusion
+model passed a quality gate. Conversely, a negative diffusion experiment does
+not invalidate the separately measured V80 baseline.
 
 ## Workflow
 
@@ -49,6 +64,8 @@ flowchart TD
 - `src/data/lyric_alignment.py` — lyric timing and LRC helpers.
 - `src/data/preprocess_raw_vietnamese.py` — recursive audio discovery, Demucs
   separation, Whisper transcription, Mel tensor export.
+  The report-aligned default requires a finite 512-d MuQ-MuLan anchor and
+  fails fast when that model is unavailable; zero style is debug-only.
 - `src/data/precompute_latent_dataset.py` — converts an existing mel-space
   dataset into a latent-space one (64-dim/5Hz) using a trained
   `LatentAudioEncoder` checkpoint.
@@ -164,7 +181,7 @@ DiffRhythm2's *own* backbone shape: text and audio shared **one concatenated
 self-attention sequence** instead of cross-attention, and lyrics were
 embedded by a **from-scratch-trained** `nn.Embedding` rather than frozen
 XPhoneBERT. It was used for the first positive latent-space listening result
-(`docs/project_history.md` §4.24, §4.25) and the mel-vs-latent comparison in
+(prior measurements) and the mel-vs-latent comparison in
 the report's Experiments chapter.
 
 It has since been merged/retired, based on evidence gathered across several
@@ -175,7 +192,7 @@ sessions:
   (audio-only, no padding) can use a faster fused attention kernel, whereas
   the concatenated design must pass an explicit dense padding mask into
   attention, which forces a slower fallback kernel on top of the strictly
-  larger $O((L{+}T)^2)$ attention cost (`docs/project_history.md` §4.19).
+  larger $O((L{+}T)^2)$ attention cost (prior measurements).
 - Training a lyric embedding table from scratch throws away XPhoneBERT's
   pretrained phonetic/tonal knowledge for no measured benefit, and is a
   needless overfitting risk on a ~250-song budget.
@@ -188,7 +205,7 @@ sessions:
 and needed no changes to run in `latent_mode` — the only genuinely new
 addition from the `NativeDiTStudent` experiment is the `TextSelfAttentionLayer`
 described above. Historical results attributed to `NativeDiTStudent` in
-`docs/project_history.md` and the report remain accurate accounts of what was
+prior measurements and the report remain accurate accounts of what was
 actually run at the time; they describe a backbone that no longer exists in
 the current codebase.
 
@@ -279,7 +296,7 @@ run.
   reconstructed clean sample and `x1`; the delta terms are L1 on the
   first-difference along time/mel-bin axes. This combination (added to fight
   a real regression-to-the-mean/"distributional averaging" failure mode —
-  see `docs/project_history.md` §4.11-4.13) is what most directly determines
+  see prior measurements) is what most directly determines
   output diversity; changing these weights changes the collapse/diversity
   trade-off directly.
 - **Vocal-auxiliary loss** (`--lambda-vocal`, default 1.0, `train-distill`
@@ -384,7 +401,7 @@ immediately on a mismatch, never falls back).
   if the teacher loaded, else `loss_gt` alone (forced `alpha_feature=1.0`).
   `loss_velocity` is **L1** (not MSE — chosen to avoid MSE's tendency toward
   blurry/averaged predictions, per Dieleman 2024 and DMD/ADM). Default
-  `alpha_feature=0.5`; `docs/project_history.md` §4.14 found `≈0.8` to be a
+  `alpha_feature=0.5`; prior measurements found `≈0.8` to be a
   real, multi-song-verified optimum, not noise. Vocal-aux loss (`lambda_vocal`)
   and REPA loss (`beta_repa`) are both structurally inert/rejected now (see
   above and the REPA hook note) — the mixed loss above is the whole story in
@@ -399,7 +416,7 @@ immediately on a mismatch, never falls back).
   distillation) loss term. It does not exist in the current file — only
   `alpha_feature`, `lambda_vocal`, and `beta_repa` are real loss-weight knobs
   today (and the latter two are now inert/rejected, see above). Treat
-  `docs/project_history.md` §4.23 as a historical record of a design that was
+  prior measurements as a historical record of a design that was
   implemented and later removed/superseded, not as a description of current
   behavior.
 
@@ -412,7 +429,7 @@ mel with `power=1`, natural log with a `1e-7` floor, no upper clip) — see
 specific match matters a lot in practice: an earlier 64-mel/16kHz/log-power
 convention was the root cause of severely distorted generated audio (fixed,
 verified to restore >0.99 log-mel correlation on real audio — see
-`docs/project_history.md` §4.1). `--vocoder vocos` (default) decodes the mel
+prior measurements). `--vocoder vocos` (default) decodes the mel
 unmodified; `griffinlim` (64 iterations) is the fallback if Vocos is
 unavailable or the config doesn't match. In `latent_mode`, neither is used —
 `render_mel_to_wav` decodes through the real frozen BigVGAN decoder instead.
@@ -438,5 +455,5 @@ audio with valid vocal stems and lyric metadata, and, even then, a human
 listening to the output. Automated sanity stats (peak amplitude, RMS,
 silence ratio, spectral flatness, voiced ratio, pitch-std) catch crashes and
 some classes of degenerate output; they are not a substitute for listening,
-and `docs/project_history.md` records more than one case where a metric
+and prior measurements record more than one case where a metric
 looked good while the audio still sounded wrong (or vice versa).

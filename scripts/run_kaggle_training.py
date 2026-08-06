@@ -3,9 +3,9 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
-import subprocess
 from pathlib import Path
 
 # Add project root to sys.path to allow imports from src package
@@ -20,7 +20,51 @@ from src.integrations.kaggle_auto import (
     write_source_zip,
 )
 
-def _kernel_script_content(dataset_slug: str, epochs: str = "5", batch_size: str = "4", lambda_vocal: str = "1.0", save_every_epoch: bool = True, max_records: str | None = None, dim: str | None = None, depth: str | None = None, heads: str | None = None) -> str:
+
+def _kernel_script_content(
+    dataset_slug: str,
+    epochs: str = "5",
+    batch_size: str = "4",
+    learning_rate: str = "0.0002",
+    ema_decay: str = "0.999",
+    lambda_vocal: str = "1.0",
+    save_every_epoch: bool = True,
+    max_records: str | None = None,
+    dim: str | None = None,
+    depth: str | None = None,
+    heads: str | None = None,
+    open_vocabulary_conditioning: bool = False,
+    lexical_holdout_fraction: str = "0.0",
+    minimum_lexical_sensitivity: str = "0.05",
+    lyric_semantic_weight: str = "0.25",
+    lyric_denoised_semantic_weight: str = "0.0",
+    lyric_semantic_temperature: str = "0.08",
+    minimum_lyric_semantic_accuracy: str = "0.05",
+    minimum_lyric_denoised_semantic_accuracy: str = "0.0",
+    lyric_unit_semantic_weight: str = "0.25",
+    minimum_lyric_unit_accuracy: str = "0.10",
+    lyric_unit_denoised_semantic_weight: str = "0.0",
+    minimum_lyric_denoised_unit_accuracy: str = "0.0",
+    self_rollout_consistency_weight: str = "0.0",
+    self_rollout_consistency_probability: str = "0.0",
+    self_rollout_step_size: str = "0.125",
+    self_rollout_solver_steps: str = "0",
+    early_timestep_fraction: str = "0.0",
+    early_timestep_max: str = "0.35",
+    semantic_pretrain_only: bool = False,
+    minimum_epochs: str = "8",
+    early_stopping_patience: str = "4",
+    reset_optimizer: bool = False,
+    reset_ema: bool = False,
+    frames_per_chunk: str | None = None,
+    resume: bool = False,
+    checkpoint_every_steps: str | None = None,
+    evaluation_only: bool = False,
+    evaluation_raw: bool = False,
+    evaluation_steps: str = "32",
+    evaluation_guidance_scale: str = "1.5",
+    evaluation_solver: str = "euler",
+) -> str:
     # This script will run on the Kaggle GPU instance and log errors to output files instead of crashing
     # We use pure ASCII characters to prevent Windows cp1252 encoding crashes during kaggle push
     return f'''import os
@@ -67,18 +111,60 @@ try:
     else:
         raise RuntimeError("Could not find the source code dataset directory or zip.")
 
-    print("--- STEP 3: Installing dependencies ---")
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "librosa", "imageio-ffmpeg"], check=True)
-    # The student's text encoder defaults to XPhoneBERT + text2phonemesequence
-    # (see src/models/dit_transformer.py) -- not covered above, so train-self
-    # fails with ModuleNotFoundError without this explicit install (same bug
-    # class already hit and fixed for run_kaggle_distill.py).
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "text2phonemesequence"], check=True)
+    print("--- STEP 3: Creating the uv runtime ---")
+    uv_executable = shutil.which("uv")
+    if not uv_executable:
+        # Kaggle currently provides uv, but retain a bounded bootstrap for
+        # older images. All project dependency management after this point is
+        # performed by uv.
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", "uv"],
+            check=True,
+        )
+        uv_executable = shutil.which("uv")
+    if not uv_executable:
+        raise RuntimeError("uv is unavailable after bootstrap.")
+
+    uv_venv = Path("/kaggle/working/.venv")
+    subprocess.run(
+        [
+            uv_executable,
+            "venv",
+            "--system-site-packages",
+            "--python",
+            sys.executable,
+            str(uv_venv),
+        ],
+        check=True,
+    )
+    uv_python = uv_venv / "bin" / "python"
+    subprocess.run(
+        [
+            uv_executable,
+            "pip",
+            "install",
+            "--python",
+            str(uv_python),
+            "librosa",
+            "imageio-ffmpeg",
+            "text2phonemesequence",
+            "jiwer",
+        ],
+        check=True,
+    )
+    uv_run_python = [
+        uv_executable,
+        "run",
+        "--no-project",
+        "--python",
+        str(uv_python),
+        "python",
+    ]
 
     print("--- STEP 4: Checking CUDA compatibility ---")
     torch_probe = subprocess.run(
-        [
-            sys.executable,
+        uv_run_python
+        + [
             "-c",
             "import torch; print('torch=%s cuda=%s available=%s' % (torch.__version__, torch.version.cuda, torch.cuda.is_available())); print(torch.randn((2, 2), device='cuda') @ torch.randn((2, 2), device='cuda')) if torch.cuda.is_available() else None",
         ],
@@ -93,12 +179,12 @@ try:
         print("CUDA smoke test failed; installing P100-compatible Torch.", flush=True)
         subprocess.run(
             [
-                sys.executable,
-                "-m",
+                uv_executable,
                 "pip",
                 "install",
-                "--disable-pip-version-check",
-                "--no-cache-dir",
+                "--python",
+                str(uv_python),
+                "--no-cache",
                 "--force-reinstall",
                 "--extra-index-url",
                 "https://download.pytorch.org/whl/cu121",
@@ -108,8 +194,8 @@ try:
             check=True,
         )
         repaired_probe = subprocess.run(
-            [
-                sys.executable,
+            uv_run_python
+            + [
                 "-c",
                 "import torch; print('torch=%s cuda=%s available=%s' % (torch.__version__, torch.version.cuda, torch.cuda.is_available())); print(torch.randn((2, 2), device='cuda') @ torch.randn((2, 2), device='cuda')) if torch.cuda.is_available() else None",
             ],
@@ -126,14 +212,89 @@ try:
     # Add source code to path
     os.environ["PYTHONPATH"] = str(source_root) + os.pathsep + os.environ.get("PYTHONPATH", "")
 
+    if {evaluation_only}:
+        print("--- STEP 5: Evaluating novel Vietnamese prompts ---")
+        evaluation_checkpoint = next(
+            input_dir.rglob("my_trained_model.best.pt"),
+            None,
+        )
+        if not evaluation_checkpoint:
+            evaluation_checkpoint = next(
+                input_dir.rglob("my_trained_model.pt"),
+                None,
+            )
+        if not evaluation_checkpoint:
+            raise RuntimeError(
+                "Evaluation requires a best or latest training checkpoint."
+            )
+        evaluation_output = Path(
+            "/kaggle/working/open_vocabulary_evaluation"
+        )
+        evaluation_command = uv_run_python + [
+            str(
+                source_root
+                / "scripts"
+                / "evaluate_open_vocabulary_diffusion.py"
+            ),
+            "--checkpoint",
+            str(evaluation_checkpoint),
+            "--output-root",
+            str(evaluation_output),
+            "--duration",
+            "16",
+            "--steps",
+            "{evaluation_steps}",
+            "--guidance-scale",
+            "{evaluation_guidance_scale}",
+            "--solver",
+            "{evaluation_solver}",
+            "--device",
+            "cuda",
+        ]
+        evaluation_report = next(
+            input_dir.rglob("training_report.json"),
+            None,
+        )
+        if evaluation_report:
+            evaluation_command.extend(
+                ["--training-report", str(evaluation_report)]
+            )
+        if {evaluation_raw}:
+            evaluation_command.append("--raw-weights")
+        subprocess.run(evaluation_command, check=True)
+        Path("/kaggle/working/success.txt").write_text(
+            "evaluation_success",
+            encoding="utf-8",
+        )
+        print(
+            f"Evaluation saved to: {{evaluation_output.resolve()}}"
+        )
+        raise SystemExit(0)
+
     print("--- STEP 5: Training model on ALL processed records ---")
     checkpoint_path = Path("/kaggle/working/my_trained_model.pt")
-    train_command = [
-        sys.executable, str(source_root / "cli.py"), "train-self",
+    if {resume}:
+        resume_checkpoint = next(
+            input_dir.rglob("my_trained_model.pt"),
+            None,
+        )
+        if not resume_checkpoint:
+            raise RuntimeError(
+                "Resume was requested but no my_trained_model.pt was found."
+            )
+        shutil.copy2(resume_checkpoint, checkpoint_path)
+        print(f"Resuming checkpoint: {{resume_checkpoint}}")
+
+    train_command = uv_run_python + [
+        str(source_root / "cli.py"), "train-self",
         "--dataset", str(processed_dataset),
         "--checkpoint", str(checkpoint_path),
         "--epochs", "{epochs}",
         "--batch-size", "{batch_size}",
+        "--learning-rate", "{learning_rate}",
+        "--ema-decay", "{ema_decay}",
+        "--minimum-epochs", "{minimum_epochs}",
+        "--early-stopping-patience", "{early_stopping_patience}",
         "--lambda-vocal", "{lambda_vocal}",
         "--device", "cuda",
     ]
@@ -145,6 +306,43 @@ try:
         train_command.extend(["--depth", "{depth}"])
     if {heads is not None}:
         train_command.extend(["--heads", "{heads}"])
+    if {frames_per_chunk is not None}:
+        train_command.extend(
+            ["--frames-per-chunk", "{frames_per_chunk}"]
+        )
+    if {checkpoint_every_steps is not None}:
+        train_command.extend(
+            ["--checkpoint-every-steps", "{checkpoint_every_steps}"]
+        )
+    if {open_vocabulary_conditioning}:
+        train_command.extend([
+            "--open-vocabulary-conditioning",
+            "--lexical-holdout-fraction", "{lexical_holdout_fraction}",
+            "--minimum-lexical-sensitivity", "{minimum_lexical_sensitivity}",
+            "--lyric-semantic-weight", "{lyric_semantic_weight}",
+            "--lyric-denoised-semantic-weight", "{lyric_denoised_semantic_weight}",
+            "--lyric-semantic-temperature", "{lyric_semantic_temperature}",
+            "--minimum-lyric-semantic-accuracy", "{minimum_lyric_semantic_accuracy}",
+            "--minimum-lyric-denoised-semantic-accuracy", "{minimum_lyric_denoised_semantic_accuracy}",
+            "--lyric-unit-semantic-weight", "{lyric_unit_semantic_weight}",
+            "--minimum-lyric-unit-accuracy", "{minimum_lyric_unit_accuracy}",
+            "--lyric-unit-denoised-semantic-weight", "{lyric_unit_denoised_semantic_weight}",
+            "--minimum-lyric-denoised-unit-accuracy", "{minimum_lyric_denoised_unit_accuracy}",
+            "--self-rollout-consistency-weight", "{self_rollout_consistency_weight}",
+            "--self-rollout-consistency-probability", "{self_rollout_consistency_probability}",
+            "--self-rollout-step-size", "{self_rollout_step_size}",
+            "--self-rollout-solver-steps", "{self_rollout_solver_steps}",
+            "--early-timestep-fraction", "{early_timestep_fraction}",
+            "--early-timestep-max", "{early_timestep_max}",
+        ])
+    if {resume}:
+        train_command.append("--resume")
+    if {semantic_pretrain_only}:
+        train_command.append("--semantic-pretrain-only")
+    if {reset_optimizer}:
+        train_command.append("--reset-optimizer")
+    if {reset_ema}:
+        train_command.append("--reset-ema")
     if {save_every_epoch}:
         # A validation-gated best checkpoint + early stopping run can span many
         # epochs; persist raw weights/optimizer/EMA after every epoch so a
@@ -175,13 +373,100 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--learning-rate", type=float, default=2e-4)
+    parser.add_argument("--ema-decay", type=float, default=0.999)
     parser.add_argument("--processed-kernel-ref", default=None)
+    parser.add_argument(
+        "--processed-dataset-ref",
+        default=None,
+        help=(
+            "Explicit Kaggle Dataset containing config.json, records.jsonl, "
+            "and latent tensors. Mutually exclusive with "
+            "--processed-kernel-ref."
+        ),
+    )
     parser.add_argument("--lambda-vocal", type=float, default=1.0, help="Weight of auxiliary vocal-only prediction loss (Mixed Pro style, 0.0 disables it).")
     parser.add_argument("--max-records", type=int, default=None, help="Limit training to the first N usable records (for cheap smoke tests).")
     parser.add_argument("--dim", type=int, default=None)
     parser.add_argument("--depth", type=int, default=None)
     parser.add_argument("--heads", type=int, default=None)
+    parser.add_argument("--frames-per-chunk", type=int, default=None)
+    parser.add_argument("--checkpoint-every-steps", type=int, default=50)
+    parser.add_argument("--open-vocabulary-conditioning", action="store_true")
+    parser.add_argument("--lexical-holdout-fraction", type=float, default=0.08)
+    parser.add_argument("--minimum-lexical-sensitivity", type=float, default=0.05)
+    parser.add_argument("--lyric-semantic-weight", type=float, default=0.25)
+    parser.add_argument("--lyric-denoised-semantic-weight", type=float, default=0.0)
+    parser.add_argument("--lyric-semantic-temperature", type=float, default=0.08)
+    parser.add_argument("--minimum-lyric-semantic-accuracy", type=float, default=0.05)
+    parser.add_argument(
+        "--minimum-lyric-denoised-semantic-accuracy",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument("--lyric-unit-semantic-weight", type=float, default=0.25)
+    parser.add_argument("--minimum-lyric-unit-accuracy", type=float, default=0.10)
+    parser.add_argument("--lyric-unit-denoised-semantic-weight", type=float, default=0.0)
+    parser.add_argument("--minimum-lyric-denoised-unit-accuracy", type=float, default=0.0)
+    parser.add_argument("--self-rollout-consistency-weight", type=float, default=0.0)
+    parser.add_argument("--self-rollout-consistency-probability", type=float, default=0.0)
+    parser.add_argument("--self-rollout-step-size", type=float, default=0.125)
+    parser.add_argument("--self-rollout-solver-steps", type=int, default=0)
+    parser.add_argument("--early-timestep-fraction", type=float, default=0.0)
+    parser.add_argument("--early-timestep-max", type=float, default=0.35)
+    parser.add_argument("--semantic-pretrain-only", action="store_true")
+    parser.add_argument("--minimum-epochs", type=int, default=8)
+    parser.add_argument("--early-stopping-patience", type=int, default=4)
+    parser.add_argument("--reset-optimizer", action="store_true")
+    parser.add_argument("--reset-ema", action="store_true")
+    parser.add_argument(
+        "--resume-kernel-ref",
+        default=None,
+        help="Optional prior training kernel whose my_trained_model.pt is resumed.",
+    )
+    parser.add_argument(
+        "--submit-only",
+        action="store_true",
+        help="Submit the remote GPU job, persist local state, and return.",
+    )
+    parser.add_argument(
+        "--evaluation-only",
+        action="store_true",
+        help="Skip training and evaluate a checkpoint kernel on novel text.",
+    )
+    parser.add_argument(
+        "--evaluation-raw",
+        action="store_true",
+        help="Use raw instead of EMA checkpoint weights during evaluation.",
+    )
+    parser.add_argument(
+        "--evaluation-steps",
+        type=int,
+        default=32,
+        help="Euler steps used by an evaluation-only generation job.",
+    )
+    parser.add_argument(
+        "--evaluation-guidance-scale",
+        type=float,
+        default=1.5,
+        help="Classifier-free guidance scale for evaluation-only generation.",
+    )
+    parser.add_argument(
+        "--evaluation-solver",
+        choices=("euler", "heun", "midpoint"),
+        default="euler",
+        help="ODE solver used by an evaluation-only generation job.",
+    )
     args = parser.parse_args()
+    if args.evaluation_only and not args.resume_kernel_ref:
+        parser.error("--evaluation-only requires --resume-kernel-ref")
+    if args.evaluation_raw and not args.evaluation_only:
+        parser.error("--evaluation-raw requires --evaluation-only")
+    if args.processed_kernel_ref and args.processed_dataset_ref:
+        parser.error(
+            "--processed-kernel-ref and --processed-dataset-ref "
+            "are mutually exclusive"
+        )
 
     # Resolved parent because it is located inside the scripts/ directory
     project_root = Path(__file__).resolve().parents[1]
@@ -208,10 +493,16 @@ def main():
     # dataset_sources instead) -- kept for compatibility with datasets published before
     # this fix, or shared manually outside this project's scripts.
     processed_kernel_ref = args.processed_kernel_ref or os.getenv("KAGGLE_PROCESSED_KERNEL_REF") or tokens.get("KAGGLE_PROCESSED_KERNEL_REF")
-    processed_dataset_ref = os.getenv("KAGGLE_PROCESSED_DATASET_REF") or tokens.get(
-        "KAGGLE_PROCESSED_DATASET_REF",
-        "ngochuy5602/genmusic-vn-part3-vocal-vocos-smoke" if not processed_kernel_ref else None,
+    processed_dataset_ref = args.processed_dataset_ref or os.getenv(
+        "KAGGLE_PROCESSED_DATASET_REF"
+    ) or tokens.get(
+        "KAGGLE_PROCESSED_DATASET_REF"
     )
+    if not processed_kernel_ref and not processed_dataset_ref:
+        raise RuntimeError(
+            "Set --processed-kernel-ref or --processed-dataset-ref; "
+            "the repository intentionally has no account-specific fallback."
+        )
     processed_dataset_slug = (processed_kernel_ref or processed_dataset_ref).split("/")[-1]
     epochs = args.epochs
     batch_size = args.batch_size
@@ -228,7 +519,12 @@ def main():
     print("======================================================================")
     print(f"🚀 Initializing Kaggle Job: {run_id}")
     print(f"   Processed data source: {processed_kernel_ref or processed_dataset_ref} ({'kernel' if processed_kernel_ref else 'dataset'})")
-    print(f"   Training config: epochs={epochs}, batch_size={batch_size}")
+    print(
+        "   Training config: "
+        f"epochs={epochs}, batch_size={batch_size}, "
+        f"frames_per_chunk={args.frames_per_chunk}, "
+        f"open_vocabulary={args.open_vocabulary_conditioning}"
+    )
     print("======================================================================")
 
     # 1. Zip source code
@@ -262,14 +558,95 @@ def main():
     
     (kernel_dir / "run_training.py").write_text(
         _kernel_script_content(
-            processed_dataset_slug, epochs, batch_size, str(args.lambda_vocal),
+            processed_dataset_slug,
+            epochs,
+            batch_size,
+            str(args.learning_rate),
+            str(args.ema_decay),
+            str(args.lambda_vocal),
             max_records=str(args.max_records) if args.max_records is not None else None,
             dim=str(args.dim) if args.dim is not None else None,
             depth=str(args.depth) if args.depth is not None else None,
             heads=str(args.heads) if args.heads is not None else None,
+            open_vocabulary_conditioning=args.open_vocabulary_conditioning,
+            lexical_holdout_fraction=str(args.lexical_holdout_fraction),
+            minimum_lexical_sensitivity=str(
+                args.minimum_lexical_sensitivity
+            ),
+            lyric_semantic_weight=str(args.lyric_semantic_weight),
+            lyric_denoised_semantic_weight=str(
+                args.lyric_denoised_semantic_weight
+            ),
+            lyric_semantic_temperature=str(
+                args.lyric_semantic_temperature
+            ),
+            minimum_lyric_semantic_accuracy=str(
+                args.minimum_lyric_semantic_accuracy
+            ),
+            minimum_lyric_denoised_semantic_accuracy=str(
+                args.minimum_lyric_denoised_semantic_accuracy
+            ),
+            lyric_unit_semantic_weight=str(
+                args.lyric_unit_semantic_weight
+            ),
+            minimum_lyric_unit_accuracy=str(
+                args.minimum_lyric_unit_accuracy
+            ),
+            lyric_unit_denoised_semantic_weight=str(
+                args.lyric_unit_denoised_semantic_weight
+            ),
+            minimum_lyric_denoised_unit_accuracy=str(
+                args.minimum_lyric_denoised_unit_accuracy
+            ),
+            self_rollout_consistency_weight=str(
+                args.self_rollout_consistency_weight
+            ),
+            self_rollout_consistency_probability=str(
+                args.self_rollout_consistency_probability
+            ),
+            self_rollout_step_size=str(args.self_rollout_step_size),
+            self_rollout_solver_steps=str(args.self_rollout_solver_steps),
+            early_timestep_fraction=str(
+                args.early_timestep_fraction
+            ),
+            early_timestep_max=str(args.early_timestep_max),
+            semantic_pretrain_only=args.semantic_pretrain_only,
+            minimum_epochs=str(args.minimum_epochs),
+            early_stopping_patience=str(
+                args.early_stopping_patience
+            ),
+            reset_optimizer=args.reset_optimizer,
+            reset_ema=args.reset_ema,
+            frames_per_chunk=(
+                str(args.frames_per_chunk)
+                if args.frames_per_chunk is not None
+                else None
+            ),
+            resume=bool(args.resume_kernel_ref),
+            checkpoint_every_steps=(
+                str(args.checkpoint_every_steps)
+                if args.checkpoint_every_steps > 0
+                else None
+            ),
+            evaluation_only=args.evaluation_only,
+            evaluation_raw=args.evaluation_raw,
+            evaluation_steps=str(args.evaluation_steps),
+            evaluation_guidance_scale=str(
+                args.evaluation_guidance_scale
+            ),
+            evaluation_solver=str(args.evaluation_solver),
         ),
         encoding="utf-8",
     )
+    kernel_sources = [
+        source
+        for source in (
+            processed_kernel_ref,
+            args.resume_kernel_ref,
+        )
+        if source
+    ]
+    kernel_sources = list(dict.fromkeys(kernel_sources))
     (kernel_dir / "kernel-metadata.json").write_text(json.dumps({
         "id": kernel_ref,
         "title": kernel_slug,
@@ -281,12 +658,103 @@ def main():
         "enable_internet": "true",
         "machine_shape": "NvidiaTeslaT4",
         "dataset_sources": [source_dataset_ref] + ([] if processed_kernel_ref else [processed_dataset_ref]),
-        "kernel_sources": [processed_kernel_ref] if processed_kernel_ref else [],
+        "kernel_sources": kernel_sources,
     }, indent=2))
 
     # 4. Push Kernel to Kaggle
     print(f"🚀 Pushing training Kernel '{kernel_ref}' to Kaggle (GPU: T4)...")
     subprocess.run(cli + ["kernels", "push", "-p", str(kernel_dir)], env=kaggle_env, check=True)
+    state_path = job_dir / "job_state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "status": "submitted",
+                "kernel_ref": kernel_ref,
+                "source_dataset_ref": source_dataset_ref,
+                "processed_source_ref": (
+                    processed_kernel_ref or processed_dataset_ref
+                ),
+                "resume_kernel_ref": args.resume_kernel_ref,
+                "epochs": epochs,
+                "batch_size": batch_size,
+                "learning_rate": args.learning_rate,
+                "ema_decay": args.ema_decay,
+                "frames_per_chunk": args.frames_per_chunk,
+                "checkpoint_every_steps": args.checkpoint_every_steps,
+                "dim": args.dim,
+                "depth": args.depth,
+                "heads": args.heads,
+                "open_vocabulary_conditioning": (
+                    args.open_vocabulary_conditioning
+                ),
+                "lexical_holdout_fraction": (
+                    args.lexical_holdout_fraction
+                ),
+                "minimum_lexical_sensitivity": (
+                    args.minimum_lexical_sensitivity
+                ),
+                "lyric_semantic_weight": args.lyric_semantic_weight,
+                "lyric_denoised_semantic_weight": (
+                    args.lyric_denoised_semantic_weight
+                ),
+                "lyric_semantic_temperature": (
+                    args.lyric_semantic_temperature
+                ),
+                "minimum_lyric_semantic_accuracy": (
+                    args.minimum_lyric_semantic_accuracy
+                ),
+                "minimum_lyric_denoised_semantic_accuracy": (
+                    args.minimum_lyric_denoised_semantic_accuracy
+                ),
+                "lyric_unit_semantic_weight": (
+                    args.lyric_unit_semantic_weight
+                ),
+                "minimum_lyric_unit_accuracy": (
+                    args.minimum_lyric_unit_accuracy
+                ),
+                "lyric_unit_denoised_semantic_weight": (
+                    args.lyric_unit_denoised_semantic_weight
+                ),
+                "minimum_lyric_denoised_unit_accuracy": (
+                    args.minimum_lyric_denoised_unit_accuracy
+                ),
+                "self_rollout_consistency_weight": (
+                    args.self_rollout_consistency_weight
+                ),
+                "self_rollout_consistency_probability": (
+                    args.self_rollout_consistency_probability
+                ),
+                "self_rollout_step_size": args.self_rollout_step_size,
+                "self_rollout_solver_steps": args.self_rollout_solver_steps,
+                "early_timestep_fraction": (
+                    args.early_timestep_fraction
+                ),
+                "early_timestep_max": args.early_timestep_max,
+                "semantic_pretrain_only": (
+                    args.semantic_pretrain_only
+                ),
+                "minimum_epochs": args.minimum_epochs,
+                "early_stopping_patience": (
+                    args.early_stopping_patience
+                ),
+                "reset_optimizer": args.reset_optimizer,
+                "reset_ema": args.reset_ema,
+                "evaluation_only": args.evaluation_only,
+                "evaluation_raw": args.evaluation_raw,
+                "evaluation_steps": args.evaluation_steps,
+                "evaluation_guidance_scale": (
+                    args.evaluation_guidance_scale
+                ),
+                "evaluation_solver": args.evaluation_solver,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    print(f"Local job state: {state_path.resolve()}")
+    if args.submit_only:
+        print(f"Submitted Kaggle kernel: {kernel_ref}")
+        return
 
     # 5. Poll Kernel status
     # A full-scale run (e.g. 25 epochs, batch_size=8, no --max-records) can comfortably
@@ -348,6 +816,9 @@ def main():
                 "record_count", "validation_record_count", "completed_epochs", "requested_epochs",
                 "stopped_early", "best_epoch", "best_validation_loss", "final_validation_loss",
                 "final_text_conditioning_sensitivity", "minimum_text_sensitivity", "final_loss",
+                "final_lexical_holdout_sensitivity",
+                "lexical_holdout_word_count",
+                "open_vocabulary_conditioning",
                 "elapsed_seconds",
             ):
                 print(f"   {key}: {data.get(key)}")

@@ -1,7 +1,7 @@
-"""Resumes a `run_kaggle_latent_pipeline.py` CFM training run that got cut off
+﻿"""Resumes a `run_kaggle_latent_pipeline.py` CFM training run that got cut off
 partway (a Kaggle session hitting its wall-clock limit, or being killed
 deliberately to bound GPU-quota risk, is a recurring event, not a one-off --
-see docs/project_history.md §4.24 for a session this actually happened in).
+see prior measurements for a session this actually happened in).
 Uploads an already-downloaded latent_dataset/ + checkpoint as a Kaggle
 dataset and continues CFM training from there (`--save-every-epoch`
 checkpoints from the original run make this possible), then generates one

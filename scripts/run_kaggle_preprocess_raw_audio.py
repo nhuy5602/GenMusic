@@ -1,10 +1,10 @@
-"""Preprocessing variant that keeps raw 24kHz waveform (Demucs vocal/backing
+﻿"""Preprocessing variant that keeps raw 24kHz waveform (Demucs vocal/backing
 stems), skipping mel-spectrogram conversion entirely (`cli.py preprocess-raw
 --raw-audio`). For training `LatentAudioEncoder` (src/models/latent_codec.py)
 directly on the pristine original recording, instead of today's
 mel->Vocos-decode->waveform round trip in `precompute-latent-dataset` (which
 only exists because the mel-only preprocessing output never kept raw audio at
-all -- see docs/project_history.md and docs/data_preparation.md).
+all -- see prior measurements and docs/data_preparation.md).
 
 Output dataset shape differs from the default mel pipeline: records point at
 `waveforms/<id>_{vocal,backing}.pt` (raw sample tensors, `frames` = sample

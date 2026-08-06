@@ -1,9 +1,9 @@
-"""Kaggle launcher for `scripts/check_latent_encoder_quality.py` -- sanity-checks a
+﻿"""Kaggle launcher for `scripts/check_latent_encoder_quality.py` -- sanity-checks a
 `LatentAudioEncoder` checkpoint (encode real ground-truth audio, decode through the
 real frozen BigVGAN decoder, report pitch_std_semitones) before trusting it for any
 downstream CFM training. See that script's own docstring and
 docs/architecture.md's "Native latent backbone and encoder" section for why this
-check exists (the collapsed-encoder failure mode from docs/project_history.md §4.24).
+check exists (the collapsed-encoder failure mode from prior measurements).
 
 Mirrors run_kaggle_latent_pipeline.py's structure (uploads the checkpoint as its own
 small dataset, attaches one or more --raw-audio-part kernel outputs as data sources).

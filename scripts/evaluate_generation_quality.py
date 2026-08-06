@@ -1,4 +1,4 @@
-"""Objective (no human listening) audio quality check for a generated-music checkpoint.
+﻿"""Objective (no human listening) audio quality check for a generated-music checkpoint.
 
 Compares model-generated audio against the *real full mix* (vocal +
 accompaniment, see reconstruct_full_mix) of the same song, rendered through
@@ -21,7 +21,7 @@ Metrics:
   whether that peak holds together as a coherent note across frames. A run
   with good mel std/flatness but near-zero voiced_ratio still sounds like
   noise to a human ear (confirmed the hard way: see
-  docs/project_history.md's correction after a real listening report).
+  the experiment log's correction after a real listening report).
 - pitch_std_semitones: std of the pyin f0 track (converted to semitones)
   across voiced frames only. voiced_ratio alone cannot tell a real moving
   melody apart from a monotone held note/drone -- both score high, since
@@ -29,7 +29,7 @@ Metrics:
   change over time". A checkpoint can have near-real voiced_ratio yet a
   semitone std an order of magnitude below the real vocal reference, which
   is itself evidence of a subtler form of regression-to-the-mean that
-  voiced_ratio does not catch (see docs/project_history.md report section on
+  voiced_ratio does not catch (see prior measurements report section on
   the model-size/epoch ablation).
 
 A synthesized white-noise clip is included as a fixed sanity anchor so the
